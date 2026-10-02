@@ -2,6 +2,7 @@ module DielectricBIE
 
 using LinearAlgebra
 using SparseArrays, StaticArrays
+using QuadGK: quadgk_segbuf_count
 using Serialization
 using FastGaussQuadrature, LegendrePolynomials, SpecialFunctions
 using Krylov, LinearMaps, HCubature
@@ -22,6 +23,8 @@ export DielectricInterface
 export rhs_approx
 export interface_approx
 export interface_uniform_samples
+export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
+export EdgeGCQRule, edge_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
 export PrecomputedVolumeField, volume_field_potential, volume_field_gradient,
@@ -43,12 +46,14 @@ export laplace3d_DT_fmm3d_corrected_hcubature
 export laplace3d_D_fmm3d_corrected
 export laplace3d_pottrg_fmm3d_corrected_hcubature
 export laplace3d_pottrg_near
+export laplace3d_DT_tensor_corrections, tensor_near_row
 
 # shapes
 export single_dielectric_box2d, multi_dielectric_box2d
 export single_dielectric_box3d, multi_dielectric_box3d
 export single_dielectric_box3d_rhs_adaptive, multi_dielectric_box3d_rhs_adaptive
 export single_dielectric_box3d_rhs_adaptive_varquad
+export single_dielectric_box3d_gcq
 
 # solvers
 export lhs_dielectric_box2d, lhs_dielectric_box2d_fmm2d, rhs_dielectric_box2d
@@ -60,6 +65,7 @@ export Rhs_dielectric_box3d, Rhs_dielectric_box3d_fmm3d, Rhs_dielectric_box3d_hy
 
 # linear algebra
 export solve_lu, solve_gmres
+export lhs_dielectric_box3d_gcq_fmm3d, lhs_dielectric_box3d_gcq_dense, solve_dielectric_box3d_gcq
 
 export density_centroid
 
@@ -98,6 +104,8 @@ export plot_campaign_geometry
 
 # core types
 include("core/panels.jl")
+include("utils/edge_gcq.jl")       # needed by the tensor panels (EdgeGCQRule)
+include("core/tensor_panels.jl")
 include("core/sources.jl")
 include("core/source_geometry.jl")
 
@@ -108,6 +116,7 @@ include("kernel/laplace3d_near_adaptive.jl")
 include("kernel/laplace3d_near.jl")
 include("kernel/laplace3d_near_upsampling.jl")
 include("kernel/laplace3d_near_hcubature.jl")
+include("kernel/laplace3d_tensor_near.jl")
 
 # # geometries
 include("shape/box2d.jl")
@@ -117,6 +126,7 @@ include("shape/box3d_fmm_helpers.jl") # FMM/TKM helpers (needed by rhs_adaptive)
 include("shape/volume_field.jl") # precomputed spectral volume field
 include("shape/box3d_rhs_adaptive.jl") # RHS-adaptive builders
 include("shape/box3d_multi.jl") # multi-box builders
+include("shape/box3d_gcq.jl") # single box with GCQ edge panels
 
 # # utilities
 include("utils/linear_algebra.jl")
@@ -131,6 +141,7 @@ include("utils/xsf_reader.jl")
 # # solvers
 include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
+include("solver/dielectric_box3d_gcq.jl")
 include("solver/multi_rhs.jl")
 include("solver/lattice_batch.jl")
 include("solver/batch_io.jl")

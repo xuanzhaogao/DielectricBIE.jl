@@ -25,6 +25,35 @@ rhs = rhs_dielectric_box2d(interface, PointSource((0.1, 0.1), 1.0), 5.0)
 sigma = solve_gmres(lhs_fmm, rhs, 1e-12, 1e-12)
 ```
 
+## Boxes with GCQ edge panels
+
+At the edges of a dielectric box the surface density is singular,
+σ ~ Σₖ cₖ s^{pₖ} in the distance s to the edge. The powers pₖ come from the 2D wedge
+determinant (`edge_density_powers`, `junction_powers`), and `edge_gcq_rule` builds a
+weighted generalized Chebyshev quadrature (GCQ) on [0,1] that integrates the expansion
+times smooth functions. `single_dielectric_box3d_gcq` uses it on `TensorPanel`s: GCQ
+across each edge × Gauss–Legendre along it, GCQ × GCQ at the vertices, and dyadic
+refinement toward the vertices only. Near-singular interactions are a sparse correction
+added to the FMM operator.
+
+```julia
+using DielectricBIE, LinearAlgebra
+import DielectricBIE as BI
+
+eps_in = 10.0
+rule = edge_gcq_rule(eps_in, 1.0; tol = 1e-12)          # 28 nodes
+interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, eps_in, 1.0;
+                                        nlev = 3, n_quad = 8, rule)
+A, stats = lhs_dielectric_box3d_gcq_fmm3d(interface, 1e-12)
+rhs = rhs_dielectric_box3d(interface, PointSource((0.1, 0.15, 0.2), 1.0), eps_in)
+sigma, _ = solve_dielectric_box3d_gcq(A, rhs, interface; rtol = 1e-12)
+dot(BI.all_weights(interface), sigma) - (1 - 1 / eps_in)   # ≈ 5e-9
+```
+
+The error then falls by about 3× per vertex level, the rate of the vertex
+singularity (σ ~ ρ^{−0.397} for ε = 10). Use a Gauss–Legendre order of at least 6:
+lower orders cannot resolve the part of σ driven by the source.
+
 ## Volume sources and precomputed fields
 
 A `VolumeSource` is a volume charge density sampled on a quadrature grid: positions

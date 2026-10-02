@@ -11,6 +11,7 @@ using Test
     include("utils/barycentric.jl")
     include("utils/quad_order.jl")
     include("utils/best_grid.jl")
+    include("utils/edge_gcq.jl")
     # visualization helpers
     include("visualization/extensions.jl")
 
@@ -18,6 +19,7 @@ using Test
     include("core/panels.jl")
     include("core/sources.jl")
     include("core/source_geometry.jl")
+    include("core/tensor_panels.jl")
     include("shape/volume_field.jl")
 
     # kernel functions
@@ -37,6 +39,9 @@ using Test
 
     # multi-box 3d
     include("shape/multi_box3d.jl")
+
+    # single box with GCQ edge panels (tensor panels, FMM + near corrections)
+    include("solver/dielectric_box3d_gcq.jl")
 
     # multi-rhs solver
     include("solver/multi_rhs.jl")
