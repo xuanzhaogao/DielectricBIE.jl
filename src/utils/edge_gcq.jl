@@ -91,20 +91,26 @@ Base.show(io::IO, r::EdgeGCQRule) =
     print(io, "EdgeGCQRule with $(length(r.x)) nodes (tol $(r.tol), weight x^$(round(r.pw, digits = 4)))")
 
 """
-    edge_gcq_rule(dpows; tol=1e-10, nsmooth=20)
-    edge_gcq_rule(eps_in, eps_out; angle=π/2, tol=1e-10, nsmooth=20)
+    edge_gcq_rule(dpows; tol=1e-10, nsmooth=20, qmax=nothing)
+    edge_gcq_rule(eps_in, eps_out; angle=π/2, tol=1e-10, nsmooth=20, qmax=nothing)
 
 Weighted GCQ rule for the density powers `dpows` (several contrasts may be
-combined with `vcat`). Steps: adaptive Gauss-Kronrod fine grid for the
+combined with `vcat`). The family is {s^{p_k + n}} ∪ {s^n}, n = 0..nsmooth; with
+`qmax` given it is instead every such exponent up to `qmax` (n as large as
+needed), so `dpows` (the powers up to some gmax) choose the classes and `qmax`
+alone sets the size. Steps: adaptive Gauss-Kronrod fine grid for the
 weighted family, SVD of the weighted sample matrix (rank at `tol`),
 column-pivoted QR for the nodes, transposed Vandermonde solve for the weights.
 """
-function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 20)
+function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 20,
+                       qmax::Union{Nothing, Real} = nothing)
     p1 = minimum(dpows)
     p1 > -1 || throw(ArgumentError("density power $p1 is not integrable"))
+    qmax === nothing || (nsmooth = ceil(Int, qmax - p1))
     q = sort(unique(round.(vcat([(p - p1) .+ (0:nsmooth) for p in dpows]...,
                                 collect((0:nsmooth) .- p1)); digits = 12)))
     q = q[q .>= -1e-12]
+    qmax === nothing || (q = q[q .+ p1 .<= qmax + 1e-12])
     fs = s -> [s^qi for qi in q]
     _, _, segbuf, _ = quadgk_segbuf_count(s -> s^p1 .* fs(s), 0.0, 1.0;
                                           atol = tol / 10, rtol = tol / 10)

@@ -31,4 +31,14 @@ using Test
     @test pj[1] < -0.5
     rj = edge_gcq_rule(pj; tol = 1e-10)
     @test edge_gcq_family_error(rj) < 1e-9
+    # qmax: the family is set by the largest exponent; extra powers below gmax add nothing
+    d2 = edge_density_powers(10.0, 1.0; gmax = 2.0); d20 = edge_density_powers(10.0, 1.0; gmax = 20.0)
+    ra = edge_gcq_rule(d2; tol = 1e-12, qmax = 10.3); rb = edge_gcq_rule(d20; tol = 1e-12, qmax = 10.3)
+    @test maximum(ra.pows) <= 10.3 && ra.pows ≈ rb.pows && ra.x ≈ rb.x
+    @test edge_gcq_family_error(ra) < 1e-11
+    # right-angle junctions keep the γ ∈ {2m ± γ1} ∪ {2m} structure
+    γs = junction_powers(fill(π / 2, 4), [1.0, 50.0, 2.0, 10.0]; gmax = 13.0)
+    γs = γs[γs .<= 11.5]
+    ex = sort(vcat([2m + s * γs[1] for m in 0:6 for s in (-1, 1) if 0 < 2m + s * γs[1] <= 11.5], 2.0 .* (1:5)))
+    @test length(γs) == length(ex) && maximum(abs.(γs .- ex)) < 1e-8
 end

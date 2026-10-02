@@ -18,7 +18,7 @@
 
 """
     single_dielectric_box3d_gcq(Lx, Ly, Lz, eps_in, eps_out; nlev=2, n_quad=8,
-                                corner=:gcq, tol=1e-10, rule=nothing,
+                                corner=:gcq, tol=1e-10, rule=nothing, corner_rule=nothing,
                                 rhs=nothing, rhs_atol=1e-10, max_depth=30)
 
 Box [-Lx/2, Lx/2] × [-Ly/2, Ly/2] × [-Lz/2, Lz/2] with permittivity `eps_in`
@@ -26,12 +26,13 @@ in a medium `eps_out`, discretized with `TensorPanel`s (see the file header).
 `n_quad` is the Gauss-Legendre order: an Int, or a function `level -> order`
 for the panels created at refinement level 1..nlev (the corner panel has level
 nlev). `rule` may pass a prebuilt `EdgeGCQRule`; by default one is built for
-the right-angle edge with `edge_gcq_rule(eps_in, eps_out; tol)`. `rhs(p, n)`
+the right-angle edge with `edge_gcq_rule(eps_in, eps_out; tol)`. A GCQ × GCQ
+corner panel uses `corner_rule` if given, else `rule`. `rhs(p, n)`
 switches on the RHS-adaptive splitting to `rhs_atol`.
 """
 function single_dielectric_box3d_gcq(Lx::T, Ly::T, Lz::T, eps_in::T, eps_out::T;
                                      nlev::Int = 2, n_quad = 8, corner::Symbol = :gcq,
-                                     tol::Real = 1e-10, rule = nothing,
+                                     tol::Real = 1e-10, rule = nothing, corner_rule = nothing,
                                      rhs = nothing, rhs_atol::Real = 1e-10,
                                      max_depth::Int = 30) where T
     corner in (:gcq, :gl) || throw(ArgumentError("corner must be :gcq or :gl"))
@@ -39,7 +40,7 @@ function single_dielectric_box3d_gcq(Lx::T, Ly::T, Lz::T, eps_in::T, eps_out::T;
     gq = gcq_tensor_rule(er)
     glcache = Dict{Int, TensorRule1D}()
     glk(k) = (n = n_quad isa Integer ? n_quad : n_quad(k); get!(() -> gl_tensor_rule(n), glcache, n))
-    rc = corner == :gcq ? gq : glk(max(nlev, 1))
+    rc = corner == :gl ? glk(max(nlev, 1)) : corner_rule === nothing ? gq : gcq_tensor_rule(corner_rule)
     h = (Lx / 2, Ly / 2, Lz / 2)
     unit(k) = ntuple(i -> i == k ? one(T) : zero(T), 3)
     faces = [(3, +1), (3, -1), (1, +1), (1, -1), (2, +1), (2, -1)]    # (axis, sign)
