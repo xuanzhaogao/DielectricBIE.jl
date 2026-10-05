@@ -98,12 +98,24 @@ Weighted GCQ rule for the density powers `dpows` (several contrasts may be
 combined with `vcat`). The family is {s^{p_k + n}} ∪ {s^n}, n = 0..nsmooth; with
 `qmax` given it is instead every such exponent up to `qmax` (n as large as
 needed), so `dpows` (the powers up to some gmax) choose the classes and `qmax`
-alone sets the size. Steps: adaptive Gauss-Kronrod fine grid for the
-weighted family, SVD of the weighted sample matrix (rank at `tol`),
-column-pivoted QR for the nodes, transposed Vandermonde solve for the weights.
+alone sets the size. Steps: fine grid for the weighted family, SVD of the
+weighted sample matrix (rank at `tol`), column-pivoted QR for the nodes,
+transposed Vandermonde solve for the weights.
+
+Fine grid (`grid`):
+- `:graded` (default): dyadic segments [2^-k, 2^-k+1], k = 1..K, with 14-point
+  Gauss-Legendre, and [0, 2^-K] with Gauss-Jacobi for the weight s^p1, so the
+  weight is integrated exactly and p1 may approach -1 (checkerboard edges at high
+  contrast). K is set so that the non-polynomial part of the family carries less
+  than tol/10 on [0, 2^-K]: K ≈ log2(10/tol) / (1 + p1 + c), c the smallest
+  non-integer exponent of v = σ/s^p1; a family needing K > 1000 (2^-K below the
+  floating-point range) is refused.
+- `:adaptive`: adaptive Gauss-Kronrod on s^p1 · family (fails for p1 ≲ -0.95).
+In both, the interpolation matrix `P` gives v at the 14-point Gauss-Legendre
+nodes of every fine segment (`segs`, `z0`).
 """
 function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 20,
-                       qmax::Union{Nothing, Real} = nothing)
+                       qmax::Union{Nothing, Real} = nothing, grid::Symbol = :graded)
     p1 = minimum(dpows)
     p1 > -1 || throw(ArgumentError("density power $p1 is not integrable"))
     qmax === nothing || (nsmooth = ceil(Int, qmax - p1))
@@ -112,23 +124,50 @@ function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 
     q = q[q .>= -1e-12]
     qmax === nothing || (q = q[q .+ p1 .<= qmax + 1e-12])
     fs = s -> [s^qi for qi in q]
-    _, _, segbuf, _ = quadgk_segbuf_count(s -> s^p1 .* fs(s), 0.0, 1.0;
-                                          atol = tol / 10, rtol = tol / 10)
-    segs = sort([(sg.a, sg.b) for sg in segbuf])
     z0, w0 = gausslegendre(14)
-    xg = reduce(vcat, [(a + b) / 2 .+ (b - a) / 2 .* z0 for (a, b) in segs])
-    wg = reduce(vcat, [(b - a) / 2 .* w0 for (a, b) in segs])
-    ωg = wg .* xg .^ p1
-    A = reduce(vcat, [sqrt(ωj) .* fs(xj)' for (xj, ωj) in zip(xg, ωg)])
+    if grid == :adaptive
+        _, _, segbuf, _ = quadgk_segbuf_count(s -> s^p1 .* fs(s), 0.0, 1.0;
+                                              atol = tol / 10, rtol = tol / 10)
+        segs = sort([(sg.a, sg.b) for sg in segbuf])
+        xq = reduce(vcat, [(a + b) / 2 .+ (b - a) / 2 .* z0 for (a, b) in segs])
+        ωq = reduce(vcat, [(b - a) / 2 .* w0 for (a, b) in segs]) .* xq .^ p1
+        xi = xq
+    elseif grid == :graded
+        cs = [c for c in q if abs(c - round(c)) > 1e-9]
+        cmin = isempty(cs) ? 1.0 : minimum(cs)
+        K = max(20, ceil(Int, log2(10 / tol) / (1 + p1 + cmin)))
+        K <= 1000 || throw(ArgumentError("family too singular near s = 0 for Float64 " *
+                                         "(needs segments down to 2^-$K)"))
+        δ = 2.0^(-K)
+        segs = vcat([(0.0, δ)], [(2.0^(-k), 2.0^(-k + 1)) for k in K:-1:1])
+        ngj = max(24, ceil(Int, maximum(q) / 2) + 4)
+        tj, wj = gaussjacobi(ngj, 0.0, p1)               # weight (1 + t)^p1 on [-1, 1]
+        xq = vcat(δ .* (1 .+ tj) ./ 2,
+                  reduce(vcat, [(a + b) / 2 .+ (b - a) / 2 .* z0 for (a, b) in segs[2:end]]))
+        ωq = vcat((δ / 2)^(1 + p1) .* wj,
+                  reduce(vcat, [(b - a) / 2 .* w0 for (a, b) in segs[2:end]]) .* xq[ngj+1:end] .^ p1)
+        xi = reduce(vcat, [(a + b) / 2 .+ (b - a) / 2 .* z0 for (a, b) in segs])
+    else
+        throw(ArgumentError("grid must be :graded or :adaptive"))
+    end
+    A = reduce(vcat, [sqrt(ωj) .* fs(xj)' for (xj, ωj) in zip(xq, ωq)])
     S = svd(A)
     r = sum(S.S .> tol * S.S[1])
     U = S.U[:, 1:r]
-    nodeinds = sort(qr(U', ColumnNorm()).p[1:r])
-    x = xg[nodeinds]
-    Is = vec(sum(sqrt.(ωg) .* U, dims = 1))
-    W = sqrt.(ωg[nodeinds]) .* (U[nodeinds, :]' \ Is)
-    Uf = U ./ sqrt.(ωg)
-    P = (Uf / Uf[nodeinds, :]) * Diagonal(x .^ (-p1))
+    # node candidates: the graded grid's Gauss-Jacobi points integrate the weight on
+    # [0, 2^-K] but are not offered as nodes (they would put a node ~1e-17 from the
+    # edge, which the near-field and FMM machinery resolves poorly); the smooth factor
+    # varies negligibly on [0, 2^-K], so nodes above it carry that mass as well
+    cand = grid == :graded ? collect(ngj+1:length(xq)) : collect(eachindex(xq))
+    nodeinds = sort(cand[qr(U[cand, :]', ColumnNorm()).p[1:r]])
+    x = xq[nodeinds]
+    Is = vec(sum(sqrt.(ωq) .* U, dims = 1))
+    W = sqrt.(ωq[nodeinds]) .* (U[nodeinds, :]' \ Is)
+    # unweighted basis F V Σ^-1 at the interpolation nodes and at the rule nodes
+    B = S.V[:, 1:r] ./ S.S[1:r]'
+    Ui = reduce(vcat, [fs(xj)' for xj in xi]) * B
+    Un = (U ./ sqrt.(ωq))[nodeinds, :]
+    P = (Ui / Un) * Diagonal(x .^ (-p1))
     return EdgeGCQRule(x, W ./ x .^ p1, p1, segs, z0, w0, P, q .+ p1, Float64(tol))
 end
 

@@ -39,17 +39,43 @@ function lhs_dielectric_box3d_gcq_dense(interface::DielectricInterface{TensorPan
 end
 
 """
-    solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500)
+    solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500, constraints=nothing)
 
 GMRES on the W^{1/2}-scaled system (unknowns W^{1/2} σ, W the quadrature
 weights), which keeps the unknowns O(1)-scaled when σ is singular. Returns
 (σ, stats) with the Krylov stats.
+
+`constraints` deflates the near-null modes of high-contrast problems: as
+ε_in/ε_out → ∞ (or 0), τ → ∓1/2 and τ I + D^T has one near-zero eigenvalue per
+closed body (its equilibrium charge), which stalls GMRES. Given the bodies' total
+charges, which Gauss's law fixes (0 for a body without free charge inside, q(1 - 1/ε)
+in DielectricBIE's convention for a body of permittivity ε containing the charge
+q), pass `[(range_c, Q_c), ...]` with `range_c` the indices of body c's nodes; then
+    (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
+is solved instead. The true solution satisfies both systems; the rank-one terms move
+the near-zero eigenvalues to O(1).
 """
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
-                                    rtol::Real = 1e-12, itmax::Int = 500)
-    d = sqrt.(abs.(all_weights(interface)))
+                                    rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing)
+    w = all_weights(interface)
+    d = sqrt.(abs.(w))
     n = length(b)
-    As = LinearMap{Float64}(x -> d .* (A * (x ./ d)), n, n)
-    ρ, stats = Krylov.gmres(As, d .* b; rtol, atol = 0.0, itmax, memory = itmax)
+    Ad, bd = A, b
+    if constraints !== nothing
+        cs = [(collect(rg), Float64(Q), sum(w[rg])) for (rg, Q) in constraints]
+        bd = copy(b)
+        for (rg, Q, area) in cs
+            bd[rg] .+= Q / area
+        end
+        Ad = LinearMap{Float64}(n, n) do x
+            y = A * x
+            for (rg, _, area) in cs
+                y[rg] .+= dot(view(w, rg), view(x, rg)) / area
+            end
+            y
+        end
+    end
+    As = LinearMap{Float64}(x -> d .* (Ad * (x ./ d)), n, n)
+    ρ, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory = itmax)
     return ρ ./ d, stats
 end

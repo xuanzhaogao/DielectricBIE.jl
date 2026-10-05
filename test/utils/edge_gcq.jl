@@ -41,4 +41,11 @@ using Test
     γs = γs[γs .<= 11.5]
     ex = sort(vcat([2m + s * γs[1] for m in 0:6 for s in (-1, 1) if 0 < 2m + s * γs[1] <= 11.5], 2.0 .* (1:5)))
     @test length(γs) == length(ex) && maximum(abs.(γs .- ex)) < 1e-8
+    # p1 → -1 (checkerboard edge at contrast ~1e6): graded grid, nodes kept off the edge
+    rs = edge_gcq_rule([-0.999, 0.999, 1.0]; tol = 1e-12, qmax = 12.0)
+    @test edge_gcq_family_error(rs) < 1e-10
+    @test rs.x[1] > 1e-12
+    @test_throws ArgumentError edge_gcq_rule([-0.5]; grid = :nope)
+    ra2 = edge_gcq_rule(d2; tol = 1e-12, qmax = 10.3, grid = :adaptive)
+    @test length(ra2.x) == length(ra.x) && edge_gcq_family_error(ra2) < 1e-11
 end

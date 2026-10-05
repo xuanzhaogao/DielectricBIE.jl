@@ -37,8 +37,19 @@ end
 function TensorRule1D(x, w, segs, z0, wz, P, pw)
     fx = reduce(hcat, [sa .+ (sb - sa) / 2 .* (1 .+ z0) for (sa, sb) in segs])
     fw = reduce(hcat, [(sb - sa) / 2 .* wz for (sa, sb) in segs])
-    pw != 0 && (fw .*= fx .^ pw)
-    return TensorRule1D(x, w, segs, z0, wz, gl_barycentric_weights(z0, wz), P, pw, fx, fw)
+    bw = gl_barycentric_weights(z0, wz)
+    if pw != 0
+        fw .*= fx .^ pw
+        # segment touching the edge: product weights ∫ s^pw ℓ_j(s) ds of the Lagrange
+        # basis at its nodes (Gauss-Jacobi), exact for the weight however strong
+        k = findfirst(sg -> sg[1] == 0, segs)
+        if k !== nothing
+            sb = segs[k][2]
+            tj, wj = gaussjacobi(max(24, 2 * length(z0)), 0.0, pw)
+            fw[:, k] .= _tensor_lagrange_mat(z0, bw, tj) * ((sb / 2)^(pw + 1) .* wj)
+        end
+    end
+    return TensorRule1D(x, w, segs, z0, wz, bw, P, pw, fx, fw)
 end
 
 "n-point Gauss-Legendre as a `TensorRule1D`."

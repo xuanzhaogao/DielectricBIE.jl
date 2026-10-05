@@ -47,51 +47,68 @@ function _tensor_rect_dist(p::TensorPanel, xl, ua = 0.0, ub = 1.0, va = 0.0, vb 
     return norm(r .- (uc * p.Lu) .* p.eu .- (vc * p.Lv) .* p.ev)
 end
 
-# points, weights (with x^pw and length L) and basis for [a,b] ⊂ segment k
-function _tensor_leaf_rule(r::TensorRule1D, L, k, a, b)
+# points (as offsets from c), weights (with x^pw and length L) and basis for the leaf
+# [c + a, c + b] ⊂ segment k. Leaves are carried as offsets from the target's
+# projection c onto the panel, so that leaves far smaller than the floating-point
+# spacing at c (a target within ~1e-17 of an edge, at an O(1) position along it)
+# still have distinct nodes; absolute positions are used only for the basis and the
+# weight x^pw, where rounding is harmless.
+function _tensor_leaf_rule(r::TensorRule1D, L, k, c, a, b)
     sa, sb = r.segs[k]
     wt(u) = r.pw == 0 ? 1.0 : u^r.pw
-    if a == sa && b == sb && length(r.z0) >= TENSOR_NEAR_M
-        return r.fx[:, k], L .* r.fw[:, k], nothing
-    elseif r.pw != 0 && a == 0
+    if a == sa - c && b == sb - c && length(r.z0) >= TENSOR_NEAR_M
+        return r.fx[:, k] .- c, L .* r.fw[:, k], nothing
+    elseif r.pw != 0 && a == -c
         zj, wj = _tensor_gj(r.pw)
-        pts = b .* (1 .+ zj) ./ 2
-        wts = (b / 2)^(r.pw + 1) .* wj .* L
+        off = a .+ (b - a) .* (1 .+ zj) ./ 2              # = c + off ∈ [0, c + b]
+        wts = ((c + b) / 2)^(r.pw + 1) .* wj .* L
     else
         zm, wm = TENSOR_NEAR_GL
-        pts = a .+ (b - a) .* (1 .+ zm) ./ 2
-        wts = (b - a) / 2 .* wm .* L .* wt.(pts)
+        off = a .+ (b - a) .* (1 .+ zm) ./ 2
+        wts = (b - a) / 2 .* wm .* L .* wt.(c .+ off)
     end
-    return pts, wts, _tensor_lagrange_mat(r.z0, r.bw, 2 .* (pts .- sa) ./ (sb - sa) .- 1)
+    return off, wts, _tensor_lagrange_mat(r.z0, r.bw, 2 .* ((c .+ off) .- sa) ./ (sb - sa) .- 1)
 end
 
+# distance from the target to the leaf [cu+ua, cu+ub] × [cv+va, cv+vb]; (tu, tv) are the
+# target's offsets from (cu, cv) (zero when it projects inside the panel), h its height
+_tensor_leaf_dist(p::TensorPanel, tu, tv, h, ua, ub, va, vb) =
+    sqrt(((tu - clamp(tu, ua, ub)) * p.Lu)^2 + ((tv - clamp(tv, va, vb)) * p.Lv)^2 + h^2)
+
 """
-    tensor_near_row(kern, p, xl; η=1.5, maxdepth=80)
+    tensor_near_row(kern, p, xl; η=1.5, maxdepth=120)
 
 Row r with Σ_k r_k σ_k ≈ ∫_p kern(x - y) σ(y) dA(y) for σ in the panel's tensor
 interpolation space; `xl` is the target in p's anchor frame (x - p.anchor).
 """
-function tensor_near_row(kern, p::TensorPanel, xl; η = 1.5, maxdepth = 80)
+function tensor_near_row(kern, p::TensorPanel, xl; η = 1.5, maxdepth = 120)
     ru, rv = p.ru, p.rv
     nzu, nzv = length(ru.z0), length(rv.z0)
     rowfine = zeros(length(ru.segs) * nzu, length(rv.segs) * nzv)
     direct = nzu >= TENSOR_NEAR_M && nzv >= TENSOR_NEAR_M
+    r0 = xl .- p.o
+    ut = dot(r0, p.eu) / p.Lu; vt = dot(r0, p.ev) / p.Lv; h = dot(r0, p.normal)
+    cu = clamp(ut, 0.0, 1.0); cv = clamp(vt, 0.0, 1.0)
+    tu = ut - cu; tv = vt - cv
+    # x - y for y at offsets (ou, ov) from (cu, cv)
+    sep(ou, ov) = ((tu - ou) * p.Lu) .* p.eu .+ ((tv - ov) * p.Lv) .* p.ev .+ h .* p.normal
     stack = NTuple{5, Float64}[]
     for (ku, (sau, sbu)) in enumerate(ru.segs), (kv, (sav, sbv)) in enumerate(rv.segs)
         iu = (ku - 1) * nzu .+ (1:nzu); iv = (kv - 1) * nzv .+ (1:nzv)
-        if direct && _tensor_rect_dist(p, xl, sau, sbu, sav, sbv) >
+        a0u, b0u, a0v, b0v = sau - cu, sbu - cu, sav - cv, sbv - cv
+        if direct && _tensor_leaf_dist(p, tu, tv, h, a0u, b0u, a0v, b0v) >
                      η * max((sbu - sau) * p.Lu, (sbv - sav) * p.Lv)
             @inbounds for b in 1:nzv, a in 1:nzu
-                y = tensor_lpoint(p, ru.fx[a, ku], rv.fx[b, kv])
-                rowfine[iu[a], iv[b]] += kern(xl .- y) * (p.Lu * ru.fw[a, ku]) * (p.Lv * rv.fw[b, kv])
+                rowfine[iu[a], iv[b]] += kern(sep(ru.fx[a, ku] - cu, rv.fx[b, kv] - cv)) *
+                                         (p.Lu * ru.fw[a, ku]) * (p.Lv * rv.fw[b, kv])
             end
             continue
         end
-        empty!(stack); push!(stack, (sau, sbu, sav, sbv, 0.0))
+        empty!(stack); push!(stack, (a0u, b0u, a0v, b0v, 0.0))
         while !isempty(stack)
             ua, ub, va, vb, depth = pop!(stack)
             du = (ub - ua) * p.Lu; dv = (vb - va) * p.Lv
-            d = _tensor_rect_dist(p, xl, ua, ub, va, vb)
+            d = _tensor_leaf_dist(p, tu, tv, h, ua, ub, va, vb)
             if d <= η * max(du, dv) && depth < maxdepth
                 su = du > dv / 2 && η * du >= d
                 sv = dv > du / 2 && η * dv >= d
@@ -103,10 +120,9 @@ function tensor_near_row(kern, p::TensorPanel, xl; η = 1.5, maxdepth = 80)
                 end
                 continue
             end
-            pu, wu, Bu = _tensor_leaf_rule(ru, p.Lu, ku, ua, ub)
-            pv, wv, Bv = _tensor_leaf_rule(rv, p.Lv, kv, va, vb)
-            K = [kern(xl .- tensor_lpoint(p, pu[a], pv[b])) * wu[a] * wv[b]
-                 for a in eachindex(pu), b in eachindex(pv)]
+            pu, wu, Bu = _tensor_leaf_rule(ru, p.Lu, ku, cu, ua, ub)
+            pv, wv, Bv = _tensor_leaf_rule(rv, p.Lv, kv, cv, va, vb)
+            K = [kern(sep(pu[a], pv[b])) * wu[a] * wv[b] for a in eachindex(pu), b in eachindex(pv)]
             C = Bu === nothing ? K : Bu * K
             C = Bv === nothing ? C : C * Bv'
             @views rowfine[iu, iv] .+= C
@@ -211,6 +227,13 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
     Is = Vector{Int}(undef, nnz_total); Js = Vector{Int}(undef, nnz_total); Vs = Vector{T}(undef, nnz_total)
     starts = cumsum([0; [counts[pairs[k][2]] for k in eachindex(pairs)]])
     X = reduce(vcat, [p.points for p in panels])
+    # FMM3D skips pairs closer than ≈ 2^-51 × (box size); the plain term must skip the
+    # same pairs (GCQ rules for p1 → -1 put a node within ~1e-20 of the edge, which
+    # can meet its mirror node across the edge, or coincide with it in absolute
+    # coordinates). Pairs in the ambiguous band [2^-54, 2^-48] × box are counted.
+    box = maximum(maximum(x[d] for x in X) - minimum(x[d] for x in X) for d in 1:3)
+    rcut = 2.0^-54 * box
+    ambiguous = Threads.Atomic{Int}(0)
     Threads.@threads for k in eachindex(pairs)
         i, js, _, _ = pairs[k]
         ps = panels[js]
@@ -219,10 +242,46 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
         row = rows[uid[k]]
         for (jj, j) in enumerate(rng[js])
             idx = starts[k] + jj
-            plain = laplace3d_grad(ps.points[jj], xi, ni) * ps.weights[jj]
+            dr = norm(xi .- ps.points[jj])
+            dr < 2.0^-48 * box && dr >= rcut && Threads.atomic_add!(ambiguous, 1)
+            plain = dr < rcut ? zero(T) : laplace3d_grad(ps.points[jj], xi, ni) * ps.weights[jj]
             Is[idx] = i; Js[idx] = j; Vs[idx] = -row[jj] - plain
         end
     end
+    ambiguous[] > 0 && @warn "$(ambiguous[]) near pairs closer than 2^-48 × box size: FMM3D may or may not skip them"
     N = offs[end]
     return sparse(Is, Js, Vs, N, N), (pairs = length(pairs), unique = length(reps))
+end
+
+"""
+    potential_tensor(interface, σ, targets; quad_tol=1e-12, η_gcq=2.0)
+
+Single-layer potential u(x) = ∫ σ(y) / (4π|x - y|) dA(y) at off-surface `targets`
+(absolute coordinates). Panels that `tensor_isfar` accepts use their own rule; the
+others the product-integration row of `tensor_near_row` (accurate for targets close
+to edges and corners, down to the floating-point resolution of the target position).
+"""
+function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ::AbstractVector,
+                          targets::AbstractVector; quad_tol = 1e-12, η_gcq = 2.0) where T
+    panels = interface.panels
+    offs = cumsum([0; num_points.(panels)])
+    G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
+    u = zeros(T, length(targets))
+    Threads.@threads :dynamic for it in eachindex(targets)
+        x = targets[it]
+        acc = zero(T)
+        for (k, ps) in enumerate(panels)
+            σk = view(σ, offs[k]+1:offs[k+1])
+            xl = x .- ps.anchor
+            if tensor_isfar(ps, xl; quad_tol, η_gcq)
+                for (j, y) in enumerate(ps.points)
+                    acc += G(x .- y) * ps.weights[j] * σk[j]
+                end
+            else
+                acc += dot(tensor_near_row(G, ps, xl), σk)
+            end
+        end
+        u[it] = acc
+    end
+    return u
 end

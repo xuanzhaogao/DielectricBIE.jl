@@ -46,7 +46,7 @@ export laplace3d_DT_fmm3d_corrected_hcubature
 export laplace3d_D_fmm3d_corrected
 export laplace3d_pottrg_fmm3d_corrected_hcubature
 export laplace3d_pottrg_near
-export laplace3d_DT_tensor_corrections, tensor_near_row
+export laplace3d_DT_tensor_corrections, tensor_near_row, potential_tensor
 
 # shapes
 export single_dielectric_box2d, multi_dielectric_box2d
