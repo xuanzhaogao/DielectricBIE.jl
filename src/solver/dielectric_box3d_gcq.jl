@@ -44,19 +44,14 @@ GMRES on the W^{1/2}-scaled system (unknowns W^{1/2} σ, W the quadrature
 weights), which keeps the unknowns O(1)-scaled when σ is singular. Returns
 (σ, stats) with the Krylov stats.
 
-`constraints` deflates the near-null modes of high-contrast problems: as
-ε_in/ε_out → ∞ (or 0), τ → ∓1/2 and τ I + D^T has one near-zero eigenvalue per
-closed body (its equilibrium charge), which stalls GMRES. Given the bodies' total
-charges, which Gauss's law fixes (0 for a body without free charge inside, q(1 - 1/ε)
-in DielectricBIE's convention for a body of permittivity ε containing the charge
-q), pass `[(range_c, Q_c), ...]` with `range_c` the indices of body c's nodes; then
+`constraints` imposes each body's total charge, which high-contrast problems and
+perfect conductors (`eps_in = Inf`) otherwise leave undetermined. Given the total charges
+(0 for a body without free charge inside, q(1 - 1/ε) in DielectricBIE's convention for a
+body of permittivity ε containing the charge q), pass `[(range_c, Q_c), ...]` with
+`range_c` the indices of body c's nodes; then
     (A - ½ Σ_c u_c w_cᵀ) σ = b - ½ Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
-is solved instead. The true solution satisfies both systems. By Gauss's law w_c is a left
-eigenvector of A with the eigenvalue τ_c + ½ (near zero at high contrast), and the rank-one
-terms move exactly that eigenvalue to τ_c, |τ_c| ≥ ½, leaving the others unchanged. (A shift
-of +1 instead of -½ would move it to (2 - R)/(1 - R), which vanishes at contrast R = 2.)
-Without the constraint a discretization error δ enters each body's total charge amplified
-by ~ε_in/ε_out, and a perfect conductor (`eps_in = Inf`) is singular.
+is solved instead. The rank-one terms move each body's near-zero eigenvalue τ + ½ to τ
+(|τ| ≥ ½) and leave the rest of the spectrum unchanged.
 `box_charge_constraints` builds the constraints for box bodies, and
 `solve_dielectric_boxes_gcq` applies them by default.
 """
