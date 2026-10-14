@@ -50,13 +50,19 @@ closed body (its equilibrium charge), which stalls GMRES. Given the bodies' tota
 charges, which Gauss's law fixes (0 for a body without free charge inside, q(1 - 1/ε)
 in DielectricBIE's convention for a body of permittivity ε containing the charge
 q), pass `[(range_c, Q_c), ...]` with `range_c` the indices of body c's nodes; then
-    (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
-is solved instead. The true solution satisfies both systems; the rank-one terms move
-the near-zero eigenvalues to O(1). Without them a discretization error δ enters each body's
-total charge amplified by ~ε_in/ε_out, and a perfect conductor (`eps_in = Inf`) is singular.
+    (A - ½ Σ_c u_c w_cᵀ) σ = b - ½ Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
+is solved instead. The true solution satisfies both systems. By Gauss's law w_c is a left
+eigenvector of A with the eigenvalue τ_c + ½ (near zero at high contrast), and the rank-one
+terms move exactly that eigenvalue to τ_c, |τ_c| ≥ ½, leaving the others unchanged. (A shift
+of +1 instead of -½ would move it to (2 - R)/(1 - R), which vanishes at contrast R = 2.)
+Without the constraint a discretization error δ enters each body's total charge amplified
+by ~ε_in/ε_out, and a perfect conductor (`eps_in = Inf`) is singular.
 `box_charge_constraints` builds the constraints for box bodies, and
 `solve_dielectric_boxes_gcq` applies them by default.
 """
+# shift of the rank-one charge constraint: moves the equilibrium eigenvalue τ + ½ to τ
+const _CHARGE_SHIFT = -0.5
+
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
                                     rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing)
     w = all_weights(interface)
@@ -67,12 +73,12 @@ function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricI
         cs = [(collect(rg), Float64(Q), sum(w[rg])) for (rg, Q) in constraints]
         bd = copy(b)
         for (rg, Q, area) in cs
-            bd[rg] .+= Q / area
+            bd[rg] .+= _CHARGE_SHIFT * Q / area
         end
         Ad = LinearMap{Float64}(n, n) do x
             y = A * x
             for (rg, _, area) in cs
-                y[rg] .+= dot(view(w, rg), view(x, rg)) / area
+                y[rg] .+= _CHARGE_SHIFT * dot(view(w, rg), view(x, rg)) / area
             end
             y
         end

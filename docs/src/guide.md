@@ -90,19 +90,22 @@ body's total charge amplified by ≈ ε_in/ε_out (even with an exact solve), an
 and imposing it removes the mode. To keep the system square, the constraint is added as a
 rank-one term per body rather than as an extra row:
 
-    (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,    u_c = 1_c / |∂c|,
+    (A − ½ Σ_c u_c w_cᵀ) σ = b − ½ Σ_c u_c Q_c,    u_c = 1_c / |∂c|,
 
 with w_c the quadrature weights of body c, so that w_cᵀσ is its total charge. The exact solution
-satisfies both systems; u_c is the left null vector of −I/2 + Dᵀ (constants on the body), so the
-rank-one term lifts exactly the missing direction to O(1). The constrained solution then has a
-total-charge error ≈ δ at every contrast. For a single cube with the charge outside:
+satisfies both systems. By Gauss's law w_c is a left eigenvector of A with the near-zero
+eigenvalue τ + 1/2, and the rank-one term moves exactly that eigenvalue to τ (|τ| ≥ 1/2) and
+leaves the rest of the spectrum unchanged. The constrained solution then has a total-charge
+error ≈ δ at every contrast. (The size of the shift matters: a shift of +1 instead of −1/2 would
+move the eigenvalue to (2 − R)/(1 − R), which is zero at contrast R = 2.) For a single cube with
+the charge outside:
 
 | contrast | charge error, plain system | charge error, constrained | GMRES its (plain / constrained) |
 |---|---|---|---|
-| 10² | 4.5e-7 | 4.6e-9 | 36 / 33 |
-| 10⁴ | 4.4e-5 | 4.4e-9 | 41 / 34 |
-| 10⁶ | 4.4e-3 | 4.4e-9 | 45 / 34 |
-| ∞ (conductor) | 0.54 | 4.4e-9 | 50 / 34 |
+| 10² | 4.5e-7 | 9.0e-9 | 36 / 32 |
+| 10⁴ | 4.4e-5 | 8.8e-9 | 41 / 33 |
+| 10⁶ | 4.4e-3 | 8.8e-9 | 45 / 33 |
+| ∞ (conductor) | 0.54 | 8.8e-9 | 50 / 33 |
 
 Checking only the field inside a conductor does not reveal the problem: the equilibrium density
 adds a constant there. The total charge, or the field outside, does. `deflate = false` gives the

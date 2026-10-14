@@ -35,13 +35,17 @@ end
 @testset "high contrast and perfect conductors: deflation by total charge" begin
     src = PointSource((0.0, 0.9, 0.1), 1.0)                       # outside: the cube is neutral
     qerr(sol) = abs(dot(DB.all_weights(sol.interface), sol.σ)) / dot(DB.all_weights(sol.interface), abs.(sol.σ))
-    for R in (1e6, Inf)
+    # R = 2: a constraint shift of +1 would make the deflated system singular here
+    for R in (2.0, 1e6, Inf)
         r = edge_gcq_rule(R, 1.0; tol = 1e-8)
         parts = [single_dielectric_box3d_gcq(1.0, 1.0, 1.0, R, 1.0; nlev = 1, n_quad = 4, rule = r)]
         sd = solve_dielectric_boxes_gcq(parts, src; rtol = 1e-12)
         @test sd.stats.solved
         @test qerr(sd) < 1e-6
-        if isfinite(R)
+        if R == 2.0
+            sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-12)
+            @test qerr(sd) < 10 * qerr(sp)                         # low contrast: no worse than the plain system
+        elseif isfinite(R)
             sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-12)
             @test qerr(sp) > 100 * qerr(sd)                        # the plain system's charge error grows ~ R
         else
