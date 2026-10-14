@@ -1,5 +1,5 @@
-using BoundaryIntegral
-import BoundaryIntegral as BI
+using DielectricBIE
+import DielectricBIE as BI
 using LinearAlgebra
 using Random
 using Test

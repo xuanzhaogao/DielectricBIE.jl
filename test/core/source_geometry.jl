@@ -1,7 +1,7 @@
 using Test
 using LinearAlgebra
-using BoundaryIntegral
-const BI = BoundaryIntegral
+using DielectricBIE
+const BI = DielectricBIE
 
 @testset "VolumeSource lattice_basis" begin
     # --- identity-basis grid ctor: axes hold ABSOLUTE coords with step h ---

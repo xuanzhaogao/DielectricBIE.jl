@@ -1,9 +1,9 @@
 # test/solver/batch_io.jl
-using BoundaryIntegral
+using DielectricBIE
 using Test
 
 @testset "batch_io" begin
-    br = BatchResult(BoundaryIntegral.BATCH_FORMAT_VERSION, 7,
+    br = BatchResult(DielectricBIE.BATCH_FORMAT_VERSION, 7,
         [(1, 1), (1, 2)],
         [(1, 1, 1), (2, 1, 1)],
         [0.1, 0.1],
@@ -32,7 +32,7 @@ using Test
         @test_throws Exception load_batch_result(p)
 
         # wrong version -> incomplete
-        bad = BatchResult(BoundaryIntegral.BATCH_FORMAT_VERSION + 1, br.batch_id,
+        bad = BatchResult(DielectricBIE.BATCH_FORMAT_VERSION + 1, br.batch_id,
             br.pair_ids, br.gidx, br.weights, br.densities, br.interface, br.sigma, br.stats)
         save_batch_result(p, bad)
         @test !is_complete_batch(p)

@@ -1,7 +1,7 @@
-using BoundaryIntegral
+using DielectricBIE
 using FastGaussQuadrature
 using LinearAlgebra
-import BoundaryIntegral as BI
+import DielectricBIE as BI
 using LegendrePolynomials
 using Random
 using Test

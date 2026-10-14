@@ -1,10 +1,10 @@
 ```@meta
-CurrentModule = BoundaryIntegral
+CurrentModule = DielectricBIE
 ```
 
-# BoundaryIntegral.jl
+# DielectricBIE.jl
 
-BoundaryIntegral.jl solves Laplace problems with dielectric interfaces in 2D and 3D using
+DielectricBIE.jl solves Laplace problems with dielectric interfaces in 2D and 3D using
 boundary integral equations. It provides single- and double-layer operators, panel-based
 quadrature with adaptive refinement, FMM acceleration with near-field correction, volume
 charge sources, many-right-hand-side (block) solves, and a batched four-index integral
@@ -29,15 +29,15 @@ pipeline that can run distributed across a cluster.
 - Linear algebra helpers (`solve_lu`, `solve_gmres`).
 - Optional Makie visualization extension.
 
-The public API is exported, so `using BoundaryIntegral` brings it into scope directly.
+The public API is exported, so `using DielectricBIE` brings it into scope directly.
 
 ## Installation
 
-BoundaryIntegral.jl requires Julia 1.10 or later.
+DielectricBIE.jl requires Julia 1.10 or later.
 
 ```julia
 using Pkg
-Pkg.add("BoundaryIntegral")
+Pkg.add("DielectricBIE")
 ```
 
 For local development, clone the repository and run:
@@ -49,7 +49,7 @@ julia --project -e 'using Pkg; Pkg.instantiate()'
 ## Quickstart (2D)
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 # single_dielectric_box2d(Lx, Ly, n_quad, l_panel, l_corner, eps_in, eps_out[, T])
 interface = single_dielectric_box2d(1.0, 1.0, 8, 0.2, 0.05, 5.0, 1.0, Float64)
@@ -62,7 +62,7 @@ sigma = solve_lu(lhs, rhs)
 ## Quickstart (3D)
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 # single_dielectric_box3d(Lx, Ly, Lz, n_quad, l_ec, eps_in, eps_out[, T])
 interface = single_dielectric_box3d(1.2, 0.8, 0.6, 4, 0.2, 4.0, 1.0, Float64)

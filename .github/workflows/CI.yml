@@ -73,6 +73,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using BoundaryIntegral
-          DocMeta.setdocmeta!(BoundaryIntegral, :DocTestSetup, :(using BoundaryIntegral); recursive=true)
-          doctest(BoundaryIntegral)
+          using DielectricBIE
+          DocMeta.setdocmeta!(DielectricBIE, :DocTestSetup, :(using DielectricBIE); recursive=true)
+          doctest(DielectricBIE)

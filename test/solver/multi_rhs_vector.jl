@@ -1,4 +1,4 @@
-using BoundaryIntegral
+using DielectricBIE
 using Krylov
 using Test
 
@@ -26,7 +26,7 @@ using Test
 
     interface = multi_dielectric_box3d_rhs_adaptive(
         4, 2.0, boxes, epses, [vs1, vs2], 1e-2; eps_out = eps_out)
-    Np = BoundaryIntegral.num_points(interface)
+    Np = DielectricBIE.num_points(interface)
 
     @testset "vector RHS == per-column single-source" begin
         F = rhs_dielectric_box3d_fmm3d(interface, [vs1, vs2], 1e-6)

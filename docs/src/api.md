@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = BoundaryIntegral
+CurrentModule = DielectricBIE
 ```
 
 # API reference
@@ -8,15 +8,15 @@ CurrentModule = BoundaryIntegral
 ```
 
 ```@autodocs
-Modules = [BoundaryIntegral]
+Modules = [DielectricBIE]
 ```
 
 ## Internals: truncated-kernel method
 
-`BoundaryIntegral.TKM3D` evaluates the free-space Laplace potential of volume sources
+`DielectricBIE.TKM3D` evaluates the free-space Laplace potential of volume sources
 with a truncated-kernel spectral method. It is used internally by the volume-source
 right-hand sides and by [`PrecomputedVolumeField`](@ref).
 
 ```@autodocs
-Modules = [BoundaryIntegral.TKM3D]
+Modules = [DielectricBIE.TKM3D]
 ```

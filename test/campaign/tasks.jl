@@ -1,4 +1,4 @@
-using BoundaryIntegral, Test, LinearAlgebra
+using DielectricBIE, Test, LinearAlgebra
 
 @testset "eval_batch_core propagates lattice_basis on a skewed grid" begin
     # Regression guard for tasks.jl's `lb = ((At[1]/nx, ...), ...)` /
@@ -29,7 +29,7 @@ using BoundaryIntegral, Test, LinearAlgebra
               values = [exp(-((i - 2.5)^2 + (j - 2.5)^2 + (k - 2.5)^2) / 2.0)
                         for i in 1:nx, j in 1:ny, k in 1:nz])
 
-    At, Bt, Ct = BoundaryIntegral.true_cell_vectors(dg_hex)
+    At, Bt, Ct = DielectricBIE.true_cell_vectors(dg_hex)
     @test all(isapprox.(At, nx .* a1)) && all(isapprox.(Bt, ny .* a2)) && all(isapprox.(Ct, nz .* a3))
     lb_correct = (Tuple(At ./ nx), Tuple(Bt ./ ny), Tuple(Ct ./ nz))   # what eval_batch_core should compute
 
@@ -44,7 +44,7 @@ using BoundaryIntegral, Test, LinearAlgebra
     # a source with no lattice_basis would fall back to -- probed on a basis-less copy
     # of the same points, NOT through eval_batch_core.
     vs_probe = VolumeSource(copy(b_hex.positions), copy(b_hex.weights), b_hex.densities[:, 1])
-    h_iso = BoundaryIntegral._estimate_source_spacing(vs_probe)
+    h_iso = DielectricBIE._estimate_source_spacing(vs_probe)
     @info "eval_batch_core skewed-grid regression test: h_aniso=$h_aniso h_iso=$h_iso ratio=$(h_aniso / h_iso)"
     @test h_aniso / h_iso > 1.05   # genuinely different -- the property near-cubic fixtures lack
 
@@ -54,15 +54,15 @@ using BoundaryIntegral, Test, LinearAlgebra
     res_hex = solve_dielectric_lattice_batch(boxes_hex, epses_hex, eps_out_hex, b_hex;
         n_quad = 4, rhs_atol = 1e-2, l_ec = 2.0, fmm_tol = 1e-6, gmres_rtol = 1e-8)
 
-    br_hex = BoundaryIntegral.BatchResult(BoundaryIntegral.BATCH_FORMAT_VERSION, 1,
+    br_hex = DielectricBIE.BatchResult(DielectricBIE.BATCH_FORMAT_VERSION, 1,
         b_hex.pair_ids, b_hex.gidx, b_hex.weights, b_hex.densities,
         res_hex.interface, res_hex.sigma, Dict{String,Any}())
     c_hex = CampaignInput("hex_test", "", String[], OrbitalSpec[], Inf, nothing,
         eps_out_hex, boxes_hex, epses_hex,
         Dict("lhs_tol" => 1e-6, "volume_tol" => 1e-8), 1, 5.0, "")
 
-    targets_hex, store_hex = BoundaryIntegral.consolidate_core([br_hex], dg_hex, c_hex)
-    pair_ids_out, V_hex = BoundaryIntegral.eval_batch_core(br_hex, targets_hex, store_hex, dg_hex, c_hex)
+    targets_hex, store_hex = DielectricBIE.consolidate_core([br_hex], dg_hex, c_hex)
+    pair_ids_out, V_hex = DielectricBIE.eval_batch_core(br_hex, targets_hex, store_hex, dg_hex, c_hex)
 
     # Reference: hand-build the VolumeSources with the SAME correctly-derived
     # lattice_basis, independently of eval_batch_core's own construction (this is
@@ -73,7 +73,7 @@ using BoundaryIntegral, Test, LinearAlgebra
     # h means a different Section 3 Fourier box (h_n, L, dk) means a different Phi
     # -- and the comparison below will fail well outside the tight tolerance.
     K = length(br_hex.pair_ids)
-    pos_hex = BoundaryIntegral.grid_positions(dg_hex, br_hex.gidx)
+    pos_hex = DielectricBIE.grid_positions(dg_hex, br_hex.gidx)
     sources_ref = [VolumeSource(copy(pos_hex), copy(br_hex.weights), br_hex.densities[:, k];
                                 lattice_basis = lb_correct) for k in 1:K]
     Φ_ref = evaluate_batch_potential(br_hex.interface, br_hex.sigma, sources_ref, targets_hex.positions;

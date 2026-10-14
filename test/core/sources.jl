@@ -1,4 +1,4 @@
-using BoundaryIntegral
+using DielectricBIE
 using Random
 using StaticArrays
 using SpecialFunctions: erf
@@ -43,26 +43,26 @@ end
     density = collect(10.0 .+ (1:length(points)))
     src = VolumeSource(points, weights, density)
 
-    pts = collect(BoundaryIntegral.eachpoint(src))
+    pts = collect(DielectricBIE.eachpoint(src))
     @test length(pts) == length(points)
 
     first_pt = pts[1]
     @test first_pt.idx == 1
     @test first_pt.global_idx == 1
-    @test first_pt.point == BoundaryIntegral.volume_source_point(src, 1)
+    @test first_pt.point == DielectricBIE.volume_source_point(src, 1)
     @test first_pt.weight == src.weights[1]
     @test first_pt.density == src.density[1]
 
     last_pt = pts[end]
     @test last_pt.idx == length(points)
     @test last_pt.global_idx == length(points)
-    @test last_pt.point == BoundaryIntegral.volume_source_point(src, length(points))
+    @test last_pt.point == DielectricBIE.volume_source_point(src, length(points))
     @test last_pt.weight == src.weights[end]
     @test last_pt.density == src.density[end]
 end
 
 @testset "GaussianVolumeSource grid" begin
-    src = BoundaryIntegral.GaussianVolumeSource((0.0, 0.0, 0.0), 1.0, 3, 1e-2)
+    src = DielectricBIE.GaussianVolumeSource((0.0, 0.0, 0.0), 1.0, 3, 1e-2)
     @test length(src.density) == 27
     @test length(src.weights) == 27
     @test size(src.positions) == (3, 27)
@@ -77,7 +77,7 @@ end
         dens[i, j, k] = xs[i] + 2 * ys[j] + 3 * zs[k]
     end
 
-    @test_throws UndefVarError BoundaryIntegral._resample_volume_to_uniform((xs, ys, zs), dens)
+    @test_throws UndefVarError DielectricBIE._resample_volume_to_uniform((xs, ys, zs), dens)
 end
 
 @testset "VolumeSource from XSF datagrid supports parallelepiped cells" begin
@@ -89,15 +89,15 @@ end
     values = reshape(collect(1.0:(nx * ny * nz)), nx, ny, nz)
     datagrid = (nx = nx, ny = ny, nz = nz, origin = origin, A = A, B = B, C = C, values = values)
 
-    src = BoundaryIntegral.VolumeSource(datagrid)
+    src = DielectricBIE.VolumeSource(datagrid)
 
     @test length(src.density) == nx * ny * nz
     @test length(src.weights) == nx * ny * nz
 
     idx = (3 - 1) * ny * nz + (2 - 1) * nz + 1
-    @test BoundaryIntegral.volume_source_point(src, idx) == BoundaryIntegral.grid_point(datagrid, 3, 2, 1)
+    @test DielectricBIE.volume_source_point(src, idx) == DielectricBIE.grid_point(datagrid, 3, 2, 1)
 
-    At, Bt, Ct = BoundaryIntegral.true_cell_vectors(datagrid)
+    At, Bt, Ct = DielectricBIE.true_cell_vectors(datagrid)
     jac = abs(det(hcat(collect(At), collect(Bt), collect(Ct))))
     @test all(isapprox.(src.weights, fill(jac / (nx * ny * nz), nx * ny * nz)))
 end
@@ -107,7 +107,7 @@ end
     weights = [1.0, 2.0, 3.0]
     density = [1e-4, 0.2, -0.05]
 
-    src = BoundaryIntegral.VolumeSource(points, weights, density; tol = 0.1)
+    src = DielectricBIE.VolumeSource(points, weights, density; tol = 0.1)
     @test length(src.density) == 1
     @test src.density[1] == 0.2
     @test src.weights[1] == 2.0
@@ -123,25 +123,25 @@ end
     values = reshape(collect(1.0:(nx * ny * nz)), nx, ny, nz)
     datagrid = (nx = nx, ny = ny, nz = nz, origin = origin, A = A, B = B, C = C, values = values)
 
-    s_mid = BoundaryIntegral.datagrid_zslice(datagrid)
+    s_mid = DielectricBIE.datagrid_zslice(datagrid)
     @test s_mid.iz == cld(nz, 2)
     @test size(s_mid.values) == (nx, ny)
     @test s_mid.values == values[:, :, cld(nz, 2)]
 
-    s_i = BoundaryIntegral.datagrid_zslice(datagrid; iz = 2)
+    s_i = DielectricBIE.datagrid_zslice(datagrid; iz = 2)
     @test s_i.iz == 2
     @test s_i.values == values[:, :, 2]
     @test length(s_i.x) == nx
     @test length(s_i.y) == ny
 
-    z2 = BoundaryIntegral.grid_point(datagrid, 1, 1, 2)[3]
-    s_z = BoundaryIntegral.datagrid_zslice(datagrid; z = z2)
+    z2 = DielectricBIE.grid_point(datagrid, 1, 1, 2)[3]
+    s_z = DielectricBIE.datagrid_zslice(datagrid; z = z2)
     @test s_z.iz == 2
     @test s_z.values == values[:, :, 2]
 
-    @test_throws ArgumentError BoundaryIntegral.datagrid_zslice(datagrid; iz = 0)
-    @test_throws ArgumentError BoundaryIntegral.datagrid_zslice(datagrid; iz = nz + 1)
-    @test_throws ArgumentError BoundaryIntegral.datagrid_zslice(datagrid; iz = 2, z = z2)
+    @test_throws ArgumentError DielectricBIE.datagrid_zslice(datagrid; iz = 0)
+    @test_throws ArgumentError DielectricBIE.datagrid_zslice(datagrid; iz = nz + 1)
+    @test_throws ArgumentError DielectricBIE.datagrid_zslice(datagrid; iz = 2, z = z2)
 end
 
 @testset "datagrid_zslice trilinear interpolation on skew lattice for z=z0" begin
@@ -154,13 +154,13 @@ end
     datagrid0 = (nx = nx, ny = ny, nz = nz, origin = origin, A = A, B = B, C = C, values = zeros(nx, ny, nz))
 
     for i in 1:nx, j in 1:ny, k in 1:nz
-        x, y, z = BoundaryIntegral.grid_point(datagrid0, i, j, k)
+        x, y, z = DielectricBIE.grid_point(datagrid0, i, j, k)
         values[i, j, k] = 2.0 * x - 3.0 * y + 0.5 * z + 1.0
     end
     datagrid = (nx = nx, ny = ny, nz = nz, origin = origin, A = A, B = B, C = C, values = values)
 
-    z0 = BoundaryIntegral.grid_point(datagrid, 3, 3, 3)[3]
-    s = BoundaryIntegral.datagrid_zslice(
+    z0 = DielectricBIE.grid_point(datagrid, 3, 3, 3)[3]
+    s = DielectricBIE.datagrid_zslice(
         datagrid;
         z = z0,
         nx_sample = 11,

@@ -1,8 +1,8 @@
-using BoundaryIntegral
+using DielectricBIE
 using LinearAlgebra
 using Test
 
-@testset "BoundaryIntegral.jl" begin
+@testset "DielectricBIE.jl" begin
     run_full = get(ENV, "BI_RUN_FULL_TESTS", "0") == "1"
 
 

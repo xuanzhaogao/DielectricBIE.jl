@@ -24,7 +24,7 @@
 # Only N_iter is being compared, so the two runs of a case always share one interface and
 # one RHS; nothing but the preconditioner changes between them.
 
-using BoundaryIntegral
+using DielectricBIE
 using LinearAlgebra
 using Printf
 
@@ -74,7 +74,7 @@ function run_case(label, boxes, epses, src_center; eps_out = 1.0)
     vs = gaussian_source(src_center, SRC_WIDTH)
     interface = multi_dielectric_box3d_rhs_adaptive(NQUAD, LEC, boxes, epses, [vs], RHS_TOL;
         eps_out = eps_out, max_depth = MAXDEPTH)
-    N = BoundaryIntegral.num_points(interface)
+    N = DielectricBIE.num_points(interface)
     gs = contrasts(interface)
     s = dielectric_diagonal_scaling(interface)
     # cond(G) as seen by GMRES: the spread of the diagonal clusters.

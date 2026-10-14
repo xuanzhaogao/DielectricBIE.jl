@@ -1,11 +1,11 @@
-using BoundaryIntegral
+using DielectricBIE
 using Test
 
 @testset "manifest" begin
-    centers = BoundaryIntegral.CenterInfo[
-        BoundaryIntegral.CenterInfo(1, 1, (0,0,0),   (0.0, 0.0, 0.0)),
-        BoundaryIntegral.CenterInfo(2, 2, (0,0,0),   (0.5, 0.5, 0.0)),
-        BoundaryIntegral.CenterInfo(3, 1, (2,0,0),   (1.0, 0.0, 0.0)),
+    centers = DielectricBIE.CenterInfo[
+        DielectricBIE.CenterInfo(1, 1, (0,0,0),   (0.0, 0.0, 0.0)),
+        DielectricBIE.CenterInfo(2, 2, (0,0,0),   (0.5, 0.5, 0.0)),
+        DielectricBIE.CenterInfo(3, 1, (2,0,0),   (1.0, 0.0, 0.0)),
     ]
     pairs = enumerate_pairs(centers, 0.8)        # on-site + the d=0.707 (1,2) pair; not (1,3)@1.0
     @test all(p -> p[1] <= p[2], pairs)

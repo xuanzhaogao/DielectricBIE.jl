@@ -534,14 +534,14 @@ four_index_integrals(toml_path::AbstractString) =
     four_index_integrals(load_campaign(toml_path))
 
 # ---------------------------------------------------------------------------
-# run_phase stub (implemented by BoundaryIntegralDistributedExt)
+# run_phase stub (implemented by DielectricBIEDistributedExt)
 # ---------------------------------------------------------------------------
 
 """
     run_phase(c, phase; workers=0)
 
 Parallel driver for `:solve`/`:eval` over `pending_batches`. Implemented by the
-`BoundaryIntegralDistributedExt` extension (load `Distributed` + `SlurmClusterManager`).
+`DielectricBIEDistributedExt` extension (load `Distributed` + `SlurmClusterManager`).
 Without the extension loaded, this errors with a hint.
 """
 function run_phase end
@@ -551,9 +551,9 @@ function run_phase end
 
 Callable mapped over pending batch ids by `run_phase`. Lives in the core package —
 not the Distributed extension — because `pmap` serializes its function to workers,
-and workers load only `BoundaryIntegral` (never the extension, which needs
+and workers load only `DielectricBIE` (never the extension, which needs
 SlurmClusterManager). An extension-owned closure cannot be deserialized there: the
-worker hits `KeyError: PkgId(... BoundaryIntegralDistributedExt) not found`, the
+worker hits `KeyError: PkgId(... DielectricBIEDistributedExt) not found`, the
 failure wedges the message stream, and `pmap` waits forever.
 """
 struct PhaseRunner

@@ -1,4 +1,4 @@
-using BoundaryIntegral, Distributed, SlurmClusterManager, Test
+using DielectricBIE, Distributed, SlurmClusterManager, Test
 include("fixture_campaign.jl")
 
 @testset "run_phase local workers" begin

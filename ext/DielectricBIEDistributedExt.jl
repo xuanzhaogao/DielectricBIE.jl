@@ -1,6 +1,6 @@
-module BoundaryIntegralDistributedExt
+module DielectricBIEDistributedExt
 
-using BoundaryIntegral
+using DielectricBIE
 using Distributed
 using SlurmClusterManager
 
@@ -18,10 +18,10 @@ function _spawn(workers::Int)
     end
 end
 
-function BoundaryIntegral.run_phase(c::BoundaryIntegral.CampaignInput, phase::Symbol; workers::Int = 0)
+function DielectricBIE.run_phase(c::DielectricBIE.CampaignInput, phase::Symbol; workers::Int = 0)
     phase in (:solve, :eval) || error("run_phase: phase must be :solve or :eval")
     _spawn(workers)
-    @everywhere eval(:(using BoundaryIntegral))
+    @everywhere eval(:(using DielectricBIE))
     # workers buffer non-TTY stdio (Julia 1.12) — flush periodically so their progress
     # output reaches the master/log live ( @everywhere ships an AST, not a closure ✓ )
     @everywhere Timer(_ -> (flush(stdout); flush(stderr)), 2; interval = 2)
@@ -32,7 +32,7 @@ function BoundaryIntegral.run_phase(c::BoundaryIntegral.CampaignInput, phase::Sy
     # an ext-owned closure deserialization-fails there and wedges pmap (see PhaseRunner).
     # That includes on_error — pmap wraps it INTO the function it ships (wrap_on_error
     # runs before remote() in pmap), so it must be a named non-ext function: identity.
-    results = pmap(BoundaryIntegral.PhaseRunner(c.toml_path, phase), pending;
+    results = pmap(DielectricBIE.PhaseRunner(c.toml_path, phase), pending;
                    retry_delays = [30.0], on_error = identity)
     ok = count(r -> r isa Tuple && r[2] === :ok, results)
     @info "run_phase finished" phase ok failed=length(results)-ok

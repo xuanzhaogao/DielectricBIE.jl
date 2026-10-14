@@ -1,5 +1,5 @@
-using BoundaryIntegral
-import BoundaryIntegral as BI
+using DielectricBIE
+import DielectricBIE as BI
 using FastGaussQuadrature, LinearAlgebra
 using Test
 

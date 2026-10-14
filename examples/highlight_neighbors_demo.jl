@@ -1,5 +1,5 @@
-using BoundaryIntegral
-using BoundaryIntegral: build_neighbor_list, AbstractPanel, DielectricInterface
+using DielectricBIE
+using DielectricBIE: build_neighbor_list, AbstractPanel, DielectricInterface
 using LinearAlgebra
 using CairoMakie
 

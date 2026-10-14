@@ -1,9 +1,9 @@
 [deps]
-BoundaryIntegral = "c5e3a73d-e4f2-41fa-921b-bb4fcd908115"
+DielectricBIE = "545cc770-a0cd-418c-9705-d15e859ed411"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 
 [sources]
-BoundaryIntegral = {path = ".."}
+DielectricBIE = {path = ".."}
 
 [compat]
 Documenter = "1"

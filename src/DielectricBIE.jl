@@ -1,4 +1,4 @@
-module BoundaryIntegral
+module DielectricBIE
 
 using LinearAlgebra
 using SparseArrays, StaticArrays

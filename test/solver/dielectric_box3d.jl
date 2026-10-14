@@ -1,5 +1,5 @@
-using BoundaryIntegral
-import BoundaryIntegral as BI
+using DielectricBIE
+import DielectricBIE as BI
 using LinearAlgebra, Krylov
 using Random
 using SpecialFunctions: erf
@@ -264,8 +264,8 @@ end
 end
 
 @testset "dielectric_box3d volume backend wiring" begin
-    root = pkgdir(BoundaryIntegral)
-    entrypoint = read(joinpath(root, "src", "BoundaryIntegral.jl"), String)
+    root = pkgdir(DielectricBIE)
+    entrypoint = read(joinpath(root, "src", "DielectricBIE.jl"), String)
     shape_dir = joinpath(root, "src", "shape")
     shape_sources = join([read(joinpath(shape_dir, f), String)
                           for f in readdir(shape_dir) if endswith(f, ".jl")], "\n")

@@ -1,4 +1,4 @@
-using BoundaryIntegral, Serialization, LinearAlgebra, Test
+using DielectricBIE, Serialization, LinearAlgebra, Test
 include("fixture_campaign.jl")
 
 @testset "prepare + serial phases + in-memory" begin
@@ -26,7 +26,7 @@ include("fixture_campaign.jl")
         # is kept only to reproduce assemble_v's reconstruction exactly.
         Vb = fill(NaN, length(pid), length(pid))
         for b in read_manifest(manifest_path(c))
-            vr = BoundaryIntegral.load_v_rows(v_path(c, b.batch_id))
+            vr = DielectricBIE.load_v_rows(v_path(c, b.batch_id))
             @test length(vr.rows) == size(vr.V, 1)
             @test vr.target_pairs == pid[vr.rows]
             for (k, sp) in enumerate(vr.source_pairs)

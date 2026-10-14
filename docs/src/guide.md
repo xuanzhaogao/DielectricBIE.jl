@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = BoundaryIntegral
+CurrentModule = DielectricBIE
 ```
 
 # User guide
@@ -15,7 +15,7 @@ solve with GMRES. In 3D, `lhs_dielectric_box3d_fmm3d_corrected` adds the near-fi
 correction needed for accuracy near the surface.
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 interface = single_dielectric_box2d(1.0, 1.0, 8, 0.2, 0.05, 5.0, 1.0, Float64)
 lhs_fmm = lhs_dielectric_box2d_fmm2d(interface, 1e-12)
@@ -33,7 +33,7 @@ drive the right-hand side of a dielectric problem on an interface that is adapti
 refined to resolve that source:
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 # A Gaussian charge sampled on a uniform midpoint grid: positions (3×N), weights, density.
 n, h = 24, 1.2 / 24
@@ -68,7 +68,7 @@ For several sources sharing one interface, assemble and block-solve all right-ha
 at once, then contract into the four-index Coulomb matrix `V[a, b]`:
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 # vss::Vector{VolumeSource} on a shared interface that resolves all of them
 # (e.g. built with multi_dielectric_box3d_rhs_adaptive)
@@ -80,7 +80,7 @@ V = four_index_matrix(interface, vss, sigma; lhs_tol = 1e-6, volume_tol = 1e-6)
 
 Plotting helpers (`viz_2d`, `viz_3d`, `viz_3d_surface`, `viz_3d_interface_solution`,
 `viz_3d_zslice`, `plot_campaign_geometry`) live in a Makie package extension. Install Makie
-and a backend, then load the backend alongside `BoundaryIntegral`:
+and a backend, then load the backend alongside `DielectricBIE`:
 
 ```julia
 using Pkg
@@ -89,7 +89,7 @@ Pkg.add(["Makie", "CairoMakie"])
 
 ```julia
 using CairoMakie
-using BoundaryIntegral
+using DielectricBIE
 
 interface = single_dielectric_box3d(1.2, 0.8, 0.6, 4, 0.2, 4.0, 1.0, Float64)
 fig = viz_3d(interface)

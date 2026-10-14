@@ -1,14 +1,14 @@
-using BoundaryIntegral
+using DielectricBIE
 using FastGaussQuadrature
 using Random
 using Test
 
 @testset "interface uniform grid sampling" begin
-    interface = BoundaryIntegral.single_dielectric_box3d(1.0, 1.0, 1.0, 3, 0.3, 2.0, 1.0, Float64)
+    interface = DielectricBIE.single_dielectric_box3d(1.0, 1.0, 1.0, 3, 0.3, 2.0, 1.0, Float64)
     sigma = [point.panel_point.point[1] + 2.0 * point.panel_point.point[2] - 0.5 * point.panel_point.point[3]
-             for point in BoundaryIntegral.eachpoint(interface)]
+             for point in DielectricBIE.eachpoint(interface)]
 
-    surfaces = BoundaryIntegral.interface_uniform_samples(interface, sigma; n_sample = 4)
+    surfaces = DielectricBIE.interface_uniform_samples(interface, sigma; n_sample = 4)
 
     @test length(surfaces) == 6
     for s in surfaces
@@ -39,7 +39,7 @@ end
     ns = Float64.(ns)
     ws = Float64.(ws)
 
-    panel = BoundaryIntegral.rect_panel3d_discretize(
+    panel = DielectricBIE.rect_panel3d_discretize(
         (-1.0, -1.0, 0.0),
         (1.0, -1.0, 0.0),
         (1.0, 1.0, 0.0),
@@ -48,7 +48,7 @@ end
         ws,
         (0.0, 0.0, 1.0),
     )
-    interface = BoundaryIntegral.DielectricInterface([panel], [2.0], [1.0])
+    interface = DielectricBIE.DielectricInterface([panel], [2.0], [1.0])
 
     coeffx = randn(n_quad)
     coeffy = randn(n_quad)
@@ -56,7 +56,7 @@ end
         _eval_poly(coeffx, point[1]) + _eval_poly(coeffy, point[2])
         for point in panel.points
     ]
-    approx = BoundaryIntegral.interface_approx(interface, vals)
+    approx = DielectricBIE.interface_approx(interface, vals)
 
     worst = 0.0
     for _ in 1:200

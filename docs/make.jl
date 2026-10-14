@@ -1,14 +1,14 @@
-using BoundaryIntegral
+using DielectricBIE
 using Documenter
 
-DocMeta.setdocmeta!(BoundaryIntegral, :DocTestSetup, :(using BoundaryIntegral); recursive=true)
+DocMeta.setdocmeta!(DielectricBIE, :DocTestSetup, :(using DielectricBIE); recursive=true)
 
 makedocs(;
-    modules=[BoundaryIntegral],
+    modules=[DielectricBIE],
     authors="Xuanzhao Gao <xgao@flatironinstitute.org> and contributors",
-    sitename="BoundaryIntegral.jl",
+    sitename="DielectricBIE.jl",
     format=Documenter.HTML(;
-        canonical="https://xuanzhaogao.github.io/BoundaryIntegral.jl",
+        canonical="https://xuanzhaogao.github.io/DielectricBIE.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -22,6 +22,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/xuanzhaogao/BoundaryIntegral.jl",
+    repo="github.com/xuanzhaogao/DielectricBIE.jl",
     devbranch="main",
 )

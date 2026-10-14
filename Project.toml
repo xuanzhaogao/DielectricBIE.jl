@@ -1,5 +1,5 @@
-name = "BoundaryIntegral"
-uuid = "c5e3a73d-e4f2-41fa-921b-bb4fcd908115"
+name = "DielectricBIE"
+uuid = "545cc770-a0cd-418c-9705-d15e859ed411"
 version = "0.1.0"
 authors = ["Xuanzhao Gao <xgao@flatironinstitute.org> and contributors"]
 
@@ -29,8 +29,8 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
 
 [extensions]
-BoundaryIntegralDistributedExt = ["Distributed", "SlurmClusterManager"]
-MakieExt = ["Makie"]
+DielectricBIEDistributedExt = ["Distributed", "SlurmClusterManager"]
+DielectricBIEMakieExt = ["Makie"]
 
 [compat]
 Distributed = "1"

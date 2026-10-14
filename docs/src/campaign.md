@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = BoundaryIntegral
+CurrentModule = DielectricBIE
 ```
 
 # Lattice campaigns
@@ -68,7 +68,7 @@ far_pad_steps = 2.0
 ## Running serially
 
 ```julia
-using BoundaryIntegral
+using DielectricBIE
 
 c = load_campaign("campaign.toml")
 prepare(c)
@@ -90,7 +90,7 @@ enable it. Spawning policy: inside a Slurm allocation with more than one task it
 `workers = 0` and no allocation it runs inline.
 
 ```julia
-using BoundaryIntegral, Distributed, SlurmClusterManager
+using DielectricBIE, Distributed, SlurmClusterManager
 
 c = load_campaign("campaign.toml")
 prepare(c)

@@ -1,4 +1,4 @@
-using BoundaryIntegral
+using DielectricBIE
 using Test
 
 @testset "toml_input" begin
@@ -27,7 +27,7 @@ using Test
     @test endswith(batch_path(c, 7), "batches/batch_0007.jls")
     @test endswith(v_path(c, 12), "V/V_0012.jls")
     @test endswith(manifest_path(c), "manifest.tsv")
-    @test BoundaryIntegral.campaign_l_ec(c) ≈ 2.0     # l_ec given directly
+    @test DielectricBIE.campaign_l_ec(c) ≈ 2.0     # l_ec given directly
 end
 
 @testset "pair_overrides parse" begin

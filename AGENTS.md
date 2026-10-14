@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/` holds the BoundaryIntegral.jl module and submodules (`core/`, `kernel/`, `solver/`, `shape/`, `utils/`, `visualization/`).
+- `src/` holds the DielectricBIE.jl module and submodules (`core/`, `kernel/`, `solver/`, `shape/`, `utils/`, `visualization/`).
 - `test/` mirrors `src/` with focused test files and a `test/runtests.jl` entry point.
 - `docs/` contains Documenter.jl sources and build script.
-- `ext/` provides optional integrations (e.g., `MakieExt.jl`).
+- `ext/` provides optional integrations (e.g., `DielectricBIEMakieExt.jl`).
 
 ## Build, Test, and Development Commands
 - Instantiate deps: `julia --project -e 'using Pkg; Pkg.instantiate()'`
@@ -28,5 +28,5 @@
 - Link related issues when applicable and update docs/examples if behavior changes.
 
 ## Optional: Docs & Visualization Notes
-- `Makie` support is optional via `ext/MakieExt.jl`; keep visualization code backend-agnostic and let users load their preferred Makie backend.
+- `Makie` support is optional via `ext/DielectricBIEMakieExt.jl`; keep visualization code backend-agnostic and let users load their preferred Makie backend.
 - Keep documentation changes scoped to `docs/src/` and validate with the docs build command.

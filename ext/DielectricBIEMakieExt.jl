@@ -1,12 +1,12 @@
-module MakieExt
+module DielectricBIEMakieExt
 
 using Makie
-using BoundaryIntegral
-using BoundaryIntegral: VolumeSource
-using BoundaryIntegral: AbstractPanel, DielectricInterface, build_neighbor_list
+using DielectricBIE
+using DielectricBIE: VolumeSource
+using DielectricBIE: AbstractPanel, DielectricInterface, build_neighbor_list
 
-import BoundaryIntegral: viz_2d, viz_3d, viz_3d_surface, viz_3d_interface_solution, viz_3d_zslice, num_points, eachpoint
-import BoundaryIntegral: plot_campaign_geometry
+import DielectricBIE: viz_2d, viz_3d, viz_3d_surface, viz_3d_interface_solution, viz_3d_zslice, num_points, eachpoint
+import DielectricBIE: plot_campaign_geometry
 
 function _resample_volume_to_uniform(axes::NTuple{3, Vector{T}}, density::AbstractArray{T, 3}) where {T}
     xs, ys, zs = axes
@@ -781,7 +781,7 @@ function viz_3d_zslice!(
     log_floor::Real = 1e-16,
     colormap = nothing,
 )
-    s = BoundaryIntegral.datagrid_zslice(
+    s = DielectricBIE.datagrid_zslice(
         datagrid;
         iz = iz,
         z = z,
@@ -875,7 +875,7 @@ function viz_3d_interface_solution(
     add_colorbar::Bool = true,
     size = (700, 600),
 ) where {P <: AbstractPanel, T}
-    samples = BoundaryIntegral.interface_uniform_samples(interface, values; n_sample = n_sample)
+    samples = DielectricBIE.interface_uniform_samples(interface, values; n_sample = n_sample)
     isempty(samples) && throw(ArgumentError("no interface surfaces detected for visualization"))
 
     lo = typemax(Float64)
@@ -984,7 +984,7 @@ _axis3(fig, cell, title) = Axis3(fig[cell...]; aspect = :data, xlabel = "x (bohr
 `view` ∈ (:full, :zoom, :both): full extent, zoom on the orbital block, or a two-panel figure
 with both. `margin_frac` (default 0.5) sets the zoom padding around the orbital bounding box.
 """
-function plot_campaign_geometry(c::BoundaryIntegral.CampaignInput;
+function plot_campaign_geometry(c::DielectricBIE.CampaignInput;
         view::Symbol = :both, size = nothing, colormap = :viridis,
         box_linewidth = 1.5, orbital_markersize = 7, margin_frac = 0.5)
     view in (:full, :zoom, :both) || throw(ArgumentError("view must be :full, :zoom, or :both"))
@@ -1016,6 +1016,6 @@ function plot_campaign_geometry(c::BoundaryIntegral.CampaignInput;
 end
 
 plot_campaign_geometry(toml_path::AbstractString; kwargs...) =
-    plot_campaign_geometry(BoundaryIntegral.load_campaign(toml_path); kwargs...)
+    plot_campaign_geometry(DielectricBIE.load_campaign(toml_path); kwargs...)
 
 end

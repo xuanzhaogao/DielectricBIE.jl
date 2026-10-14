@@ -1,5 +1,5 @@
 # test/solver/lattice_batch.jl
-using BoundaryIntegral
+using DielectricBIE
 using Test
 using LinearAlgebra
 
@@ -7,7 +7,7 @@ using LinearAlgebra
     fixdir = joinpath(@__DIR__, "..", "fixtures")
 
     @testset "lattice_grid_steps" begin
-        st, dg = BoundaryIntegral.read_xsf(joinpath(fixdir, "orb_lat.xsf"))
+        st, dg = DielectricBIE.read_xsf(joinpath(fixdir, "orb_lat.xsf"))
         # orb_lat: 4x4x4 grid, span 1.5 (true cell 2.0, step 0.5), primvec = I => 2 steps/cell
         @test lattice_grid_steps(dg, st.primvec, (1, 0, 0)) == (2, 0, 0)
         @test lattice_grid_steps(dg, st.primvec, (0, -2, 1)) == (0, -4, 2)
@@ -18,18 +18,18 @@ using LinearAlgebra
         inst = OrbitalInstance(7, 1, (2, 0, 0))
         @test inst.id == 7 && inst.template_id == 1 && inst.steps == (2, 0, 0)
         # frames of length 4 offset by 0 and 2 overlap on global indices 3:4
-        @test BoundaryIntegral._frame_overlap(4, 0, 2) == 3:4
-        @test BoundaryIntegral._frame_overlap(4, 2, 0) == 3:4
-        @test BoundaryIntegral._frame_overlap(4, 0, 0) == 1:4
-        @test BoundaryIntegral._frame_overlap(4, 0, 4) === nothing   # disjoint
-        @test BoundaryIntegral._frame_overlap(4, 0, 9) === nothing
-        @test BoundaryIntegral._frame_overlap(4, 0, -2) == 1:2   # negative offset
-        @test BoundaryIntegral._frame_overlap(4, -2, 0) == 1:2   # symmetric
-        @test BoundaryIntegral._frame_overlap(4, 0, 3) == 4:4    # single-point overlap
+        @test DielectricBIE._frame_overlap(4, 0, 2) == 3:4
+        @test DielectricBIE._frame_overlap(4, 2, 0) == 3:4
+        @test DielectricBIE._frame_overlap(4, 0, 0) == 1:4
+        @test DielectricBIE._frame_overlap(4, 0, 4) === nothing   # disjoint
+        @test DielectricBIE._frame_overlap(4, 0, 9) === nothing
+        @test DielectricBIE._frame_overlap(4, 0, -2) == 1:2   # negative offset
+        @test DielectricBIE._frame_overlap(4, -2, 0) == 1:2   # symmetric
+        @test DielectricBIE._frame_overlap(4, 0, 3) == 4:4    # single-point overlap
     end
 
     @testset "assemble_lattice_batch multi-anchor + disjoint pair" begin
-        st, dg = BoundaryIntegral.read_xsf(joinpath(fixdir, "orb_smooth.xsf"))
+        st, dg = DielectricBIE.read_xsf(joinpath(fixdir, "orb_smooth.xsf"))
         s1 = lattice_grid_steps(dg, st.primvec, (1, 0, 0))
         insts = Dict(1 => OrbitalInstance(1, 1, (0, 0, 0)),
                      2 => OrbitalInstance(2, 1, s1),
@@ -53,7 +53,7 @@ using LinearAlgebra
     # shared solved batch for evaluation tests (coarse)
     # Uses the .toml-based setup (system_smooth_lat.toml replaces system_smooth_lat.bie)
     c_e = load_campaign(joinpath(fixdir, "system_smooth_lat.toml"))
-    st_e, dg_e = BoundaryIntegral.read_xsf(c_e.templates[1])
+    st_e, dg_e = DielectricBIE.read_xsf(c_e.templates[1])
     insts_e = Dict(1 => OrbitalInstance(1, 1, (0, 0, 0)),
                    2 => OrbitalInstance(2, 1, lattice_grid_steps(dg_e, st_e.primvec, (1, 0, 0))))
     b_e = assemble_lattice_batch([dg_e], insts_e, [(1, 1), (1, 2)]; support_rtol = 1e-6)
@@ -90,11 +90,11 @@ using LinearAlgebra
         # same near_field_geometry the code under test uses instead.
         pottrg = laplace3d_pottrg_fmm3d_corrected_hcubature(res_e.interface, targets, 1e-6, 1e-6, 5.0)
         for a in 1:2
-            sa = BoundaryIntegral.screened_volume_source(res_e.interface, res_e.sources[a],
-                BoundaryIntegral.SharpScreening())
-            fld = BoundaryIntegral.PrecomputedVolumeField(sa;
+            sa = DielectricBIE.screened_volume_source(res_e.interface, res_e.sources[a],
+                DielectricBIE.SharpScreening())
+            fld = DielectricBIE.PrecomputedVolumeField(sa;
                 tol = 1e-8, c_pad = 5.0, compute_grad = false)
-            Φ_inc = BoundaryIntegral.volume_field_potential(fld, targets)
+            Φ_inc = DielectricBIE.volume_field_potential(fld, targets)
             Φ_ref = Φ_inc .+ (pottrg * res_e.sigma[:, a])
             scale = maximum(abs.(Φ_ref))
             @test maximum(abs.(Φ[:, a] .- Φ_ref)) < 1e-5 * scale
@@ -119,15 +119,15 @@ using LinearAlgebra
         far = hcat(([8.0 * cos(t) + 1.5, 8.0 * sin(t) + 1.5, 1.5] for t in range(0, 2π; length = 17)[1:16])...)
         targets = hcat(pts[:, 1:97:end], far)          # subsample of near points + far ring
 
-        Σ0 = zeros(BoundaryIntegral.num_points(res_e.interface), 1)   # layer part off: pure u_inc test
+        Σ0 = zeros(DielectricBIE.num_points(res_e.interface), 1)   # layer part off: pure u_inc test
         Φ = evaluate_batch_potential(res_e.interface, Σ0, [vs_res], targets;
             lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
 
-        sa = BoundaryIntegral.screened_volume_source(res_e.interface, vs_res,
-            BoundaryIntegral.SharpScreening())
-        vals = BoundaryIntegral.TKM3D.ltkm3dc(1e-8, sa.positions;
+        sa = DielectricBIE.screened_volume_source(res_e.interface, vs_res,
+            DielectricBIE.SharpScreening())
+        vals = DielectricBIE.TKM3D.ltkm3dc(1e-8, sa.positions;
             charges = sa.weights .* sa.density, targets = targets, pgt = 1,
-            kmax = BoundaryIntegral._estimate_tkm3dc_kmax(sa))
+            kmax = DielectricBIE._estimate_tkm3dc_kmax(sa))
         @test vals.ier == 0
         Φ_ref = real.(vals.pottarg)
         scale = maximum(abs.(Φ_ref))
@@ -138,15 +138,15 @@ using LinearAlgebra
         # K = 2 with a genuine near/far split (nd = 2 far reshape path)
         den2 = den .* (pts[1, :] .- 1.5).^2                    # second, distinct density
         vs_res2 = VolumeSource(copy(pts), fill(h^3, nres^3), den2)
-        Σ0_2 = zeros(BoundaryIntegral.num_points(res_e.interface), 2)
+        Σ0_2 = zeros(DielectricBIE.num_points(res_e.interface), 2)
         Φ2 = evaluate_batch_potential(res_e.interface, Σ0_2, [vs_res, vs_res2], targets;
             lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
         for (a, v) in enumerate((vs_res, vs_res2))
-            sa2 = BoundaryIntegral.screened_volume_source(res_e.interface, v,
-                BoundaryIntegral.SharpScreening())
-            vals2 = BoundaryIntegral.TKM3D.ltkm3dc(1e-8, sa2.positions;
+            sa2 = DielectricBIE.screened_volume_source(res_e.interface, v,
+                DielectricBIE.SharpScreening())
+            vals2 = DielectricBIE.TKM3D.ltkm3dc(1e-8, sa2.positions;
                 charges = sa2.weights .* sa2.density, targets = targets, pgt = 1,
-                kmax = BoundaryIntegral._estimate_tkm3dc_kmax(sa2))
+                kmax = DielectricBIE._estimate_tkm3dc_kmax(sa2))
             @test vals2.ier == 0
             ref = real.(vals2.pottarg)
             max_rel_diff2 = maximum(abs.(Φ2[:, a] .- ref)) / maximum(abs.(ref))
@@ -199,14 +199,14 @@ using LinearAlgebra
         for v in batch_volume_sources(b_e)
             @test v.lattice_basis == b_e.lattice_basis
         end
-        @test BoundaryIntegral.envelope_volume_source(b_e).lattice_basis == b_e.lattice_basis
+        @test DielectricBIE.envelope_volume_source(b_e).lattice_basis == b_e.lattice_basis
 
         # The batch split agrees with the shared helper on the screened source.
         targets = b_e.positions
-        sa = BoundaryIntegral.screened_volume_source(res_e.interface, res_e.sources[1],
-            BoundaryIntegral.SharpScreening())
-        g = BoundaryIntegral.near_field_geometry(sa; c_pad = 5.0)
-        @test all(BoundaryIntegral.in_near_region(g, targets, i) for i in 1:size(targets, 2))
+        sa = DielectricBIE.screened_volume_source(res_e.interface, res_e.sources[1],
+            DielectricBIE.SharpScreening())
+        g = DielectricBIE.near_field_geometry(sa; c_pad = 5.0)
+        @test all(DielectricBIE.in_near_region(g, targets, i) for i in 1:size(targets, 2))
 
         # Bound the un-rerun Section 6.4 change: how much does c_pad 2 -> 5 move Phi?
         # This is measured on `b_e`, the coarse fixture whose own comment (line
@@ -259,11 +259,11 @@ using LinearAlgebra
             den_g[mg] = exp(-((x - 1.5)^2 + (y - 1.5)^2 + (z - 1.5)^2) / (2 * 0.4^2))
         end
         vs_g = VolumeSource(pts_g, fill(hg^3, nres_g^3), den_g)
-        sa_g = BoundaryIntegral.screened_volume_source(res_e.interface, vs_g,
-            BoundaryIntegral.SharpScreening())
-        g2_g = BoundaryIntegral.near_field_geometry(sa_g; c_pad = 2.0)
-        g5_g = BoundaryIntegral.near_field_geometry(sa_g; c_pad = 5.0)
-        loB_g, hiB_g, _ = BoundaryIntegral.source_box(sa_g)
+        sa_g = DielectricBIE.screened_volume_source(res_e.interface, vs_g,
+            DielectricBIE.SharpScreening())
+        g2_g = DielectricBIE.near_field_geometry(sa_g; c_pad = 2.0)
+        g5_g = DielectricBIE.near_field_geometry(sa_g; c_pad = 5.0)
+        loB_g, hiB_g, _ = DielectricBIE.source_box(sa_g)
         hn_mid_g = (g2_g.hn + g5_g.hn) / 2
         c_g = g2_g.center
         straddle_g = Matrix{Float64}(undef, 3, 6)
@@ -277,11 +277,11 @@ using LinearAlgebra
         far_ring_g = hcat(([8.0 * cos(t) + 1.5, 8.0 * sin(t) + 1.5, 1.5]
             for t in range(0, 2π; length = 17)[1:16])...)
         targets_g = hcat(near_sub_g, straddle_g, far_ring_g)
-        nflip_g = count(i -> BoundaryIntegral.in_near_region(g2_g, targets_g, i) !=
-                             BoundaryIntegral.in_near_region(g5_g, targets_g, i), 1:size(targets_g, 2))
+        nflip_g = count(i -> DielectricBIE.in_near_region(g2_g, targets_g, i) !=
+                             DielectricBIE.in_near_region(g5_g, targets_g, i), 1:size(targets_g, 2))
         @test nflip_g > 0   # the straddle points must actually flip classification
 
-        Σ0_g = zeros(BoundaryIntegral.num_points(res_e.interface), 1)
+        Σ0_g = zeros(DielectricBIE.num_points(res_e.interface), 1)
         Φ2_g = evaluate_batch_potential(res_e.interface, Σ0_g, [vs_g], targets_g;
             lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 2.0)
         Φ5_g = evaluate_batch_potential(res_e.interface, Σ0_g, [vs_g], targets_g;
