@@ -41,6 +41,20 @@ using Test
     γs = γs[γs .<= 11.5]
     ex = sort(vcat([2m + s * γs[1] for m in 0:6 for s in (-1, 1) if 0 < 2m + s * γs[1] <= 11.5], 2.0 .* (1:5)))
     @test length(γs) == length(ex) && maximum(abs.(γs .- ex)) < 1e-8
+    # nearly coincident simple roots (γ1 ≈ 1, so γ1 and 2 - γ1 share one grid cell):
+    # low contrast, and a seam between two nearly equal permittivities
+    classes(γ1, gmax) = sort(vcat([2m + s * γ1 for m in 0:ceil(Int, gmax / 2) for s in (-1, 1)
+                                   if 0 < 2m + s * γ1 <= gmax], 2.0 .* (1:floor(Int, gmax / 2))))
+    for ε in (1.0001, 1.00001)
+        λ = (ε - 1) / (ε + 1)
+        q = 2 / π * asin(λ / 2)
+        γ = filter(<=(5.9), edge_density_powers(ε, 1.0; gmax = 6.0) .+ 1)
+        @test γ[1] ≈ 1 - q rtol = 1e-6
+        @test length(γ) == length(classes(1 - q, 5.9)) && maximum(abs.(γ .- classes(1 - q, 5.9))) < 1e-9
+    end
+    γn = filter(<=(5.9), junction_powers([π, π / 2, π / 2], [1.0, 10.0, 10.001]; gmax = 6.0))
+    @test 1 - 1e-4 < γn[1] < 1
+    @test length(γn) == length(classes(γn[1], 5.9)) && maximum(abs.(γn .- classes(γn[1], 5.9))) < 1e-9
     # p1 → -1 (checkerboard edge at contrast ~1e6): graded grid, nodes kept off the edge
     rs = edge_gcq_rule([-0.999, 0.999, 1.0]; tol = 1e-12, qmax = 12.0)
     @test edge_gcq_family_error(rs) < 1e-10
