@@ -27,3 +27,10 @@ julia --project=docs docs/make.jl
 ```
 
 The built site is written to `docs/build/`.
+
+## Branches
+
+Development happens on `dev`: open pull requests against `dev`, not `main`. `main` only
+receives `dev` when a release is cut, and registered versions are tagged from it. CI runs on
+pull requests and on pushes to both branches; the `dev` documentation is built from `dev`, the
+`stable` documentation from release tags.

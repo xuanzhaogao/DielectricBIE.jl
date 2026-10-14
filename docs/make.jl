@@ -23,5 +23,5 @@ makedocs(;
 
 deploydocs(;
     repo="github.com/xuanzhaogao/DielectricBIE.jl",
-    devbranch="main",
+    devbranch="dev",
 )
