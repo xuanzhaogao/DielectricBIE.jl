@@ -88,7 +88,7 @@ function batched_lhs_dielectric_box3d_fmm3d_corrected(
     for i in 1:length(interface.panels)
         eps_in = interface.eps_in[i]; eps_out = interface.eps_out[i]
         np = num_points(interface.panels[i])
-        t = 0.5 * (eps_out + eps_in) / (eps_out - eps_in)
+        t = dielectric_tau(eps_in, eps_out)
         for j in 1:np
             diag[offset + j] = t
         end
@@ -237,7 +237,7 @@ function dielectric_diagonal_scaling(interface::DielectricInterface{P, Float64})
     for i in 1:length(interface.panels)
         eps_in = interface.eps_in[i]; eps_out = interface.eps_out[i]
         np = num_points(interface.panels[i])
-        t = 0.5 * (eps_out + eps_in) / (eps_out - eps_in)
+        t = dielectric_tau(eps_in, eps_out)
         for j in 1:np
             s[offset + j] = 1 / t
         end

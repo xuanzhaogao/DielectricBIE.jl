@@ -29,6 +29,11 @@ conductors. They will be released from `main` once complete.
 
 - Laplace single- and double-layer operators in 2D and 3D.
 - Dielectric interface builders for box geometries, with adaptive panel refinement.
+- Box meshes with generalized Chebyshev quadrature (GCQ) edge panels built from the exact
+  edge-singularity powers (`edge_gcq_rule`), for one or several dielectric or perfectly
+  conducting boxes, including high-contrast junctions where the edge power approaches −1.
+- Total-charge constraints per body (Gauss's law) that keep high-contrast and conductor
+  solves accurate (`solve_dielectric_boxes_gcq`).
 - Direct and FMM-accelerated linear operators (with near-field correction) for iterative solves.
 - Volume charge sources, plus a reusable precomputed spectral field (`PrecomputedVolumeField`)
   for fast repeated potential/gradient evaluation and right-hand-side assembly.

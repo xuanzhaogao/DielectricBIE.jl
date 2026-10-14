@@ -60,10 +60,20 @@ end
     edge_density_powers(eps_in, eps_out; angle=π/2, gmax=20.0)
 
 Density powers p_k = γ_k - 1 at the edge of a dielectric wedge of opening
-`angle` (permittivity `eps_in`) in a medium `eps_out`.
+`angle` (permittivity `eps_in`) in a medium `eps_out`. A perfect conductor is
+`eps_in = Inf` (or `eps_out = Inf` for a conducting exterior): the potential then
+satisfies a Dirichlet condition on the other sector, of opening β, and
+γ_k = kπ/β, which is also the limit of the dielectric roots as the contrast → ∞
+(for a right angle: p = -1/3, 1/3, 1, 5/3, ...).
 """
-edge_density_powers(eps_in::Real, eps_out::Real; angle::Real = pi / 2, gmax::Real = 20.0) =
-    junction_powers([2pi - angle, angle], [Float64(eps_out), Float64(eps_in)]; gmax) .- 1
+function edge_density_powers(eps_in::Real, eps_out::Real; angle::Real = pi / 2, gmax::Real = 20.0)
+    isinf(eps_in) && isinf(eps_out) && throw(ArgumentError("eps_in and eps_out cannot both be infinite"))
+    if isinf(eps_in) || isinf(eps_out)
+        β = isinf(eps_in) ? 2pi - angle : angle                  # opening of the dielectric sector
+        return [k * pi / β - 1 for k in 1:floor(Int, gmax * β / pi)]
+    end
+    return junction_powers([2pi - angle, angle], [Float64(eps_out), Float64(eps_in)]; gmax) .- 1
+end
 
 """
     EdgeGCQRule

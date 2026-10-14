@@ -42,6 +42,7 @@ using Test
 
     # single box with GCQ edge panels (tensor panels, FMM + near corrections)
     include("solver/dielectric_box3d_gcq.jl")
+    include("solver/dielectric_boxes_gcq.jl")
 
     # multi-rhs solver
     include("solver/multi_rhs.jl")

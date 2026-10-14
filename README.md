@@ -11,6 +11,11 @@ quadrature with adaptive refinement, FMM acceleration with near-field correction
 charge sources, many-right-hand-side (block) solves, and a batched four-index integral
 pipeline that can run distributed across a cluster.
 
+For box geometries it resolves edge singularities with generalized Chebyshev quadrature
+built from the exact edge powers, handles several touching or separated bodies of any
+contrast, including perfect conductors (`eps_in = Inf`), and imposes each body's total
+charge (Gauss's law) so that high-contrast solves stay accurate.
+
 ## Versions
 
 The `main` branch holds the released code, which produced the results of *Adaptive Boundary-Integral Computation of Screened Coulomb Integrals in Dielectric Environments*.
@@ -48,7 +53,8 @@ The [documentation](https://xuanzhaogao.github.io/DielectricBIE.jl/dev/) covers:
 
 - [Getting started](https://xuanzhaogao.github.io/DielectricBIE.jl/dev/) — 2D and 3D quickstarts.
 - [User guide](https://xuanzhaogao.github.io/DielectricBIE.jl/dev/guide/) — FMM-accelerated solves,
-  volume sources and precomputed fields, many right-hand sides, four-index integrals, visualization.
+  GCQ edge panels, several bodies, high contrast and perfect conductors, volume sources and
+  precomputed fields, many right-hand sides, four-index integrals, visualization.
 - [Lattice campaigns](https://xuanzhaogao.github.io/DielectricBIE.jl/dev/campaign/) — batched,
   restartable four-index runs, with optional distributed/Slurm execution.
 - [API reference](https://xuanzhaogao.github.io/DielectricBIE.jl/dev/api/)

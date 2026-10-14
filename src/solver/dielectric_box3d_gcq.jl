@@ -4,8 +4,7 @@
 # `laplace3d_DT_tensor_corrections`.
 
 function _tensor_tau(interface::DielectricInterface)
-    return reduce(vcat, [fill(0.5 * (interface.eps_out[i] + interface.eps_in[i]) /
-                                   (interface.eps_out[i] - interface.eps_in[i]), num_points(p))
+    return reduce(vcat, [fill(dielectric_tau(interface.eps_in[i], interface.eps_out[i]), num_points(p))
                          for (i, p) in enumerate(interface.panels)])
 end
 
@@ -53,7 +52,10 @@ in DielectricBIE's convention for a body of permittivity ε containing the charg
 q), pass `[(range_c, Q_c), ...]` with `range_c` the indices of body c's nodes; then
     (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
 is solved instead. The true solution satisfies both systems; the rank-one terms move
-the near-zero eigenvalues to O(1).
+the near-zero eigenvalues to O(1). Without them a discretization error δ enters each body's
+total charge amplified by ~ε_in/ε_out, and a perfect conductor (`eps_in = Inf`) is singular.
+`box_charge_constraints` builds the constraints for box bodies, and
+`solve_dielectric_boxes_gcq` applies them by default.
 """
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
                                     rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing)

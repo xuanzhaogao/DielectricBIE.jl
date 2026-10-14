@@ -7,7 +7,7 @@ function lhs_dielectric_box2d(interface::DielectricInterface{P, T}) where {P <: 
         eps_in = interface.eps_in[i]
         eps_out = interface.eps_out[i]
         n_pts = num_points(panel)
-        t = 0.5 * (eps_out + eps_in) / (eps_out - eps_in)
+        t = dielectric_tau(eps_in, eps_out)
         for j in 1:n_pts
             Lhs[offset + j, offset + j] += t
         end
@@ -29,7 +29,7 @@ function lhs_dielectric_box2d_fmm2d(interface::DielectricInterface{P, T}, tol::F
             eps_in = interface.eps_in[i]
             eps_out = interface.eps_out[i]
             n_pts = num_points(panel)
-            t = 0.5 * (eps_out + eps_in) / (eps_out - eps_in)
+            t = dielectric_tau(eps_in, eps_out)
             for j in 1:n_pts
                 Dx[offset + j] += t * x[offset + j]
             end

@@ -54,6 +54,83 @@ The error then falls by about 3× per vertex level, the rate of the vertex
 singularity (σ ~ ρ^{−0.397} for ε = 10). Use a Gauss–Legendre order of at least 6:
 lower orders cannot resolve the part of σ driven by the source.
 
+The rule integrates the edge expansion up to a largest exponent `qmax`. The density alone is
+resolved with `qmax ≈ 10`, but the far-field rows integrate the density *times* the kernel,
+which adds smooth content: for targets one to two panel widths away the error is about 1e-9
+at `qmax = 10` and reaches 1e-12 at `qmax ≈ 20–24`, for 4–5 more nodes per edge panel.
+
+## Several bodies, high contrast and perfect conductors
+
+Several boxes are meshed separately (one `single_dielectric_box3d_gcq` per body, placed with
+`center`) and solved together. `solve_dielectric_boxes_gcq` joins the bodies, assembles the
+FMM operator and the right-hand side (each point charge scaled by the permittivity of the
+region containing it), and solves with one total-charge constraint per body:
+
+```julia
+using DielectricBIE, LinearAlgebra
+
+R = 1e4                                                   # contrast; Inf = perfect conductor
+rule = edge_gcq_rule(R, 1.0; tol = 1e-12, qmax = 24.0)
+parts = [single_dielectric_box3d_gcq(1.0, 1.0, 1.0, R, 1.0; nlev = 4, n_quad = 8, rule, center = c)
+         for c in ((-0.75, 0.0, 0.0), (0.75, 0.0, 0.0))]
+sol = solve_dielectric_boxes_gcq(parts, PointSource((0.0, 0.9, 0.1), 1.0))
+sol.σ, sol.interface, sol.bodies                          # density, joined interface, node ranges
+```
+
+**Why the constraint.** As a body's contrast ε_in/ε_out grows, the diagonal coefficient
+τ = (ε_out + ε_in)/(2(ε_out − ε_in)) tends to −1/2 and τ I + Dᵀ acquires one near-zero
+eigenvalue per closed body, τ + 1/2 = 1/(1 − ε_in/ε_out). Its eigenvector is the body's
+equilibrium density: a charged conductor, whose potential is constant inside. Nothing in the
+plain equations pins down how much of it is present, so a discretization error δ enters each
+body's total charge amplified by ≈ ε_in/ε_out (even with an exact solve), and at
+`eps_in = Inf` the mode is a null vector. Gauss's law fixes the total charge of every body,
+
+    Q_c = Σ_{charges q inside c} q (1/ε_out − 1/ε_in(c))      (0 for a body without charge),
+
+and imposing it removes the mode. To keep the system square, the constraint is added as a
+rank-one term per body rather than as an extra row:
+
+    (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,    u_c = 1_c / |∂c|,
+
+with w_c the quadrature weights of body c, so that w_cᵀσ is its total charge. The exact solution
+satisfies both systems; u_c is the left null vector of −I/2 + Dᵀ (constants on the body), so the
+rank-one term lifts exactly the missing direction to O(1). The constrained solution then has a
+total-charge error ≈ δ at every contrast. For a single cube with the charge outside:
+
+| contrast | charge error, plain system | charge error, constrained | GMRES its (plain / constrained) |
+|---|---|---|---|
+| 10² | 4.5e-7 | 4.6e-9 | 36 / 33 |
+| 10⁴ | 4.4e-5 | 4.4e-9 | 41 / 34 |
+| 10⁶ | 4.4e-3 | 4.4e-9 | 45 / 34 |
+| ∞ (conductor) | 0.54 | 4.4e-9 | 50 / 34 |
+
+Checking only the field inside a conductor does not reveal the problem: the equilibrium density
+adds a constant there. The total charge, or the field outside, does. `deflate = false` gives the
+plain system; `box_charge_constraints` builds the constraints for `solve_dielectric_box3d_gcq`
+when the operator is assembled by hand.
+
+**Perfect conductors.** Pass `eps_in = Inf`: `dielectric_tau` gives τ = −1/2, and
+`edge_density_powers(Inf, 1.0)` gives the conductor edge powers γ_k = kπ/(2π − α) (for a right
+angle p = −1/3, 1/3, 1, 5/3, …, the limit of the dielectric roots). A source inside a conductor
+is rejected.
+
+**Touching boxes.** Where two boxes share an edge, that edge is a junction of four sectors and
+needs its own rule, e.g. for two boxes of permittivity R meeting along the z-axis edge with
+vacuum in the other two quadrants (p₁ = (4/π) atan(1/√R) − 1 → −1 as R grows):
+
+```julia
+r_shared = edge_gcq_rule(junction_powers(fill(pi / 2, 4), [R, 1.0, R, 1.0]; gmax = 2.5) .- 1;
+                         tol = 1e-12, qmax = 24.0)
+shared(m, axis) = (axis == 3 && abs(m[1]) < 1e-12 && abs(m[2]) < 1e-12) ? r_shared : nothing
+parts = [single_dielectric_box3d_gcq(1.0, 1.0, 1.0, R, 1.0; nlev = 4, n_quad = 8, rule,
+                                     edge_rule = shared, center = c)
+         for c in ((0.5, 0.5, 0.5), (-0.5, -0.5, 0.5))]
+```
+
+The shared edge itself adds no local error at any contrast; the remaining limit is the vertex
+at its end, whose exponent also tends to 0 as R grows. Touching perfect conductors (p₁ = −1)
+are not supported: the density is no longer integrable.
+
 ## Volume sources and precomputed fields
 
 A `VolumeSource` is a volume charge density sampled on a quadrature grid: positions

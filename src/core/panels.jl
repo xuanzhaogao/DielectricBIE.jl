@@ -69,6 +69,22 @@ end
 
 Base.show(io::IO, d::DielectricInterface{P, T}) where {P <: AbstractPanel, T} = print(io, "DielectricInterface with $(length(d.panels)) panels in $T")
 
+"""
+    dielectric_tau(eps_in, eps_out)
+
+Diagonal coefficient τ = (ε_out + ε_in) / (2 (ε_out - ε_in)) of the interface equation
+(τ I + Dᵀ) σ = rhs. It is evaluated as τ = (r + 1) / (2 (r - 1)) with r = ε_out / ε_in, so that a
+perfect conductor inside (`eps_in = Inf`) gives τ = -1/2 and `eps_out = Inf` gives τ = +1/2.
+"""
+function dielectric_tau(eps_in::Real, eps_out::Real)
+    isinf(eps_in) && isinf(eps_out) && throw(ArgumentError("eps_in and eps_out cannot both be infinite"))
+    eps_in == eps_out && throw(ArgumentError("eps_in == eps_out: no interface"))
+    isinf(eps_in) && return -0.5
+    isinf(eps_out) && return 0.5
+    r = eps_out / eps_in
+    return 0.5 * (r + 1) / (r - 1)
+end
+
 # Iterator for DielectricInterface - iterates over all quadrature points across all panels
 struct DielectricPointInfo{T, D}
     panel_point::FlatPanelPointInfo{T, D}

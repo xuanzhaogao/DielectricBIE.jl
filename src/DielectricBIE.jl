@@ -19,7 +19,7 @@ using .TKM3D
 
 #core types
 export FlatPanel
-export DielectricInterface
+export DielectricInterface, dielectric_tau
 export rhs_approx
 export interface_approx
 export interface_uniform_samples
@@ -66,6 +66,7 @@ export Rhs_dielectric_box3d, Rhs_dielectric_box3d_fmm3d, Rhs_dielectric_box3d_hy
 # linear algebra
 export solve_lu, solve_gmres
 export lhs_dielectric_box3d_gcq_fmm3d, lhs_dielectric_box3d_gcq_dense, solve_dielectric_box3d_gcq
+export join_bodies, source_permittivity, box_charge_constraints, solve_dielectric_boxes_gcq
 
 export density_centroid
 
@@ -142,6 +143,7 @@ include("utils/xsf_reader.jl")
 include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
 include("solver/dielectric_box3d_gcq.jl")
+include("solver/dielectric_boxes_gcq.jl")
 include("solver/multi_rhs.jl")
 include("solver/lattice_batch.jl")
 include("solver/batch_io.jl")
