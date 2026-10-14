@@ -1,7 +1,7 @@
 name = "DielectricBIE"
 uuid = "545cc770-a0cd-418c-9705-d15e859ed411"
 version = "0.1.0"
-authors = ["Xuanzhao Gao <xgao@flatironinstitute.org> and contributors"]
+authors = ["Xuanzhao Gao <xgao@flatironinstitute.org> and Alex Barnett <abarnett@flatironinstitute.org> and Jason Kaye <jkaye@flatironinstitute.org>"]
 
 [deps]
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
