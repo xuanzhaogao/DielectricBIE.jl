@@ -53,7 +53,7 @@ export single_dielectric_box2d, multi_dielectric_box2d
 export single_dielectric_box3d, multi_dielectric_box3d
 export single_dielectric_box3d_rhs_adaptive, multi_dielectric_box3d_rhs_adaptive
 export single_dielectric_box3d_rhs_adaptive_varquad
-export single_dielectric_box3d_gcq
+export single_dielectric_box3d_gcq, multi_dielectric_box3d_gcq, MultiBoxGCQ
 
 # solvers
 export lhs_dielectric_box2d, lhs_dielectric_box2d_fmm2d, rhs_dielectric_box2d
@@ -128,6 +128,7 @@ include("shape/volume_field.jl") # precomputed spectral volume field
 include("shape/box3d_rhs_adaptive.jl") # RHS-adaptive builders
 include("shape/box3d_multi.jl") # multi-box builders
 include("shape/box3d_gcq.jl") # single box with GCQ edge panels
+include("shape/box3d_multi_gcq.jl") # several boxes with GCQ edge panels, shared faces meshed once
 
 # # utilities
 include("utils/linear_algebra.jl")

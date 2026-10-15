@@ -94,17 +94,34 @@ Returns a named tuple `(σ, interface, bodies, constraints, stats)`. Use `deflat
 the plain system; it is accurate only at moderate contrast, since its error in each body's total
 charge grows like the contrast (see `solve_dielectric_box3d_gcq`).
 """
-function solve_dielectric_boxes_gcq(parts::AbstractVector{<:DielectricInterface}, sources; deflate::Bool = true,
-                                    fmm_tol::Real = 1e-13, quad_tol::Real = 1e-12, η_gcq::Real = 2.0,
-                                    rtol::Real = 1e-13, itmax::Int = 1000)
+function solve_dielectric_boxes_gcq(parts::AbstractVector{<:DielectricInterface}, sources; deflate::Bool = true, kw...)
     srcs = sources isa PointSource ? [sources] : collect(sources)
     interface, bodies = join_bodies(parts)
+    constraints = deflate ? box_charge_constraints(parts, srcs; bodies) : nothing
+    return _solve_boxes_gcq(interface, bodies, srcs, x -> source_permittivity(parts, x), constraints; kw...)
+end
+
+"""
+    solve_dielectric_boxes_gcq(mesh::MultiBoxGCQ, sources; deflate = true, fmm_tol = 1e-13,
+                               quad_tol = 1e-12, η_gcq = 2.0, rtol = 1e-13, itmax = 1000)
+
+The same for a mesh from `multi_dielectric_box3d_gcq` (boxes that may share faces), with one
+total-charge constraint per cluster of face-sharing boxes. `bodies` in the result are the
+clusters' node ranges.
+"""
+function solve_dielectric_boxes_gcq(m::MultiBoxGCQ, sources; deflate::Bool = true, kw...)
+    srcs = sources isa PointSource ? [sources] : collect(sources)
+    constraints = deflate ? box_charge_constraints(m, srcs) : nothing
+    return _solve_boxes_gcq(m.interface, m.bodies, srcs, x -> source_permittivity(m, x), constraints; kw...)
+end
+
+function _solve_boxes_gcq(interface, bodies, srcs, epsat, constraints; fmm_tol::Real = 1e-13,
+                          quad_tol::Real = 1e-12, η_gcq::Real = 2.0, rtol::Real = 1e-13, itmax::Int = 1000)
     A, _ = lhs_dielectric_box3d_gcq_fmm3d(interface, Float64(fmm_tol); quad_tol, η_gcq)
     b = zeros(Float64, num_points(interface))
     for s in srcs
-        b .+= rhs_dielectric_box3d(interface, s, Float64(source_permittivity(parts, s.point)))
+        b .+= rhs_dielectric_box3d(interface, s, Float64(epsat(s.point)))
     end
-    constraints = deflate ? box_charge_constraints(parts, srcs; bodies) : nothing
     σ, stats = solve_dielectric_box3d_gcq(A, b, interface; rtol, itmax, constraints)
     return (σ = σ, interface = interface, bodies = bodies, constraints = constraints, stats = stats)
 end
