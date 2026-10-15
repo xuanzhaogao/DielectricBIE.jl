@@ -42,13 +42,21 @@ function junction_powers(angles::AbstractVector, eps::AbstractVector;
     for i in 1:length(gs)-1
         fs[i] * fs[i+1] < 0 && push!(roots, bisect(f, gs[i], gs[i+1]))
     end
+    # A local minimum of |det| without a sign change on the grid is either a double
+    # root or two simple roots inside one grid cell (e.g. γ1 ≈ 1 at low contrast,
+    # where γ1 and 2 - γ1 nearly coincide). The extremum g0 tells them apart: if det
+    # changes sign there, bracket one root on each side of it. Rounding at true
+    # double roots is ~1e-30 fscale, far below the 1e-20 threshold.
     h = 1e-6
     df = g -> (f(g + h) - f(g - h)) / 2h
     for i in 2:length(gs)-1
         if abs(fs[i]) < abs(fs[i-1]) && abs(fs[i]) < abs(fs[i+1]) &&
-           fs[i-1] * fs[i+1] > 0 && df(gs[i-1]) * df(gs[i+1]) < 0
+           fs[i-1] * fs[i] > 0 && fs[i] * fs[i+1] > 0 && df(gs[i-1]) * df(gs[i+1]) < 0
             g0 = bisect(df, gs[i-1], gs[i+1])
-            if abs(f(g0)) < 1e-10 * fscale && all(abs.(roots .- g0) .> 1e-8)
+            f0 = f(g0)
+            if f0 * fs[i] < 0 && abs(f0) > 1e-20 * fscale
+                append!(roots, (bisect(f, gs[i-1], g0), bisect(f, g0, gs[i+1])))
+            elseif abs(f0) < 1e-10 * fscale && all(abs.(roots .- g0) .> 1e-8)
                 push!(roots, g0)
             end
         end
