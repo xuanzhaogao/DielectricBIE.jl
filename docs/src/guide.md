@@ -113,6 +113,34 @@ The shared edge itself adds no local error at any contrast; the remaining limit 
 at its end, whose exponent also tends to 0 as R grows. Touching perfect conductors (p₁ = −1)
 are not supported: the density is no longer integrable.
 
+**Boxes sharing faces.** Meshing boxes separately is exact only while they touch along edges
+or at vertices. A face shared by two boxes must be meshed once, as an ε_A | ε_B interface,
+not as two coincident box-to-exterior surfaces. `multi_dielectric_box3d_gcq` takes the same box
+list as `multi_dielectric_box3d`:
+- It puts the boxes on the grid of all their face coordinates and meshes every interface
+  rectangle once.
+- It gives every edge the GCQ rule of its own junction, from `junction_powers`. These are the
+  cube edges, the triple junctions (vacuum π, ε_A π/2, ε_B π/2) where a shared face meets the
+  outside, and four-sector edges; equal junctions share one rule.
+- It refines toward true vertices only.
+
+```julia
+boxes = [(center = (-0.5, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0),
+         (center = (0.5, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]
+mesh = multi_dielectric_box3d_gcq(boxes, [2.0, 10.0], 1.0; nlev = 4, n_quad = 8,
+                                  tol = 1e-12, qmax = 24.0)
+sol = solve_dielectric_boxes_gcq(mesh, PointSource((-0.4, 0.1, 0.15), 1.0))
+```
+
+The total-charge constraints are imposed per cluster of boxes joined by shared faces
+(`mesh.clusters`, node ranges `mesh.bodies`), the charge inside a closed surface around the
+cluster. A surface around one box of a face-sharing pair would cut through its neighbour.
+At high contrast the constraint is less effective for such a cluster than for a single box.
+The near-null mode's left vector is weighted by the permittivity jumps across the shared
+face, not constant over the cluster. A cluster can also have further near-null modes: two
+high-contrast boxes joined through a low-contrast one carry a +q/−q mode, which the cluster's
+total charge does not fix. Treat high-contrast face-sharing clusters with care.
+
 ## Volume sources and precomputed fields
 
 A `VolumeSource` is a volume charge density sampled on a quadrature grid: positions

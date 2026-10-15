@@ -32,6 +32,8 @@ conductors. They will be released from `main` once complete.
 - Box meshes with generalized Chebyshev quadrature (GCQ) edge panels built from the exact
   edge-singularity powers (`edge_gcq_rule`), for one or several dielectric or perfectly
   conducting boxes, including high-contrast junctions where the edge power approaches −1.
+  Boxes may share faces (`multi_dielectric_box3d_gcq`): each shared face is meshed once and
+  every edge gets the rule of its own junction.
 - Total-charge constraints per body (Gauss's law) that keep high-contrast and conductor
   solves accurate (`solve_dielectric_boxes_gcq`).
 - Direct and FMM-accelerated linear operators (with near-field correction) for iterative solves.
