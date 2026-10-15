@@ -77,37 +77,19 @@ sol = solve_dielectric_boxes_gcq(parts, PointSource((0.0, 0.9, 0.1), 1.0))
 sol.σ, sol.interface, sol.bodies                          # density, joined interface, node ranges
 ```
 
-**Why the constraint.** As a body's contrast ε_in/ε_out grows, the diagonal coefficient
-τ = (ε_out + ε_in)/(2(ε_out − ε_in)) tends to −1/2 and τ I + Dᵀ acquires one near-zero
-eigenvalue per closed body, τ + 1/2 = 1/(1 − ε_in/ε_out). Its eigenvector is the body's
-equilibrium density: a charged conductor, whose potential is constant inside. Nothing in the
-plain equations pins down how much of it is present, so a discretization error δ enters each
-body's total charge amplified by ≈ ε_in/ε_out (even with an exact solve), and at
-`eps_in = Inf` the mode is a null vector. Gauss's law fixes the total charge of every body,
+**The total-charge constraint.** At high contrast (and for `eps_in = Inf`) the plain system
+does not pin down each body's total charge: its error grows like ε_in/ε_out. Gauss's law fixes
+the total charge of every body,
 
     Q_c = Σ_{charges q inside c} q (1/ε_out − 1/ε_in(c))      (0 for a body without charge),
 
-and imposing it removes the mode. To keep the system square, the constraint is added as a
-rank-one term per body rather than as an extra row:
+and the solver imposes it through a rank-one term per body, keeping the system square:
 
-    (A + Σ_c u_c w_cᵀ) σ = b + Σ_c u_c Q_c,    u_c = 1_c / |∂c|,
+    (A − ½ Σ_c u_c w_cᵀ) σ = b − ½ Σ_c u_c Q_c,    u_c = 1_c / |∂c|,
 
-with w_c the quadrature weights of body c, so that w_cᵀσ is its total charge. The exact solution
-satisfies both systems; u_c is the left null vector of −I/2 + Dᵀ (constants on the body), so the
-rank-one term lifts exactly the missing direction to O(1). The constrained solution then has a
-total-charge error ≈ δ at every contrast. For a single cube with the charge outside:
-
-| contrast | charge error, plain system | charge error, constrained | GMRES its (plain / constrained) |
-|---|---|---|---|
-| 10² | 4.5e-7 | 4.6e-9 | 36 / 33 |
-| 10⁴ | 4.4e-5 | 4.4e-9 | 41 / 34 |
-| 10⁶ | 4.4e-3 | 4.4e-9 | 45 / 34 |
-| ∞ (conductor) | 0.54 | 4.4e-9 | 50 / 34 |
-
-Checking only the field inside a conductor does not reveal the problem: the equilibrium density
-adds a constant there. The total charge, or the field outside, does. `deflate = false` gives the
-plain system; `box_charge_constraints` builds the constraints for `solve_dielectric_box3d_gcq`
-when the operator is assembled by hand.
+with w_c the quadrature weights of body c. `deflate = false` gives the plain system;
+`box_charge_constraints` builds the constraints for `solve_dielectric_box3d_gcq` when the
+operator is assembled by hand.
 
 **Perfect conductors.** Pass `eps_in = Inf`: `dielectric_tau` gives τ = −1/2, and
 `edge_density_powers(Inf, 1.0)` gives the conductor edge powers γ_k = kπ/(2π − α) (for a right
