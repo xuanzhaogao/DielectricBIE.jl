@@ -106,6 +106,7 @@ Operator backends of the solve phase, from the optional `[backend]` table of the
 [backend]
 far = "sctl"        # "fmm3d" (default) or "sctl": SCTLFarField(tol = solve.lhs_tol)
 near = "upsampled"  # "upsampled" (default) or "sctl": SCTLNearQuad() (needs far = "sctl")
+potential = "sctl"  # eval phase: "hcubature" (default) or "sctl": SCTLPotential(tol = solve.lhs_tol)
 ```
 
 The SCTL backends need SCTL.jl in the environment; `run_phase` then loads it on every process.
@@ -125,8 +126,23 @@ function campaign_backend(c::CampaignInput)
     return far, near
 end
 
+"""
+    campaign_potential(c) -> Union{Nothing, PotentialEvaluator}
+
+The off-surface potential evaluator of the eval phase, from `potential` in the `[backend]` table
+(`nothing`: the default `HCubaturePotential`); see [`campaign_backend`](@ref).
+"""
+function campaign_potential(c::CampaignInput)
+    b = isfile(c.toml_path) ? get(TOML.parsefile(c.toml_path), "backend", Dict()) : Dict()
+    s = get(b, "potential", "hcubature")
+    s == "hcubature" && return nothing
+    s == "sctl" && return SCTLPotential(c.solve["lhs_tol"])
+    error("$(c.toml_path): [backend] potential must be \"hcubature\" or \"sctl\", got \"$s\"")
+end
+
 "Whether the campaign's `[backend]` uses SCTL.jl (see [`campaign_backend`](@ref))."
-campaign_uses_sctl(c::CampaignInput) = any(x -> x isa Union{SCTLFarField, SCTLNearQuad}, campaign_backend(c))
+campaign_uses_sctl(c::CampaignInput) =
+    any(x -> x isa Union{SCTLFarField, SCTLNearQuad}, campaign_backend(c)) || campaign_potential(c) isa SCTLPotential
 
 manifest_path(c::CampaignInput)  = joinpath(c.root, "manifest.tsv")
 centers_path(c::CampaignInput)   = joinpath(c.root, "centers.tsv")

@@ -9,6 +9,21 @@ HAVE_SCTL && @eval using SCTL
 
 relerr(a, b) = norm(a - b) / norm(b)
 
+# single-layer potential of the interpolated density at x, by adaptive cubature over every panel (reference)
+function _ref_potential(itf, σ, x; rtol = 1e-12)
+    acc = 0.0; off = 0
+    for p in itf.panels
+        nq = p.n_quad; vals = permutedims(reshape(σ[off+1:off+nq^2], nq, nq)); off += nq^2
+        a, b, c, d = p.corners; cc = collect((a .+ b .+ c .+ d) ./ 4); bma = collect(b .- a); dma = collect(d .- a)
+        area = norm(bma) * norm(dma); rx = zeros(nq); ry = zeros(nq)
+        f = uv -> (BI.barycentric_row!(rx, p.gl_xs, p.bary_weights, uv[1]); BI.barycentric_row!(ry, p.gl_xs, p.bary_weights, uv[2]);
+                   dot(rx, vals * ry) / (4π * norm(x .- (cc .+ bma .* (uv[1] / 2) .+ dma .* (uv[2] / 2)))) * area / 4)
+        acc += BI.HCubature.hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
+                                      rtol = rtol, atol = 1e-15, maxevals = 10^7)[1]
+    end
+    return acc
+end
+
 # a self-defined near quadrature: any NearQuadrature with a near_corrections method
 struct WrappedQuad <: BI.NearQuadrature
     inner::BI.NearQuadrature
@@ -46,6 +61,12 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
     Ag_ref, _ = lhs_dielectric_box3d_gcq_fmm3d(gcq, 1e-12)
     Ag = dielectric_operator(gcq; far = FMM3DFarField(1e-12))           # default near: GCQNearQuad()
     @test relerr(Ag * xg, Ag_ref * xg) < 1e-12
+    # corrections restricted to source panels: the GCQ method and the generic fallback (drop the other columns)
+    gl = findall(p -> p.kind == :gl, gcq.panels); other = setdiff(eachindex(gcq.panels), gl)
+    Cg_all = BI.near_corrections(GCQNearQuad(), gcq)
+    @test BI.near_corrections(GCQNearQuad(), gcq, gl) + BI.near_corrections(GCQNearQuad(), gcq, other) ≈ Cg_all
+    @test BI.near_corrections(CorrectionMatrix(Cg_all), gcq, other) == BI.near_corrections(GCQNearQuad(), gcq, other)
+    @test default_polynomial_panel(gcq.panels[gl[1]]) && !default_polynomial_panel(gcq.panels[other[1]])
 
     # campaign [backend] table
     mktempdir() do dir
@@ -57,6 +78,10 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test BI.campaign_uses_sctl(cfg("\n[backend]\nfar = \"sctl\"\n"))
         @test_throws ErrorException BI.campaign_backend(cfg("\n[backend]\nnear = \"sctl\"\n"))
         @test_throws ErrorException BI.campaign_backend(cfg("\n[backend]\nfar = \"fmm2d\"\n"))
+        @test BI.campaign_potential(cfg("")) === nothing
+        @test BI.campaign_potential(cfg("\n[backend]\npotential = \"sctl\"\n")) isa SCTLPotential
+        @test BI.campaign_uses_sctl(cfg("\n[backend]\npotential = \"sctl\"\n"))
+        @test_throws ErrorException BI.campaign_potential(cfg("\n[backend]\npotential = \"fmm\"\n"))
     end
 
     if HAVE_SCTL
@@ -84,6 +109,85 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         Ags = dielectric_operator(gcq; far = SCTLFarField(tol = 1e-12))
         @test relerr(Ags * xg, Ag_ref * xg) < 1e-10
 
+        # SCTL's near correction as a matrix: with FMM3D's far field it is SCTL's operator again
+        Anc = dielectric_operator(itf; far = FMM3DFarField(1e-12), near = SCTLNearCorrection(tol = 1e-10))
+        @test relerr(Anc * X, Aq * X) < 1e-8          # quadratures at 1e-10 vs 1e-12
+        @test relerr(dielectric_operator(mixed; far = FMM3DFarField(1e-12), near = SCTLNearCorrection(tol = 1e-11)) * xm,
+                     Am_ref * xm) < 1e-7
+
+        # a near quadrature written in Julia on SCTL's classification: DielectricBIE's adaptive quadtree for the
+        # accurate rows (its moments use the panel's Lagrange basis, so they act on nodal values), the node rule where
+        # D^T vanishes (targets in the panel's plane)
+        small = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
+        nl = sctl_near_list(small; tol = 1e-10)
+        @test nl isa SCTL.NearList && SCTL.nelem(nl) == length(small.panels)
+        Xs, Ns = BI._interface_targets_normals(small)
+        cfg = BI.AdaptiveConfig(atol = 1e-12)
+        offs = cumsum([0; [BI.num_points(p) for p in small.panels]])
+        owner = reduce(vcat, [fill(k, BI.num_points(p)) for (k, p) in enumerate(small.panels)])
+        acc = map(eachindex(small.panels)) do k
+            p = small.panels[k]
+            ts = SCTL.near_targets(nl, k)
+            @test all(t -> t in ts, offs[k]+1:offs[k+1])      # a panel's own nodes are near it
+            B = dt_node_rule_block(small, k, ts)
+            for k2 in unique(owner[ts])
+                coplanar = abs(dot(p.normal, small.panels[k2].normal)) > 1 - 1e-12 &&
+                           abs(dot(p.normal, small.panels[k2].points[1] .- p.points[1])) < 1e-12
+                coplanar && continue
+                rows = findall(t -> owner[t] == k2, ts)
+                K = zeros(length(rows), BI.num_points(p))
+                BI.adaptive_block_moments_tree!(K, p, [Tuple(Xs[:, t]) for t in ts[rows]], small.panels[k2].normal, :DT, cfg)
+                B[rows, :] = K
+            end
+            B
+        end
+        plain = [dt_node_rule_block(small, k, SCTL.near_targets(nl, k)) for k in eachindex(small.panels)]
+        Cj = SCTL.assemble_near_correction(nl, acc, [BI.num_points(p) for p in small.panels]; subtract = plain)
+        xs = randn(rng, BI.num_points(small))
+        Aj = dielectric_operator(small; far = FMM3DFarField(1e-13), near = Cj)
+        As_ = dielectric_operator(small; far = FMM3DFarField(1e-13), near = SCTLNearCorrection(tol = 1e-12))
+        @test relerr(Aj * xs, As_ * xs) < 1e-9
+        @test sctl_near_list(small; radius = 0.0).trg == Int[]
+        @test_throws DimensionMismatch sctl_near_list(small; radius = [1.0])
+
+        # SCTL's quadrature for self-defined panels through proxies: GCQ's Gauss-Legendre panels by SCTL, the edge and
+        # corner panels by the GCQ fallback; FlatPanels all by SCTL (= SCTLNearCorrection)
+        Agp = dielectric_operator(gcq; far = FMM3DFarField(1e-12), near = SCTLProxyNearQuad(tol = 1e-12))
+        @test relerr(Agp * xg, Ag_ref * xg) < 1e-10
+        Afp = dielectric_operator(itf; far = FMM3DFarField(1e-12), near = SCTLProxyNearQuad(tol = 1e-10))
+        @test relerr(Afp * X, Anc * X) < 1e-12
+        # a predicate choosing no panel leaves everything to the fallback
+        Agn = dielectric_operator(gcq; far = FMM3DFarField(1e-12), near = SCTLProxyNearQuad(polynomial = p -> false))
+        @test relerr(Agn * xg, Ag_ref * xg) < 1e-12
+        @test_throws ArgumentError BI.near_corrections(SCTLProxyNearQuad(order = 6), itf)
+
+        # off-surface potential: SCTL's operator against an independent cubature, down to 1e-4 from the surface
+        Xp, Np = BI._interface_targets_normals(small)
+        σp = [cos(2Xp[1, i]) + Xp[2, i] * Xp[3, i] + 0.5 for i in 1:BI.num_points(small)]
+        idp = [1, 17, 40, 77, 123, 200, 301, 333]
+        Tp = hcat(Xp[:, idp] .+ (10.0 .^ -(1:length(idp)) ./ 2)' .* Np[:, idp], [0.1 0.9; 0.2 -0.3; 0.05 1.4])
+        Pp = potential_operator(SCTLPotential(tol = 1e-10), small, Tp)
+        @test size(Pp) == (size(Tp, 2), BI.num_points(small))
+        up = Pp * σp
+        uref = [_ref_potential(small, σp, Tp[:, t]) for t in axes(Tp, 2)]
+        @test maximum(abs, up - uref) / maximum(abs, uref) < 1e-9
+        Σp = [σp randn(rng, length(σp))]
+        # linear up to the rounding of node rule minus correction, ~1e-16 / (distance to the nearest node): the targets
+        # here reach 5e-9 from a node
+        @test Pp * (Σp[:, 1] + 2Σp[:, 2]) ≈ Pp * Σp[:, 1] + 2 * (Pp * Σp[:, 2]) rtol = 1e-8
+        @test isempty(potential_operator(SCTLPotential(), small, zeros(3, 0)) * σp)
+        # n_quad without an SCTL element order: proxies of order 8, the density interpolated (exact)
+        six = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 6, 0.5, 4.0, 1.0, Float64)
+        X6, N6 = BI._interface_targets_normals(six)
+        σ6 = [cos(2X6[1, i]) + X6[2, i] * X6[3, i] + 0.5 for i in 1:BI.num_points(six)]
+        T6 = X6[:, [3, 50, 101]] .+ [1e-2, 1e-4, 1e-6]' .* N6[:, [3, 50, 101]]
+        u6 = potential_operator(SCTLPotential(tol = 1e-10), six, T6) * σ6
+        @test maximum(abs, u6 - [_ref_potential(six, σ6, T6[:, t]) for t in 1:3]) / maximum(abs, u6) < 1e-9
+        @test_throws ArgumentError potential_operator(SCTLPotential(), gcq, zeros(3, 1))   # GCQ edge panels
+        # the HCubature evaluator is the previous function
+        Ph = potential_operator(HCubaturePotential(1e-10), small, Tp[:, end-1:end])
+        @test Ph * σp ≈ BI.laplace3d_pottrg_fmm3d_corrected_hcubature(small, Tp[:, end-1:end], 1e-10, 1e-10, 5.0) * σp
+
         # batch mode: block GMRES through solve_dielectric_box3d_block (two sources, one solve)
         xs = -0.3:0.3:0.3
         P = [(x, y, z) for x in xs for y in xs for z in xs]
@@ -99,8 +203,27 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test size(Σ1) == size(Σ0) == (BI.num_points(bitf), 2)
         @test relerr(Σ1, Σ0) < 1e-8
         @test relerr(Σ2, Σ0) < 1e-6
+        # ... and the potential at the sources' grid points with either evaluator: the results differ by exactly the
+        # evaluators' difference (on this coarse 24-panel interface the HCubature evaluator is off by ~5e-4, SCTL's not)
+        Ph_b = potential_operator(HCubaturePotential(1e-10), bitf, pos)
+        Ps_b = potential_operator(SCTLPotential(tol = 1e-10), bitf, pos)
+        dU = reduce(hcat, [Ps_b * Σ0[:, a] - Ph_b * Σ0[:, a] for a in 1:2])
+        Φh = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8)
+        Φs = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8,
+                                         potential = SCTLPotential(tol = 1e-10))
+        @test Φs - Φh ≈ dU rtol = 1e-10
+        Vh = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8)
+        Vs = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
+        tw = [v.weights .* v.density for v in vss]
+        @test Vs - Vh ≈ [dot(tw[a], dU[:, b]) for a in 1:2, b in 1:2] rtol = 1e-10
+        sref = [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in 1:4:size(pos, 2)]
+        @test maximum(abs, Ps_b * Σ0[:, 1] - [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in axes(pos, 2)]) /
+              maximum(abs, sref) < 1e-12
     else
         @test_throws ErrorException dielectric_operator(itf; far = SCTLFarField())
+        @test_throws ErrorException dielectric_operator(itf; near = SCTLNearCorrection())
+        @test_throws ErrorException dielectric_operator(gcq; near = SCTLProxyNearQuad())
+        @test_throws ErrorException potential_operator(SCTLPotential(), itf, zeros(3, 1))
         @info "SCTL.jl not installed: skipping the SCTL backend tests"
     end
 end

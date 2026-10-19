@@ -353,7 +353,8 @@ function eval_batch_core(br::BatchResult, targets, store, dg, c::CampaignInput)
         lhs_tol   = c.solve["lhs_tol"],
         volume_tol = c.solve["volume_tol"],
         c_pad      = c.c_pad,
-        screen_boxes = c.boxes, screen_epses = c.epses, screen_eps_out = c.eps_out)
+        screen_boxes = c.boxes, screen_epses = c.epses, screen_eps_out = c.eps_out,
+        potential  = campaign_potential(c))
 
     # Contract directly against the global target indices -- no remapping, which is the whole
     # point of evaluating the full set.
