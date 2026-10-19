@@ -176,25 +176,29 @@ end
 _tensor_dnG(nx, d) = -(nx[1] * d[1] + nx[2] * d[2] + nx[3] * d[3]) / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2)^3)
 
 """
-    laplace3d_DT_tensor_corrections(interface; reuse=true, quad_tol=1e-12, η_gcq=2.0)
+    laplace3d_DT_tensor_corrections(interface; reuse=true, quad_tol=1e-12, η_gcq=2.0, sources=nothing)
 
 Sparse correction C such that `laplace3d_DT_fmm3d(interface, tol) + C` is the
 near-corrected D^T operator in DielectricBIE's sign convention
 (entries laplace3d_grad(y_j, x_i, n_i) w_j). Pairs that `tensor_isfar` rejects at
-`quad_tol` get the product-integration row. Returns (C, stats).
+`quad_tol` get the product-integration row. With `sources` (panel indices) only the
+columns of those source panels are computed, the others are zero. Returns (C, stats).
 """
 function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPanel{T}, T};
-                                         reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0) where T
+                                         reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0,
+                                         sources = nothing) where T
     panels = interface.panels
     counts = num_points.(panels)
     offs = cumsum([0; counts])
     rng = [offs[k]+1:offs[k+1] for k in eachindex(panels)]
     Yl = [tensor_local_points(p) for p in panels]
     near = [Tuple{Int, Int, NTuple{3, T}, NTuple{3, T}}[] for _ in panels]
+    is_src = sources === nothing ? trues(length(panels)) : (b = falses(length(panels)); b[collect(sources)] .= true; b)
     Threads.@threads :dynamic for it in eachindex(panels)
         pt = panels[it]
         for (i, xo) in zip(rng[it], Yl[it])
             for (js, ps) in enumerate(panels)
+                is_src[js] || continue
                 ps.plane == pt.plane && continue
                 xl = (pt.anchor .- ps.anchor) .+ xo
                 tensor_isfar(ps, xl; quad_tol, η_gcq) || push!(near[it], (i, js, xl, pt.normal))

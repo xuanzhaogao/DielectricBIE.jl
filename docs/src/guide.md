@@ -297,6 +297,89 @@ interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_qu
 A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))
 ```
 
+### Building a near quadrature on SCTL's pieces
+
+SCTL.jl exposes the steps of its own near correction as Julia data (see its manual page "Near-field pieces"). In
+DielectricBIE they are available as follows:
+
+- [`SCTLNearCorrection`](@ref)`(tol = …)` is SCTL's complete correction as a sparse `C`, usable with either far field.
+- [`sctl_near_list`](@ref)`(interface; tol, radius)` is SCTL's classification alone: which interface nodes are
+  near which panel. It works for any panel type when you pass the radii.
+- [`dt_node_rule_block`](@ref)`(interface, k, targets)` is the node-rule block that a correction subtracts.
+
+So a quadrature written in Julia only has to produce the accurate rows. This example uses SCTL's classification
+with DielectricBIE's adaptive quadtree for the rows. The tree's moments use the panel's Lagrange basis, so they act
+on nodal values. Targets in the panel's plane keep the node rule, since `Dᵀ` vanishes there:
+
+```julia
+using DielectricBIE, SCTL
+import DielectricBIE as BI
+using LinearAlgebra
+
+interface = single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
+nl = sctl_near_list(interface; tol = 1e-10)              # SCTL's near test
+X, Nrm = BI._interface_targets_normals(interface)
+owner = reduce(vcat, [fill(k, BI.num_points(p)) for (k, p) in enumerate(interface.panels)])
+cfg = BI.AdaptiveConfig(atol = 1e-12)
+
+coplanar(p, q) = abs(dot(p.normal, q.normal)) > 1 - 1e-12 && abs(dot(p.normal, q.points[1] .- p.points[1])) < 1e-12
+
+accurate = map(eachindex(interface.panels)) do k                   # your quadrature goes here
+    p = interface.panels[k]
+    ts = SCTL.near_targets(nl, k)
+    B = dt_node_rule_block(interface, k, ts)               # start from the node rule
+    for k2 in unique(owner[ts])
+        coplanar(p, interface.panels[k2]) && continue      # Dᵀ = 0 in the panel's plane
+        rows = findall(t -> owner[t] == k2, ts)
+        K = zeros(length(rows), BI.num_points(p))
+        BI.adaptive_block_moments_tree!(K, p, [Tuple(X[:, t]) for t in ts[rows]], interface.panels[k2].normal, :DT, cfg)
+        B[rows, :] = K
+    end
+    B
+end
+plain = [dt_node_rule_block(interface, k, SCTL.near_targets(nl, k)) for k in eachindex(interface.panels)]
+C = SCTL.assemble_near_correction(nl, accurate, [BI.num_points(p) for p in interface.panels]; subtract = plain)
+
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = C)
+```
+
+On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-9. That comparison is part of the
+tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, give the radii:
+`sctl_near_list(interface; radius = r)`, with one radius per node or one for all.
+
+### SCTL's quadrature on your own panels
+
+[`SCTLProxyNearQuad`](@ref) applies SCTL's near quadrature to panels that are not SCTL elements, as long as their
+density is a polynomial through the nodes. For each such panel it does the following:
+1. Builds a proxy `QuadElemList` element with the panel's geometry.
+2. Uses SCTL's classification and near-singular rule on the proxy.
+3. Maps the rows back to the panel's nodes through the interpolation from the panel's nodes to the proxy's. That
+   interpolation is exact for a polynomial density.
+
+The other panels get `fallback`, which only computes their columns. Two keywords choose how panels are split:
+- `polynomial` decides which panels SCTL handles. The default is `default_polynomial_panel`: every `FlatPanel`, and
+  `TensorPanel`s with `kind == :gl`.
+- `fallback` handles the rest; it defaults to `GCQNearQuad()`.
+
+```julia
+interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8)
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12),
+                        near = SCTLProxyNearQuad(tol = 1e-12, fallback = GCQNearQuad(quad_tol = 1e-12)))
+```
+
+On this box, which has 168 panels and 35,328 nodes, it agrees with the all-GCQ operator to 2e-13. It is not
+faster, though. GCQ's setup, about 20 s on 8 threads, goes almost entirely to the 120 edge and corner panels, whose
+singular densities SCTL cannot integrate. GCQ's rows for the 48 Gauss–Legendre panels take only 0.3 s, against
+1.3 s for SCTL's.
+
+Use `SCTLProxyNearQuad` for panel types without a near rule of their own: curved or parametrized patches, or new
+panel kinds. Any type works once it has a parametrization, `DielectricBIESCTLExt._panel_param`. It also serves as an
+independent check of a new rule.
+
+A quadrature that can compute only some panels' columns can implement
+`near_corrections(q, interface, sources)`, as `GCQNearQuad` does. Otherwise the default computes all columns and
+drops the others.
+
 The GCQ solvers take the same keywords:
 `solve_dielectric_boxes_gcq(parts, sources; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))`.
 
