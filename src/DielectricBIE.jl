@@ -74,6 +74,11 @@ export density_centroid
 export pair_density_source
 export batched_lhs_dielectric_box3d_fmm3d_corrected, BatchedDielectricOperator
 export solve_dielectric_box3d_block, dielectric_diagonal_scaling
+
+# operator backends (far field x near quadrature)
+export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!
+export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
+export default_near_quadrature, DielectricOperator, dielectric_operator
 export four_index_matrix
 
 # lattice batch
@@ -141,6 +146,7 @@ include("utils/gaussians.jl")
 include("utils/xsf_reader.jl")
 
 # # solvers
+include("solver/backends.jl") # operator backends: far field x near quadrature
 include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
 include("solver/dielectric_box3d_gcq.jl")

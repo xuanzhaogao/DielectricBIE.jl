@@ -280,14 +280,16 @@ end
         -> (; sigma, interface, sources, stats)
 
 Solve an explicit-pair batch: ONE shared interface refined on the batch envelope,
-then block GMRES over all pair densities.
+then block GMRES over all pair densities. `far` / `near` select the operator backends as in
+[`solve_dielectric_box3d_block`](@ref).
 """
 function solve_dielectric_lattice_batch(boxes::Vector{BoxGeom}, epses::Vector{Float64},
         eps_out::Float64, b::LatticeBatch;
         n_quad::Int, rhs_atol::Float64, l_ec::Float64,
         fmm_tol::Float64, up_tol::Float64 = fmm_tol, max_order::Int = 8,
         gmres_rtol::Float64, max_depth::Int = 128, itmax::Int = 500,
-        precondition::Bool = true, correct_edges::Bool = true)
+        precondition::Bool = true, correct_edges::Bool = true,
+        far::Union{Nothing, FarField} = nothing, near = nothing)
     env = envelope_volume_source(b)
     interface = multi_dielectric_box3d_rhs_adaptive(
         n_quad, l_ec, boxes, epses, env, rhs_atol;
@@ -299,6 +301,7 @@ function solve_dielectric_lattice_batch(boxes::Vector{BoxGeom}, epses::Vector{Fl
         fmm_tol = fmm_tol, up_tol = up_tol, max_order = max_order,
         rtol = gmres_rtol, itmax = itmax, precondition = precondition,
         correct_edges = correct_edges,
-        screen_boxes = boxes, screen_epses = epses, screen_eps_out = eps_out)
+        screen_boxes = boxes, screen_epses = epses, screen_eps_out = eps_out,
+        far = far, near = near)
     return (; sigma = Σ, interface = interface, sources = sources, stats = stats)
 end

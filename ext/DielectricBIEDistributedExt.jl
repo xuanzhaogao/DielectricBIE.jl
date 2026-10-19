@@ -22,6 +22,8 @@ function DielectricBIE.run_phase(c::DielectricBIE.CampaignInput, phase::Symbol; 
     phase in (:solve, :eval) || error("run_phase: phase must be :solve or :eval")
     _spawn(workers)
     @everywhere eval(:(using DielectricBIE))
+    # [backend] far/near = "sctl": the SCTL extension must be loaded on every process
+    DielectricBIE.campaign_uses_sctl(c) && @everywhere eval(:(using SCTL))
     # workers buffer non-TTY stdio (Julia 1.12) — flush periodically so their progress
     # output reaches the master/log live ( @everywhere ships an AST, not a closure ✓ )
     @everywhere Timer(_ -> (flush(stdout); flush(stderr)), 2; interval = 2)

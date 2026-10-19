@@ -27,11 +27,13 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 [weakdeps]
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+SCTL = "ac9f61ce-527e-4020-a439-f70cd5e361ae"
 SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
 
 [extensions]
 DielectricBIEDistributedExt = ["Distributed", "SlurmClusterManager"]
 DielectricBIEMakieExt = ["Makie"]
+DielectricBIESCTLExt = "SCTL"
 
 [compat]
 Distributed = "1"
@@ -50,6 +52,7 @@ Makie = "0.24"
 NearestNeighbors = "0.4.20"
 QuadGK = "2.11"
 Random = "1"
+SCTL = "0.1"
 Serialization = "1"
 SlurmClusterManager = "1"
 Sockets = "1"

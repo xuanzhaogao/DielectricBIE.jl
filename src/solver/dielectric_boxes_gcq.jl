@@ -93,6 +93,11 @@ and, with `deflate = true` (the default), one total-charge constraint per body f
 Returns a named tuple `(σ, interface, bodies, constraints, stats)`. Use `deflate = false` for
 the plain system; it is accurate only at moderate contrast, since its error in each body's total
 charge grows like the contrast (see `solve_dielectric_box3d_gcq`).
+
+`far` and `near` select the operator backends (see [`dielectric_operator`](@ref)): e.g.
+`far = SCTLFarField(tol = 1e-12)` for SCTL's FMM (after `using SCTL`), or `near = q` for a
+self-defined [`NearQuadrature`](@ref) `q`. Unset, they are `FMM3DFarField(fmm_tol)` and
+`GCQNearQuad(; quad_tol, η_gcq)`.
 """
 function solve_dielectric_boxes_gcq(parts::AbstractVector{<:DielectricInterface}, sources; deflate::Bool = true, kw...)
     srcs = sources isa PointSource ? [sources] : collect(sources)
@@ -116,8 +121,14 @@ function solve_dielectric_boxes_gcq(m::MultiBoxGCQ, sources; deflate::Bool = tru
 end
 
 function _solve_boxes_gcq(interface, bodies, srcs, epsat, constraints; fmm_tol::Real = 1e-13,
-                          quad_tol::Real = 1e-12, η_gcq::Real = 2.0, rtol::Real = 1e-13, itmax::Int = 1000)
-    A, _ = lhs_dielectric_box3d_gcq_fmm3d(interface, Float64(fmm_tol); quad_tol, η_gcq)
+                          quad_tol::Real = 1e-12, η_gcq::Real = 2.0, rtol::Real = 1e-13, itmax::Int = 1000,
+                          far::Union{Nothing, FarField} = nothing, near = nothing)
+    A = if far === nothing && near === nothing
+        first(lhs_dielectric_box3d_gcq_fmm3d(interface, Float64(fmm_tol); quad_tol, η_gcq))
+    else
+        dielectric_operator(interface; far = something(far, FMM3DFarField(Float64(fmm_tol))),
+            near = something(near, GCQNearQuad(; quad_tol = Float64(quad_tol), η_gcq = Float64(η_gcq))))
+    end
     b = zeros(Float64, num_points(interface))
     for s in srcs
         b .+= rhs_dielectric_box3d(interface, s, Float64(epsat(s.point)))

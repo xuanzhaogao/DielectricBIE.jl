@@ -266,6 +266,12 @@ that block GMRES keeps minimizing the true residual `‖F − AΣ‖` and `rtol`
 meaning; `Krylov.block_gmres` applies `N` to the returned solution, so `Σ` needs no
 post-scaling. Same solution, fewer iterations: 1.6–2.1× on the multi-material benchmark of
 `examples/diag_precond_experiment.jl`, and exactly a no-op for a single-contrast geometry.
+
+`far` and `near` select other operator backends (see [`dielectric_operator`](@ref)): e.g.
+`far = SCTLFarField(tol = 1e-9)` (SCTL's FMM, after `using SCTL`) or additionally
+`near = SCTLNearQuad()` (SCTL's quadrature). Unset, `far` is `FMM3DFarField(fmm_tol)` and `near` is
+`UpsampledNearQuad(; up_tol, max_order, correct_edges)`; with both unset the operator is
+`batched_lhs_dielectric_box3d_fmm3d_corrected` as before.
 """
 function solve_dielectric_box3d_block(
     interface::DielectricInterface{P, Float64},
@@ -276,9 +282,15 @@ function solve_dielectric_box3d_block(
     screen_boxes::Union{Nothing, Vector{<:NamedTuple}} = nothing,
     screen_epses::Union{Nothing, Vector{Float64}} = nothing,
     screen_eps_out::Float64 = 1.0,
+    far::Union{Nothing, FarField} = nothing, near = nothing,
 ) where {P <: FlatPanel{Float64, 3}}
-    op = batched_lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order;
-        correct_edges = correct_edges)
+    op = if far === nothing && near === nothing
+        batched_lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order;
+            correct_edges = correct_edges)
+    else
+        dielectric_operator(interface; far = something(far, FMM3DFarField(fmm_tol)),
+            near = something(near, UpsampledNearQuad(; up_tol, max_order, correct_edges)))
+    end
     F = rhs_dielectric_box3d_fmm3d(interface, vss, fmm_tol;
         screen_boxes = screen_boxes, screen_epses = screen_epses, screen_eps_out = screen_eps_out)
     N = precondition ? Diagonal(dielectric_diagonal_scaling(interface)) : I
