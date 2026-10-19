@@ -406,3 +406,58 @@ LinearAlgebra.mul!(y::AbstractVector, op::DielectricOperator, x::AbstractVector)
     (mul!(reshape(y, op.n, 1), op, reshape(x, op.n, 1)); y)
 Base.:*(op::DielectricOperator, X::AbstractMatrix) = mul!(Matrix{Float64}(undef, op.n, size(X, 2)), op, X)
 Base.:*(op::DielectricOperator, x::AbstractVector) = mul!(Vector{Float64}(undef, op.n), op, x)
+
+# ---------------------------------------------------------------------------------------------------------------
+# off-surface potential
+# ---------------------------------------------------------------------------------------------------------------
+
+"""
+    PotentialEvaluator
+
+How the single-layer potential `u(x) = ∫ G(x - y) σ(y) dS_y` of a solved density is evaluated at targets off (or
+near) the interface: [`potential_operator`](@ref)`(ev, interface, targets)` returns a `LinearMap` `P` (`Nt × N`),
+applied to one density at a time (`P * σ`). Available: [`HCubaturePotential`](@ref) (default) and
+[`SCTLPotential`](@ref) (needs `using SCTL`).
+"""
+abstract type PotentialEvaluator end
+
+"""
+    HCubaturePotential(tol; range_factor = 5.0)
+
+`laplace3d_pottrg_fmm3d_corrected_hcubature`: panels near targets are refined, FMM3D evaluates the node rule, and
+targets within `range_factor × (panel size) / n_quad` of a panel's centre get an adaptive cubature (HCubature)
+correction. Targets near the edges or corners of panels can fall outside that range and get no correction (errors
+up to 1e-3 at distances 1e-4 from the surface were measured); see [`SCTLPotential`](@ref).
+"""
+struct HCubaturePotential <: PotentialEvaluator
+    tol::Float64
+    range_factor::Float64
+end
+HCubaturePotential(tol::Real; range_factor::Real = 5.0) = HCubaturePotential(Float64(tol), Float64(range_factor))
+
+"""
+    SCTLPotential(; tol = 1e-10)
+
+SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein radius at `tol`), its near-singular rule (each target's
+closest point on the panel, dyadic refinement toward it) and PVFMM for the far field, the octree kept for all
+densities. Accurate to about `tol` at any distance from the surface, except for rounding: the near correction
+cancels the node rule's term of the nearest node, which for a target at distance `d` from a node costs about
+`1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Any panels with polynomial densities ([`default_polynomial_panel`](@ref):
+`FlatPanel`s of any `n_quad` ≤ 20, Gauss-Legendre `TensorPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or
+20 with the panel's geometry, the density interpolated to its nodes (exact). Needs `using SCTL`.
+"""
+Base.@kwdef struct SCTLPotential <: PotentialEvaluator
+    tol::Float64 = 1e-10
+end
+
+"""
+    potential_operator(ev::PotentialEvaluator, interface, targets) -> P
+
+The off-surface single-layer potential operator, a `LinearMap` of size `size(targets, 2) × num_points(interface)`, for
+densities in the interface's node order: `P * σ` (for a block apply it per column; `P * Σ` is a lazy map).
+"""
+potential_operator(ev::HCubaturePotential, interface::DielectricInterface, targets::AbstractMatrix) =
+    laplace3d_pottrg_fmm3d_corrected_hcubature(interface, Matrix{Float64}(targets), ev.tol, ev.tol, ev.range_factor)
+
+potential_operator(::SCTLPotential, interface, targets) =
+    error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
