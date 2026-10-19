@@ -192,6 +192,114 @@ sigma, stats = solve_dielectric_box3d_block(interface, vss; rtol = 1e-6)
 V = four_index_matrix(interface, vss, sigma; lhs_tol = 1e-6, volume_tol = 1e-6)
 ```
 
+## Operator backends: SCTL.jl and self-defined quadratures
+
+The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
+[`dielectric_operator`](@ref)`(interface; far, near)`.
+
+- **`far`, a [`FarField`](@ref)**, evaluates the adjoint double layer with the smooth node rule (the
+  interface's quadrature points and weights):
+  - [`FMM3DFarField`](@ref)`(tol)` is FMM3D, the default;
+  - [`SCTLFarField`](@ref)`(tol = …)` is SCTL.jl's FMM. It uses PVFMM with OpenMP and no MPI, and keeps its
+    octree across GMRES iterations.
+- **`near`, a [`NearQuadrature`](@ref)**, returns the sparse correction `C` (accurate minus node rule) for
+  nearby panel pairs:
+  - [`UpsampledNearQuad`](@ref) is the default for `FlatPanel` interfaces;
+  - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` interfaces;
+  - [`SCTLNearQuad`](@ref) is SCTL's singular quadrature, for `FlatPanel` interfaces with `n_quad` in 4, 8, 12,
+    16 or 20, combined with `SCTLFarField`;
+  - your own quadrature works too, as described below.
+
+The result, a [`DielectricOperator`](@ref), supports `A * x` and `A * X` for an `N × K` block, so it serves
+both `Krylov.gmres` and `Krylov.block_gmres`.
+
+SCTL.jl is a separate, unregistered package with a C++ part. Install it once, then load it next to
+DielectricBIE:
+
+```julia
+using Pkg
+Pkg.develop(url = "https://github.com/xuanzhaogao/SCTL.jl")   # Pkg.add(url) fails on its git submodules
+Pkg.build("SCTL")                                             # compiles the C++ shim (a few minutes)
+```
+
+```julia
+using DielectricBIE, SCTL, Krylov
+
+interface = single_dielectric_box3d(1.2, 0.8, 0.6, 8, 0.05, 4.0, 1.0, Float64)
+rhs = rhs_dielectric_box3d(interface, PointSource((0.1, 0.1, 0.1), 1.0), 4.0)
+
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-10), near = SCTLNearQuad())
+sigma, stats = Krylov.gmres(A, rhs; rtol = 1e-8)
+```
+
+Here are timings for this box on 32 cores of an AMD EPYC 9474F, at tolerance 1e-8, with
+Julia's BLAS at one thread and the right-hand side `rhs` from the example above. The error is the
+maximum relative error of `Dᵀσ` for a smooth density. The GMRES runs took 14–15 iterations with
+every backend.
+
+| nodes (`n_quad`, `l_ec`) | backend (`far` + `near`) | setup | one apply | GMRES solve | error |
+|:--|:--|:--|:--|:--|:--|
+| 80,896 (8, 0.05) | FMM3D + `UpsampledNearQuad` | 2.8 s | 0.49 s | 7.0 s | 5e-10 |
+| | SCTL + `UpsampledNearQuad` | 2.3 s | 0.039 s | 0.56 s | 1.4e-8 |
+| | SCTL + `SCTLNearQuad` | 0.34 s | 0.050 s | 0.73 s | 1.2e-10 |
+| 288,256 (8, 0.02) | FMM3D + `UpsampledNearQuad` | 7.0 s | 2.0 s | 30.2 s | 5e-10 |
+| | SCTL + `UpsampledNearQuad` | 6.7 s | 0.086 s | 1.35 s | 1.1e-8 |
+| | SCTL + `SCTLNearQuad` | 1.3 s | 0.128 s | 1.97 s | 1.1e-10 |
+
+Things to know about the SCTL backends:
+
+- **Accuracy.** With 40,000 or more nodes SCTL's far field is PVFMM, whose gradients lose about 1.5 digits.
+  So `SCTLFarField(tol = t)` runs PVFMM with two extra digits, and `SCTLNearQuad` builds SCTL's operator at
+  accuracy `t / 100`. PVFMM reaches about 1e-11 at best. Below 40,000 nodes the far field is an exact direct
+  sum.
+- **Precomputation.** The first use for a given number of digits precomputes PVFMM's translation operators
+  and caches them (see `SCTL.fmm_cache_dir()`). This takes seconds for these Laplace kernels. Before starting
+  many parallel jobs, run one small solve first.
+- **Threads.** SCTL uses OpenMP (`OMP_NUM_THREADS`). While SCTL runs, Julia's BLAS is limited to one thread.
+  Krylov's vector operations are also faster with `BLAS.set_num_threads(1)` on many cores. On 96 cores the
+  SCTL solve of the 288,256-node box took 0.6 s that way, against 7.3 s with 96 BLAS threads.
+
+### Batch mode
+
+[`solve_dielectric_box3d_block`](@ref), `solve_dielectric_lattice_batch` and the campaign solve phase take
+`far` / `near` too. Block GMRES then applies the chosen operator to all `K` right-hand sides of an iteration:
+
+```julia
+sigma, stats = solve_dielectric_box3d_block(interface, vss; rtol = 1e-8,
+                                            far = SCTLFarField(tol = 1e-10), near = SCTLNearQuad())
+```
+
+FMM3D evaluates the `K` densities in one vectorized FMM. SCTL's FMM evaluates them one after another on the
+same octree. For a [lattice campaign](campaign.md), add a `[backend]` table to the `.toml`
+(`far = "sctl"`, optionally `near = "sctl"`; see [`campaign_backend`](@ref)). `run_phase` then loads SCTL.jl on
+every worker.
+
+### Self-defined near quadratures (e.g. for GCQ panels)
+
+A near quadrature only has to produce the sparse correction. Any of these work as `near`:
+
+- a sparse matrix `C`;
+- a function `interface -> C`;
+- a subtype of [`NearQuadrature`](@ref) with a [`near_corrections`](@ref) method.
+
+The rows of `C` are targets and the columns are sources, both in the node order of the interface.
+`C[i, j]` is the accurate value of `Dᵀ[i, j]` minus the node-rule value
+`w_j n_i·(x_i − y_j) / (4π|x_i − y_j|³)`. Pairs that are not near get no entry.
+
+```julia
+struct MyGCQ <: DielectricBIE.NearQuadrature
+    quad_tol::Float64
+end
+DielectricBIE.near_corrections(q::MyGCQ, interface) =
+    first(laplace3d_DT_tensor_corrections(interface; quad_tol = q.quad_tol))   # or your own rule
+
+interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 6)
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))
+```
+
+The GCQ solvers take the same keywords:
+`solve_dielectric_boxes_gcq(parts, sources; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))`.
+
 ## Visualization
 
 Plotting helpers (`viz_2d`, `viz_3d`, `viz_3d_surface`, `viz_3d_interface_solution`,

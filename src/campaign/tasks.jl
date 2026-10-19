@@ -187,7 +187,9 @@ function solve_batch_core(c::CampaignInput, spec::BatchSpec,
         grids::AbstractVector, insts::AbstractDict{Int,OrbitalInstance})
     b = assemble_lattice_batch(grids, insts, spec.pairs;
         support_rtol = c.solve["support_rtol"])
+    far, near = campaign_backend(c)
     res = solve_dielectric_lattice_batch(c.boxes, c.epses, c.eps_out, b;
+        far = far, near = near,
         n_quad = Int(c.solve["n_quad"]), rhs_atol = c.solve["rhs_tol"],
         l_ec = campaign_l_ec(c), fmm_tol = c.solve["lhs_tol"],
         up_tol = c.solve["lhs_tol"], max_order = Int(c.solve["max_order"]),

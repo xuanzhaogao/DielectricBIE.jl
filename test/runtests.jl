@@ -51,6 +51,9 @@ using Test
     include("solver/lattice_batch.jl")
     include("solver/batch_io.jl")
 
+    # operator backends (far field x near quadrature); the SCTL ones when SCTL.jl is installed
+    include("ext/sctl.jl")
+
     # campaign
     include("campaign/toml_input.jl")
     include("campaign/geometry.jl")

@@ -96,6 +96,38 @@ function load_campaign(toml_path::AbstractString)
         Float64(get(ev, "c_pad", 5.0)), toml_path)
 end
 
+"""
+    campaign_backend(c) -> (far, near)
+
+Operator backends of the solve phase, from the optional `[backend]` table of the campaign
+`.toml` (`nothing` = the default FMM3D far field / DielectricBIE near quadrature):
+
+```toml
+[backend]
+far = "sctl"        # "fmm3d" (default) or "sctl": SCTLFarField(tol = solve.lhs_tol)
+near = "upsampled"  # "upsampled" (default) or "sctl": SCTLNearQuad() (needs far = "sctl")
+```
+
+The SCTL backends need SCTL.jl in the environment; `run_phase` then loads it on every process.
+"""
+function campaign_backend(c::CampaignInput)
+    b = isfile(c.toml_path) ? get(TOML.parsefile(c.toml_path), "backend", Dict()) : Dict()
+    far_s = get(b, "far", "fmm3d")
+    near_s = get(b, "near", "upsampled")
+    far = far_s == "fmm3d" ? nothing :
+          far_s == "sctl"  ? SCTLFarField(c.solve["lhs_tol"]) :
+          error("$(c.toml_path): [backend] far must be \"fmm3d\" or \"sctl\", got \"$far_s\"")
+    near = near_s == "upsampled" ? nothing :
+           near_s == "sctl"      ? SCTLNearQuad() :
+           error("$(c.toml_path): [backend] near must be \"upsampled\" or \"sctl\", got \"$near_s\"")
+    near isa SCTLNearQuad && !(far isa SCTLFarField) &&
+        error("$(c.toml_path): [backend] near = \"sctl\" needs far = \"sctl\"")
+    return far, near
+end
+
+"Whether the campaign's `[backend]` uses SCTL.jl (see [`campaign_backend`](@ref))."
+campaign_uses_sctl(c::CampaignInput) = any(x -> x isa Union{SCTLFarField, SCTLNearQuad}, campaign_backend(c))
+
 manifest_path(c::CampaignInput)  = joinpath(c.root, "manifest.tsv")
 centers_path(c::CampaignInput)   = joinpath(c.root, "centers.tsv")
 targets_path(c::CampaignInput)   = joinpath(c.root, "targets.jls")
