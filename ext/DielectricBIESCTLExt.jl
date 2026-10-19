@@ -3,7 +3,8 @@
 #   SCTLFarField + SCTLNearQuad   the whole D^T by SCTL's BoundaryIntegralOp on a QuadElemList (FlatPanel interfaces);
 #   SCTLNearCorrection, sctl_near_list   SCTL's near correction / classification as Julia data (any far field);
 #   SCTLProxyNearQuad       SCTL's quadrature for self-defined panels with polynomial densities (proxy elements), a
-#                           fallback quadrature (e.g. GCQ) for the others.
+#                           fallback quadrature (e.g. GCQ) for the others;
+#   SCTLPotential           the off-surface single-layer potential by SCTL's BoundaryIntegralOp.
 module DielectricBIESCTLExt
 
 using DielectricBIE
@@ -218,6 +219,33 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, inte
         append!(I, i); append!(J, j); append!(V, v)
     end
     return sparse(I, J, V, n, n)
+end
+
+# ---- off-surface potential: SCTL's BoundaryIntegralOp for the single layer, targets set ----
+
+function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, interface::DielectricInterface,
+                                          targets::AbstractMatrix)
+    size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
+    groups = _sctl_groups(interface, "SCTLPotential"; orders = _SCTL_ORDERS)
+    # as for SCTLNearQuad, two more digits than requested for the operator's FMM
+    op = BoundaryIntegralOp(Laplace3D_FxU(); accuracy = ev.tol / 10.0^_EXTRA_DIGITS)
+    for g in groups
+        add_elem_list!(op, g.elist, "q" * lpad(g.order, 2, '0'))
+    end
+    perm = reduce(vcat, [g.perm for g in groups])
+    nt = size(targets, 2)
+    nt == 0 || set_target_coord!(op, Matrix{Float64}(targets))
+    nt == 0 || setup!(op)
+    n = length(perm)
+    x = Vector{Float64}(undef, n)
+    apply = σ -> begin
+        nt == 0 && return Float64[]
+        @inbounds for (s, d) in enumerate(perm)
+            x[s] = σ[d]
+        end
+        compute_potential(op, x)
+    end
+    return DielectricBIE.LinearMap{Float64}(apply, nt, n)
 end
 
 function DielectricBIE.sctl_near_list(interface::DielectricInterface; tol::Real = 1e-10, radius = nothing,
