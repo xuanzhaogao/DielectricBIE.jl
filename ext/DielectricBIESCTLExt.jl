@@ -1,7 +1,9 @@
 # SCTL.jl backends of the dielectric operator (`using SCTL`):
 #   SCTLFarField            node-rule D^T by SCTL's ParticleFMM (PVFMM, OpenMP, no MPI), tree kept across applications;
 #   SCTLFarField + SCTLNearQuad   the whole D^T by SCTL's BoundaryIntegralOp on a QuadElemList (FlatPanel interfaces);
-#   SCTLNearCorrection, sctl_near_list   SCTL's near correction / classification as Julia data (any far field).
+#   SCTLNearCorrection, sctl_near_list   SCTL's near correction / classification as Julia data (any far field);
+#   SCTLProxyNearQuad       SCTL's quadrature for self-defined panels with polynomial densities (proxy elements), a
+#                           fallback quadrature (e.g. GCQ) for the others.
 module DielectricBIESCTLExt
 
 using DielectricBIE
@@ -140,6 +142,80 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLNearCorrection, int
         C, _ = SCTL.near_correction(Laplace3D_FxdU(), g.elist; targets = Xt, normals = Nt, tol = q.tol)
         i, j, v = findnz(C)
         append!(I, i); append!(J, g.perm[j]); append!(V, .-v)
+    end
+    return sparse(I, J, V, n, n)
+end
+
+# ---- SCTL's quadrature for self-defined panels, through proxy elements ----
+
+# A panel's parametrization over [0,1]^2 and the parameters of its nodes in u and in v; nodes are ordered with v
+# fastest (as QuadElemList's).
+function _panel_param(P::FlatPanel)
+    a, b, c, d = P.corners
+    cc = (a .+ b .+ c .+ d) ./ 4
+    x = (P.gl_xs .+ 1) ./ 2
+    return (u, v) -> collect(cc .+ (b .- a) .* (u - 0.5) .+ (d .- a) .* (v - 0.5)), x, x
+end
+_panel_param(P::DielectricBIE.TensorPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.tensor_lpoint(P, u, v)), P.ru.x, P.rv.x
+_panel_param(P) = throw(ArgumentError("SCTLProxyNearQuad: no parametrization for panels of type $(typeof(P)); " *
+                                      "define DielectricBIESCTLExt._panel_param for it"))
+
+function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, interface::DielectricInterface)
+    ps = interface.panels
+    n = num_points(interface)
+    offs = cumsum([0; [num_points(P) for P in ps]])
+    poly = findall(q.polynomial, ps)
+    other = setdiff(eachindex(ps), poly)
+    I = Int[]; J = Int[]; V = Float64[]
+    if !isempty(poly)
+        params = [_panel_param(ps[k]) for k in poly]
+        nmax = maximum(max(length(xu), length(xv)) for (_, xu, xv) in params)
+        p = if q.order === nothing   # the smallest order at which the interpolation to the proxy is exact
+            i = findfirst(>=(nmax), _SCTL_ORDERS)
+            i === nothing && throw(ArgumentError("SCTLProxyNearQuad: panels with $nmax nodes per direction exceed SCTL's orders $(_SCTL_ORDERS)"))
+            _SCTL_ORDERS[i]
+        else
+            q.order in _SCTL_ORDERS || throw(ArgumentError("SCTLProxyNearQuad: order must be one of $(_SCTL_ORDERS)"))
+            q.order >= nmax || @warn "SCTLProxyNearQuad: proxy order $(q.order) below the panels' $nmax nodes per direction: the interpolation is not exact"
+            q.order
+        end
+        el = QuadElemList(p, length(poly)) do e, u, v
+            params[e][1](u, v)
+        end
+        xn = param_nodes(p)
+        X, Nrm = _interface_targets_normals(interface)
+        X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
+        ff = far_field_nodes(el; tol = q.tol)
+        nl = near_list(ff.X, ff.radius, p^2, X)
+        quad = ElemQuadrature(Laplace3D_FxdU())
+        acc = Vector{Matrix{Float64}}(undef, length(poly))
+        plain = Vector{Matrix{Float64}}(undef, length(poly))
+        Threads.@threads :dynamic for e in eachindex(poly)
+            k = poly[e]; P = ps[k]
+            _, xu, xv = params[e]
+            ts = collect(near_targets(nl, e))
+            B = DielectricBIE.dt_node_rule_block(interface, k, X[:, ts], Nrm[:, ts])
+            plain[e] = copy(B)
+            # D^T vanishes for targets in the panel's plane with the panel's normal (both rules give zero there)
+            pn = collect(P.normal); y1 = collect(P.points[1])
+            scale = maximum(norm(collect(c) .- y1) for c in P.corners)
+            rows = findall(t -> !(abs(dot(pn, X[:, t] .- y1)) <= 1e-12 * scale && abs(dot(pn, Nrm[:, t])) >= 1 - 1e-12), ts)
+            if !isempty(rows)
+                Interp = kron(lagrange_interp_matrix(xu, xn), lagrange_interp_matrix(xv, xn))   # panel nodes -> proxy nodes
+                M = near_matrix(quad, el, e, X[:, ts[rows]]; normals = Nrm[:, ts[rows]], tol = q.tol)  # SCTL sign: -D^T
+                B[rows, :] = -M * Interp
+            end
+            acc[e] = B
+        end
+        close(quad)
+        Cp = assemble_near_correction(nl, acc, [num_points(ps[k]) for k in poly]; subtract = plain)
+        cols = reduce(vcat, [collect(offs[k]+1:offs[k+1]) for k in poly])
+        i, j, v = findnz(Cp)
+        append!(I, i); append!(J, cols[j]); append!(V, v)
+    end
+    if !isempty(other)
+        i, j, v = findnz(DielectricBIE.near_corrections(q.fallback, interface, other))
+        append!(I, i); append!(J, j); append!(V, v)
     end
     return sparse(I, J, V, n, n)
 end

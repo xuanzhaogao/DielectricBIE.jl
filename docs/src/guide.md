@@ -347,6 +347,39 @@ On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-9. T
 tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, give the radii:
 `sctl_near_list(interface; radius = r)`, with one radius per node or one for all.
 
+### SCTL's quadrature on your own panels
+
+[`SCTLProxyNearQuad`](@ref) applies SCTL's near quadrature to panels that are not SCTL elements, as long as their
+density is a polynomial through the nodes. For each such panel it does the following:
+1. Builds a proxy `QuadElemList` element with the panel's geometry.
+2. Uses SCTL's classification and near-singular rule on the proxy.
+3. Maps the rows back to the panel's nodes through the interpolation from the panel's nodes to the proxy's. That
+   interpolation is exact for a polynomial density.
+
+The other panels get `fallback`, which only computes their columns. Two keywords choose how panels are split:
+- `polynomial` decides which panels SCTL handles. The default is `default_polynomial_panel`: every `FlatPanel`, and
+  `TensorPanel`s with `kind == :gl`.
+- `fallback` handles the rest; it defaults to `GCQNearQuad()`.
+
+```julia
+interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8)
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12),
+                        near = SCTLProxyNearQuad(tol = 1e-12, fallback = GCQNearQuad(quad_tol = 1e-12)))
+```
+
+On this box, which has 168 panels and 35,328 nodes, it agrees with the all-GCQ operator to 2e-13. It is not
+faster, though. GCQ's setup, about 20 s on 8 threads, goes almost entirely to the 120 edge and corner panels, whose
+singular densities SCTL cannot integrate. GCQ's rows for the 48 Gauss–Legendre panels take only 0.3 s, against
+1.3 s for SCTL's.
+
+Use `SCTLProxyNearQuad` for panel types without a near rule of their own: curved or parametrized patches, or new
+panel kinds. Any type works once it has a parametrization, `DielectricBIESCTLExt._panel_param`. It also serves as an
+independent check of a new rule.
+
+A quadrature that can compute only some panels' columns can implement
+`near_corrections(q, interface, sources)`, as `GCQNearQuad` does. Otherwise the default computes all columns and
+drops the others.
+
 The GCQ solvers take the same keywords:
 `solve_dielectric_boxes_gcq(parts, sources; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))`.
 
