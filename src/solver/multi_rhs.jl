@@ -48,7 +48,7 @@ struct BatchedDielectricOperator
     weights::Vector{Float64}        # n
     norms::Matrix{Float64}          # 3 x n
     thresh::Float64
-    corrections::SparseMatrixCSC{Float64,Int}
+    corrections::BlockCorrection{Float64}   # per-panel dense blocks
     diag::Vector{Float64}           # n
     n::Int
 end
@@ -96,7 +96,7 @@ function batched_lhs_dielectric_box3d_fmm3d_corrected(
     end
 
     return BatchedDielectricOperator(sources, weights, norms, fmm_tol,
-        SparseMatrixCSC{Float64,Int}(corrections), diag, n)
+        BlockCorrection(corrections, interface), diag, n)
 end
 
 # matrix matvec: one batched FMM for all K columns
@@ -116,7 +116,7 @@ function LinearAlgebra.mul!(Y::AbstractMatrix, op::BatchedDielectricOperator, X:
     end
     vals = lfmm3d(op.thresh, op.sources, charges = charges, pg = 2, nd = K)
     grad = reshape(vals.grad, K, 3, n)    # (K, 3, n); handles nd==1 singleton drop
-    C = op.corrections * X                # n x K (sparse mat-mat)
+    C = op.corrections * X                # n x K (per-panel blocks, threaded)
     Threads.@threads for i in 1:n
         @inbounds begin
             n1 = op.norms[1, i]; n2 = op.norms[2, i]; n3 = op.norms[3, i]; di = op.diag[i]
