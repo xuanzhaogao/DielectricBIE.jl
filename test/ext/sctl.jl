@@ -188,6 +188,11 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         Ph = potential_operator(HCubaturePotential(1e-10), small, Tp[:, end-1:end])
         @test Ph * σp ≈ BI.laplace3d_pottrg_fmm3d_corrected_hcubature(small, Tp[:, end-1:end], 1e-10, 1e-10, 5.0) * σp
 
+        # GCQPotential with SCTL's far field
+        Tg = hcat(rand(rng, 3, 20) .* 2 .- 1, [0.501, 0.499, 0.4999])
+        ug = potential_operator(GCQPotential(far = SCTLFarField(tol = 1e-12)), gcq, Tg) * xg
+        @test maximum(abs, ug - BI.potential_tensor(gcq, xg, [Tuple(Tg[:, t]) for t in axes(Tg, 2)])) / maximum(abs, ug) < 1e-10
+
         # batch mode: block GMRES through solve_dielectric_box3d_block (two sources, one solve)
         xs = -0.3:0.3:0.3
         P = [(x, y, z) for x in xs for y in xs for z in xs]

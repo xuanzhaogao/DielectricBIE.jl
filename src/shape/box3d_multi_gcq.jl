@@ -65,8 +65,8 @@ end
 
 """
     multi_dielectric_box3d_gcq(boxes, epses, eps_out = 1.0; nlev = 2, n_quad = 8, tol = 1e-10,
-                               qmax = nothing, gmax = 20.0, rhs = nothing, rhs_atol = 1e-10,
-                               max_depth = 30) -> MultiBoxGCQ
+                               qmax = nothing, gmax = 20.0, rhs = nothing, rhs_batch = nothing,
+                               rhs_atol = 1e-10, max_depth = 30) -> MultiBoxGCQ
 
 Boxes `boxes = [(center = (x, y, z), Lx, Ly, Lz), ...]` (as for `multi_dielectric_box3d`) with
 permittivities `epses` (`Inf` = perfect conductor) in a medium `eps_out`, meshed with
@@ -74,14 +74,16 @@ permittivities `epses` (`Inf` = perfect conductor) in a medium `eps_out`, meshed
 but not overlap. Every edge gets the weighted GCQ rule of its own junction
 (`edge_gcq_rule(junction_powers(...) .- 1; tol, qmax)`, powers up to `gmax`); equal junctions
 share one rule. `nlev`, `n_quad`, `rhs`, `rhs_atol` and `max_depth` are as in
-`single_dielectric_box3d_gcq`; quadrants are refined toward true vertices only. The face
+`single_dielectric_box3d_gcq`; quadrants are refined toward true vertices only. `rhs_batch(points, normals)`
+(vectors of 3-tuples, returning the values) replaces the pointwise `rhs` by one evaluation per refinement level
+over all panels, e.g. an FMM for a volume source. The face
 coordinates of all boxes define the grid, so boxes that are offset against each other create
 smaller rectangles. Solve with `solve_dielectric_boxes_gcq(mesh, sources)`.
 """
 function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector{<:Real},
                                     eps_out::Real = 1.0; nlev::Int = 2, n_quad = 8,
                                     tol::Real = 1e-10, qmax = nothing, gmax::Real = 20.0,
-                                    rhs = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30)
+                                    rhs = nothing, rhs_batch = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30)
     length(boxes) == length(epses) || throw(ArgumentError("boxes and epses must have equal length"))
     isempty(boxes) && throw(ArgumentError("no boxes"))
     isinf(eps_out) && throw(ArgumentError("eps_out must be finite"))
@@ -171,6 +173,7 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
     planeid(ax, x) = Int(hash((ax, round(x, digits = 12))) >> 2)
     cpanels = [TensorPanel{T}[] for _ in clusters]
     ceps_in = [T[] for _ in clusters]; ceps_out = [T[] for _ in clusters]
+    pending = Tuple{Int, T, T, Vector{TensorPanel{T}}, TensorRule1D}[]   # quadrants for the batched RHS refinement
     for ax in 1:3
         t1, t2 = [k for k in 1:3 if k != ax]
         for p in eachindex(grid[ax]), i in 1:ncell[t1], j in 1:ncell[t2]
@@ -213,11 +216,23 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                 push!(quad, TensorPanel(nrm, cpt, (zero(T), zero(T), zero(T)), d1, d2, b1, b2,
                                         something(g2, glc), something(g1, glc),
                                         g1 === nothing && g2 === nothing ? :gl : :corner, fid))
+                if rhs_batch !== nothing    # refined below, all quadrants together
+                    push!(pending, (c, em, ep, quad, glc))
+                    continue
+                end
                 quad = rhs === nothing ? quad : _gcq_rhs_refine(quad, rhs, T(rhs_atol), max_depth, glc, glc, glc)
                 append!(cpanels[c], quad)
                 append!(ceps_in[c], fill(em, length(quad)))
                 append!(ceps_out[c], fill(ep, length(quad)))
             end
+        end
+    end
+    if rhs_batch !== nothing
+        refined = _gcq_rhs_refine_batched([(q, glc, glc) for (_, _, _, q, glc) in pending], rhs_batch, T(rhs_atol), max_depth)
+        for ((c, em, ep, _, _), quad) in zip(pending, refined)
+            append!(cpanels[c], quad)
+            append!(ceps_in[c], fill(em, length(quad)))
+            append!(ceps_out[c], fill(ep, length(quad)))
         end
     end
     interface = DielectricInterface(reduce(vcat, cpanels), reduce(vcat, ceps_in), reduce(vcat, ceps_out))

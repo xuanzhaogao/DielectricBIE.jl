@@ -123,6 +123,60 @@ function _gcq_rhs_refine(panels::Vector{TensorPanel{T}}, rhs, atol::T, max_depth
         if e <= atol || depth >= max_depth
             push!(out, p); continue
         end
+        append!(stack, [(k, depth + 1) for k in _gcq_rhs_split(p, eu, ev, atol, gq, glc)])
+    end
+    return out
+end
+
+# the points at which _gcq_rhs_errors samples rhs: the nodes, then (test, node v), (node u, test), (test, test)
+function _gcq_rhs_points(p::TensorPanel)
+    lp(u, v) = p.anchor .+ tensor_lpoint(p, u, v)
+    return vcat(vec([lp(u, v) for u in p.ru.x, v in p.rv.x]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in p.rv.x]),
+                vec([lp(u, v) for u in p.ru.x, v in _GCQ_TEST_PTS]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in _GCQ_TEST_PTS]))
+end
+
+# _gcq_rhs_errors from the values of rhs at _gcq_rhs_points(p)
+function _gcq_rhs_errors_from(p::TensorPanel, vals::AbstractVector)
+    nu, nv, nt = length(p.ru.x), length(p.rv.x), length(_GCQ_TEST_PTS)
+    o = 0
+    F = reshape(vals[o+1:o+nu*nv], nu, nv); o += nu * nv
+    Ftu = reshape(vals[o+1:o+nt*nv], nt, nv); o += nt * nv
+    Ftv = reshape(vals[o+1:o+nu*nt], nu, nt); o += nu * nt
+    Ft = reshape(vals[o+1:o+nt*nt], nt, nt)
+    Eu = tensor_rule_interp(p.ru, _GCQ_TEST_PTS); Ev = tensor_rule_interp(p.rv, _GCQ_TEST_PTS)
+    return maximum(abs, Eu * F * Ev' .- Ft), maximum(abs, Eu * F .- Ftu), maximum(abs, F * Ev' .- Ftv)
+end
+
+# _gcq_rhs_refine for many groups of panels at once, level by level, with `rhs_batch(points, normals)` evaluating
+# the right-hand side at all sample points of a level in one call (e.g. an FMM). groups: (panels, gq, glc) each;
+# returns the refined panels of each group.
+function _gcq_rhs_refine_batched(groups, rhs_batch, atol::T, max_depth::Int) where T
+    out = [TensorPanel{T}[] for _ in groups]
+    level = [(g, p) for (g, (ps, _, _)) in enumerate(groups) for p in ps]
+    for depth in 0:max_depth
+        isempty(level) && break
+        pts = [_gcq_rhs_points(p) for (_, p) in level]
+        allp = reduce(vcat, pts)
+        alln = reduce(vcat, [fill(p.normal, length(pts[i])) for (i, (_, p)) in enumerate(level)])
+        vals = rhs_batch(allp, alln)
+        offs = cumsum([0; length.(pts)])
+        next = Tuple{Int, TensorPanel{T}}[]
+        for (i, (g, p)) in enumerate(level)
+            e, eu, ev = _gcq_rhs_errors_from(p, view(vals, offs[i]+1:offs[i+1]))
+            if e <= atol || depth >= max_depth
+                push!(out[g], p)
+            else
+                _, gq, glc = groups[g]
+                append!(next, [(g, k) for k in _gcq_rhs_split(p, eu, ev, atol, gq, glc)])
+            end
+        end
+        level = next
+    end
+    return out
+end
+
+# children of panel p for the RHS refinement (see the file header)
+function _gcq_rhs_split(p::TensorPanel{T}, eu, ev, atol, gq::TensorRule1D, glc::TensorRule1D) where T
         hu, hv = p.Lu / 2, p.Lv / 2
         mk(o, eu, ev, Lu, Lv, ru, rv, kind) = TensorPanel(p.normal, p.anchor, o, eu, ev, Lu, Lv, ru, rv, kind, p.plane)
         kids = TensorPanel{T}[]
@@ -152,7 +206,5 @@ function _gcq_rhs_refine(panels::Vector{TensorPanel{T}}, rhs, atol::T, max_depth
             push!(kids, mk(p.o .+ hu .* p.eu .+ hv .* p.ev, p.eu, p.ev, hu, hv, glc, glc, :gl))
             push!(kids, mk(p.o, p.eu, p.ev, hu, hv, p.ru, p.rv, :corner))
         end
-        append!(stack, [(k, depth + 1) for k in kids])
-    end
-    return out
+        return kids
 end
