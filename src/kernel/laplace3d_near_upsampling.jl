@@ -223,28 +223,17 @@ function _laplace3d_corrections(
                 panel_trg = interface.panels[j]
                 np_trg = num_points(panel_trg)
 
-                # Pick a representative target: the GL node on panel_trg closest
-                # to the first corner of panel_src. This drives the tree topology
-                # once, shared across all targets of this pair.
-                c1_src = panel_src.corners[1]
-                rep_idx = argmin(norm(panel_trg.points[t] .- c1_src) for t in 1:np_trg)
-
-                # Walk the tree once (representative target) to get the leaf cell list.
-                leaves, hit_max = walk_adaptive_tree(
-                    panel_src, panel_trg.points[rep_idx], panel_trg.normal,
-                    mode, cfg,
+                # One quadtree for all targets of this pair, refined until every
+                # target meets the tolerance (a tree driven by a single
+                # representative target under-resolves the targets near the other
+                # end of a shared edge).
+                K_block = zeros(T, np_trg, n_quad_i^2)
+                hit_max = adaptive_block_moments_tree!(
+                    K_block, panel_src, panel_trg.points, panel_trg.normal, mode, cfg,
                 )
                 if hit_max
                     push!(warn_pairs, (i, j))
                 end
-
-                # Evaluate the kernel for all targets simultaneously using the cached
-                # leaf topology — tight inner loops, position computed once per GL point.
-                K_block = zeros(T, np_trg, n_quad_i^2)
-                adaptive_block_moments_inplace!(
-                    K_block, panel_src, panel_trg.points, panel_trg.normal,
-                    leaves, mode, cfg,
-                )
 
                 K_direct = direct_kernel(panel_src, panel_trg)
                 row_off = offsets[j]

@@ -299,10 +299,144 @@ function build_adaptive_source_cache(
     return SourceAdaptiveCache{T}(panel_src, n_GL, leaves, p_adp, Mt), hit_max
 end
 
-# Compute K_block[t, m] = ∫_panel K(x, trg_t) L_m(x) J dx for all targets simultaneously.
-# Uses the leaf list from walk_adaptive_tree (driven by a representative target) to
-# amortize tree-traversal cost, then evaluates the kernel for all np_trg targets per
-# GL quadrature point using tight loops (no large position cache needed).
+# Moments of one cell for all targets: out[t, m] = ∫_cell K(x, trg_t) L_m(x) J dx with n_GL^2 Gauss-Legendre
+# points (overwrites out; kvals, rx, ry are scratch).
+function _adaptive_cell_block!(
+    out::AbstractMatrix{T}, kvals::Vector{T}, rx::Vector{T}, ry::Vector{T},
+    panel_src::FlatPanel{T,3}, trg_points::AbstractVector{NTuple{3,T}}, trg_normal::NTuple{3,T}, mode::Symbol,
+    ns_GL::Vector{T}, ws_GL::Vector{T}, u_lo::T, u_hi::T, v_lo::T, v_hi::T,
+) where T
+    fill!(out, zero(T))
+    n_quad = panel_src.n_quad
+    np_trg = length(trg_points)
+    a, b, c, d = panel_src.corners
+    cc = (a .+ b .+ c .+ d) ./ 4
+    bma = b .- a
+    dma = d .- a
+    scale_cell = (u_hi - u_lo) / 2 * (v_hi - v_lo) / 2 * norm(bma) * norm(dma) / 4
+    half_u = (u_hi - u_lo) / 2
+    half_v = (v_hi - v_lo) / 2
+    mid_u  = (u_hi + u_lo) / 2
+    mid_v  = (v_hi + v_lo) / 2
+    for gi in eachindex(ns_GL)
+        u = mid_u + half_u * ns_GL[gi]
+        barycentric_row!(rx, panel_src.gl_xs, panel_src.bary_weights, u)
+        for gj in eachindex(ns_GL)
+            v = mid_v + half_v * ns_GL[gj]
+            barycentric_row!(ry, panel_src.gl_xs, panel_src.bary_weights, v)
+            y = cc .+ bma .* (u / 2) .+ dma .* (v / 2)
+            w_uv = ws_GL[gi] * ws_GL[gj] * scale_cell
+            if mode === :DT
+                @inbounds for t in 1:np_trg
+                    kvals[t] = laplace3d_grad(y, trg_points[t], trg_normal)
+                end
+            elseif mode === :D
+                @inbounds for t in 1:np_trg
+                    kvals[t] = laplace3d_grad(trg_points[t], y, panel_src.normal)
+                end
+            else
+                error("unknown mode for _adaptive_cell_block!")
+            end
+            @inbounds for m_x in 1:n_quad
+                rx_mx = rx[m_x]
+                for m_y in 1:n_quad
+                    m = (m_x - 1) * n_quad + m_y
+                    w_m = w_uv * rx_mx * ry[m_y]
+                    for t in 1:np_trg
+                        out[t, m] += w_m * kvals[t]
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+# Adaptive moments for all targets of a panel at once: K_block[t, m] += ∫_panel K(x, trg_t) L_m(x) J dx.
+# One quadtree serves all targets: a cell is split while the error estimate (parent cell vs. its four children)
+# misses the tolerance for ANY target, with the same per-target criterion as adaptive_panel_moments_inplace!, so
+# every target gets at least the accuracy of its own tree. (A tree driven by one representative target
+# under-resolves targets whose near-singularity lies elsewhere on the panel, e.g. at the other end of a shared
+# edge.) Returns true if max_depth was hit before the tolerance was met.
+#
+# K_block must be pre-allocated as (np_trg, n_quad^2); it is accumulated into.
+function adaptive_block_moments_tree!(
+    K_block::AbstractMatrix{T},
+    panel_src::FlatPanel{T,3},
+    trg_points::AbstractVector{NTuple{3,T}},
+    trg_normal::NTuple{3,T},
+    mode::Symbol,
+    cfg::AdaptiveConfig,
+) where T
+    n_quad = panel_src.n_quad
+    np_trg = length(trg_points)
+    n_m = n_quad^2
+    @assert size(K_block) == (np_trg, n_m)
+
+    n_GL = cfg.n_GL == 0 ? n_quad : cfg.n_GL
+    ns_d, ws_d = gausslegendre(n_GL)
+    ns_GL = convert(Vector{T}, ns_d)
+    ws_GL = convert(Vector{T}, ws_d)
+
+    rx = Vector{T}(undef, n_quad)
+    ry = Vector{T}(undef, n_quad)
+    kvals = Vector{T}(undef, np_trg)
+    # children moments per tree level (a child's moments are its parent moments one level down)
+    level_bufs = Vector{NTuple{4, Matrix{T}}}()
+    function children_at(depth)
+        while length(level_bufs) <= depth
+            push!(level_bufs, ntuple(_ -> Matrix{T}(undef, np_trg, n_m), 4))
+        end
+        return level_bufs[depth + 1]
+    end
+    cell!(out, u_lo, u_hi, v_lo, v_hi) =
+        _adaptive_cell_block!(out, kvals, rx, ry, panel_src, trg_points, trg_normal, mode, ns_GL, ws_GL,
+                              u_lo, u_hi, v_lo, v_hi)
+
+    hit_max = false
+    function recurse!(parent::Matrix{T}, u_lo::T, u_hi::T, v_lo::T, v_hi::T, depth::Int)
+        mid_u = (u_hi + u_lo) / 2
+        mid_v = (v_hi + v_lo) / 2
+        boxes = ((u_lo, mid_u, v_lo, mid_v), (mid_u, u_hi, v_lo, mid_v), (u_lo, mid_u, mid_v, v_hi), (mid_u, u_hi, mid_v, v_hi))
+        ch = children_at(depth)
+        for k in 1:4
+            cell!(ch[k], boxes[k]...)
+        end
+        converged = true
+        @inbounds for t in 1:np_trg
+            err = zero(T)
+            pmax = zero(T)
+            for m in 1:n_m
+                s = ch[1][t, m] + ch[2][t, m] + ch[3][t, m] + ch[4][t, m]
+                err = max(err, abs(parent[t, m] - s))
+                pmax = max(pmax, abs(parent[t, m]))
+            end
+            if err >= max(T(cfg.atol), T(cfg.rtol) * pmax)
+                converged = false
+                break
+            end
+        end
+        if converged || depth == cfg.max_depth
+            hit_max |= !converged
+            @inbounds for m in 1:n_m, t in 1:np_trg
+                K_block[t, m] += ch[1][t, m] + ch[2][t, m] + ch[3][t, m] + ch[4][t, m]
+            end
+            return
+        end
+        for k in 1:4
+            recurse!(ch[k], boxes[k]..., depth + 1)
+        end
+    end
+
+    root = Matrix{T}(undef, np_trg, n_m)
+    cell!(root, -one(T), one(T), -one(T), one(T))
+    recurse!(root, -one(T), one(T), -one(T), one(T), 0)
+    return hit_max
+end
+
+# Compute K_block[t, m] = ∫_panel K(x, trg_t) L_m(x) J dx for all targets simultaneously on a
+# given leaf list (e.g. from walk_adaptive_tree). The leaves are only adequate for the
+# targets that drove the tree; for all targets of a panel use adaptive_block_moments_tree!.
 #
 # K_block must be pre-allocated as (np_trg, n_quad^2), zeroed before calling.
 function adaptive_block_moments_inplace!(
