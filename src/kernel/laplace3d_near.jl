@@ -44,26 +44,51 @@ function laplace3d_D_panel(panel_src::FlatPanel{T, 3}, panel_trg::FlatPanel{T, 3
     return D
 end
 
+# Targets near each source panel, for the off-surface corrections. A target is near panel i if it
+# lies within range_factor * (panel size) / n_quad of the panel's centre (the original criterion),
+# or, with `atol`, if the panel's Gauss-Legendre node rule misses `atol` there: Bernstein radius
+# ρ_min(panel, target) ≤ ρ⋆ = atol^{-1/(2p)}, as in build_neighbor_list. The centre-based range
+# alone misses targets close to the surface near a panel's edges and corners, and, for panels
+# that are large relative to n_quad, targets far from the surface.
 function build_target_neighbor_list(
     interface::DielectricInterface{P, T},
     targets::Matrix{T},
     include_edges_src::Bool;
     range_factor::T = T(5),
+    atol::Union{Nothing, T} = nothing,
 ) where {P <: AbstractPanel, T}
     @assert size(targets, 1) == 3
     neighbor_list = Dict{Int, Vector{Int}}()
     tree = KDTree(targets)
+    lk = ReentrantLock()
 
-    for (i, panel) in enumerate(interface.panels)
+    Threads.@threads :dynamic for i in eachindex(interface.panels)
+        panel = interface.panels[i]
         (!include_edges_src && panel.is_edge) && continue
 
         c_panel = (panel.corners[1] .+ panel.corners[2] .+ panel.corners[3] .+ panel.corners[4]) ./ 4
         l_panel = max(norm(panel.corners[1] .- panel.corners[2]), norm(panel.corners[2] .- panel.corners[3]))
         r_i = range_factor * l_panel / panel.n_quad
-
         nearby = inrange(tree, collect(c_panel), r_i)
+
+        if atol !== nothing
+            # candidates: the box bounding every point with ρ ≤ ρ⋆ (see build_neighbor_list)
+            rho_star = atol^(-one(T) / (2 * panel.n_quad))
+            A_star = (rho_star + one(T) / rho_star) / 2
+            B_star = (rho_star - one(T) / rho_star) / 2
+            r_b = T(105) / 100 * l_panel / 2 * sqrt(A_star^2 + (one(T) + B_star)^2 + B_star^2)
+            in_range = Set(nearby)
+            for t in inrange(tree, collect(c_panel), max(r_b, r_i))
+                t in in_range && continue
+                trg = (targets[1, t], targets[2, t], targets[3, t])
+                bernstein_rho_panel(panel, trg) <= rho_star && push!(nearby, t)
+            end
+            sort!(nearby)
+        end
         isempty(nearby) && continue
-        neighbor_list[i] = nearby
+        lock(lk) do
+            neighbor_list[i] = nearby
+        end
     end
 
     return neighbor_list

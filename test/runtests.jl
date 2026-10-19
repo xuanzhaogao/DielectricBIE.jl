@@ -26,6 +26,7 @@ using Test
     include("kernel/laplace2d.jl")
     include("kernel/laplace3d.jl")
     include("kernel/laplace3d_near_smoke.jl")
+    include("kernel/laplace3d_pottrg_near_targets.jl")
 
     # shape functions
     if run_full
