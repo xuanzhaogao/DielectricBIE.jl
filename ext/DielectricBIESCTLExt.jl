@@ -226,26 +226,47 @@ end
 function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, interface::DielectricInterface,
                                           targets::AbstractMatrix)
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
-    groups = _sctl_groups(interface, "SCTLPotential"; orders = _SCTL_ORDERS)
-    # as for SCTLNearQuad, two more digits than requested for the operator's FMM
-    op = BoundaryIntegralOp(Laplace3D_FxU(); accuracy = ev.tol / 10.0^_EXTRA_DIGITS)
-    for g in groups
-        add_elem_list!(op, g.elist, "q" * lpad(g.order, 2, '0'))
+    ps = interface.panels
+    all(DielectricBIE.default_polynomial_panel, ps) ||
+        throw(ArgumentError("SCTLPotential needs panels with polynomial densities (FlatPanels, Gauss-Legendre " *
+                            "TensorPanels); GCQ edge panels are not"))
+    # one SCTL element list per proxy order: the smallest order at least the panel's nodes per direction. The density
+    # is interpolated from the panel's nodes to the proxy's (exact for its polynomial), so any n_quad works.
+    offs = cumsum([0; [num_points(P) for P in ps]])
+    params = [_panel_param(P) for P in ps]
+    nper = [max(length(xu), length(xv)) for (_, xu, xv) in params]
+    pord = map(nper) do q
+        i = findfirst(>=(q), _SCTL_ORDERS)
+        i === nothing && throw(ArgumentError("SCTLPotential: panels with $q nodes per direction exceed SCTL's orders"))
+        _SCTL_ORDERS[i]
     end
-    perm = reduce(vcat, [g.perm for g in groups])
+    op = BoundaryIntegralOp(Laplace3D_FxU(); accuracy = ev.tol / 10.0^_EXTRA_DIGITS)
+    I = Int[]; J = Int[]; V = Float64[]
+    row = 0
+    for p in sort!(unique(pord))
+        ids = findall(==(p), pord)
+        el = QuadElemList(p, length(ids)) do e, u, v
+            params[ids[e]][1](u, v)
+        end
+        xn = param_nodes(p)
+        for k in ids
+            _, xu, xv = params[k]
+            M = kron(lagrange_interp_matrix(xu, xn), lagrange_interp_matrix(xv, xn))   # p^2 × (panel nodes)
+            for c in axes(M, 2), r in axes(M, 1)
+                v = M[r, c]
+                abs(v) > 1e-15 || continue                  # identity rows when the nodes coincide
+                push!(I, row + r); push!(J, offs[k] + c); push!(V, v)
+            end
+            row += p^2
+        end
+        add_elem_list!(op, el, "q" * lpad(p, 2, '0'))
+    end
+    Pm = sparse(I, J, V, row, offs[end])                    # interface nodes -> SCTL proxy nodes
     nt = size(targets, 2)
     nt == 0 || set_target_coord!(op, Matrix{Float64}(targets))
     nt == 0 || setup!(op)
-    n = length(perm)
-    x = Vector{Float64}(undef, n)
-    apply = σ -> begin
-        nt == 0 && return Float64[]
-        @inbounds for (s, d) in enumerate(perm)
-            x[s] = σ[d]
-        end
-        compute_potential(op, x)
-    end
-    return DielectricBIE.LinearMap{Float64}(apply, nt, n)
+    apply = σ -> nt == 0 ? Float64[] : compute_potential(op, Pm * σ)
+    return DielectricBIE.LinearMap{Float64}(apply, nt, offs[end])
 end
 
 function DielectricBIE.sctl_near_list(interface::DielectricInterface; tol::Real = 1e-10, radius = nothing,

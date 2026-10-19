@@ -437,12 +437,13 @@ HCubaturePotential(tol::Real; range_factor::Real = 5.0) = HCubaturePotential(Flo
 """
     SCTLPotential(; tol = 1e-10)
 
-SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set (`FlatPanel` interfaces, `n_quad` in
-4, 8, 12, 16, 20): SCTL's near test (per-node Bernstein radius at `tol`), its near-singular rule (each target's
+SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein radius at `tol`), its near-singular rule (each target's
 closest point on the panel, dyadic refinement toward it) and PVFMM for the far field, the octree kept for all
 densities. Accurate to about `tol` at any distance from the surface, except for rounding: the near correction
 cancels the node rule's term of the nearest node, which for a target at distance `d` from a node costs about
-`1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Needs `using SCTL`.
+`1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Any panels with polynomial densities ([`default_polynomial_panel`](@ref):
+`FlatPanel`s of any `n_quad` ≤ 20, Gauss-Legendre `TensorPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or
+20 with the panel's geometry, the density interpolated to its nodes (exact). Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLPotential <: PotentialEvaluator
     tol::Float64 = 1e-10

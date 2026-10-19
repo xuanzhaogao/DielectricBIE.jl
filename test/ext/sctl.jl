@@ -176,6 +176,14 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         # here reach 5e-9 from a node
         @test Pp * (Σp[:, 1] + 2Σp[:, 2]) ≈ Pp * Σp[:, 1] + 2 * (Pp * Σp[:, 2]) rtol = 1e-8
         @test isempty(potential_operator(SCTLPotential(), small, zeros(3, 0)) * σp)
+        # n_quad without an SCTL element order: proxies of order 8, the density interpolated (exact)
+        six = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 6, 0.5, 4.0, 1.0, Float64)
+        X6, N6 = BI._interface_targets_normals(six)
+        σ6 = [cos(2X6[1, i]) + X6[2, i] * X6[3, i] + 0.5 for i in 1:BI.num_points(six)]
+        T6 = X6[:, [3, 50, 101]] .+ [1e-2, 1e-4, 1e-6]' .* N6[:, [3, 50, 101]]
+        u6 = potential_operator(SCTLPotential(tol = 1e-10), six, T6) * σ6
+        @test maximum(abs, u6 - [_ref_potential(six, σ6, T6[:, t]) for t in 1:3]) / maximum(abs, u6) < 1e-9
+        @test_throws ArgumentError potential_operator(SCTLPotential(), gcq, zeros(3, 1))   # GCQ edge panels
         # the HCubature evaluator is the previous function
         Ph = potential_operator(HCubaturePotential(1e-10), small, Tp[:, end-1:end])
         @test Ph * σp ≈ BI.laplace3d_pottrg_fmm3d_corrected_hcubature(small, Tp[:, end-1:end], 1e-10, 1e-10, 5.0) * σp
