@@ -195,7 +195,8 @@ All `sources` must share identical grid points (the batch convention); this is c
 
 Conventions match `four_index_matrix`: TKM returns the `1/(4π|r|)`-normalised potential
 and is used without further scaling; the scattered layer potential is the output of
-`laplace3d_pottrg_fmm3d_corrected_hcubature` applied to each column of Σ.
+`laplace3d_pottrg_fmm3d_corrected_hcubature` applied to each column of Σ (or that of `potential`,
+a [`PotentialEvaluator`](@ref), e.g. `SCTLPotential(tol = lhs_tol)`).
 """
 function evaluate_batch_potential(interface, Σ::AbstractMatrix,
         sources::Vector{<:VolumeSource{Float64, 3}}, targets::Matrix{Float64};
@@ -203,7 +204,7 @@ function evaluate_batch_potential(interface, Σ::AbstractMatrix,
         range_factor::Float64 = 5.0,
         screen_boxes::Union{Nothing, Vector{<:NamedTuple}} = nothing,
         screen_epses::Union{Nothing, Vector{Float64}} = nothing,
-        screen_eps_out::Float64 = 1.0)
+        screen_eps_out::Float64 = 1.0, potential::Union{Nothing, PotentialEvaluator} = nothing)
     K = length(sources)
     nt = size(targets, 2)
     size(targets, 1) == 3 || throw(ArgumentError("targets must be 3 × n"))
@@ -224,7 +225,7 @@ function evaluate_batch_potential(interface, Σ::AbstractMatrix,
     Φ = Matrix{Float64}(undef, nt, K)
 
     # scattered part: build the corrected map once, apply per column
-    pottrg = laplace3d_pottrg_fmm3d_corrected_hcubature(interface, targets, lhs_tol, lhs_tol, range_factor)
+    pottrg = potential_operator(something(potential, HCubaturePotential(lhs_tol; range_factor)), interface, targets)
     for a in 1:K
         Φ[:, a] = pottrg * Σ[:, a]
     end
