@@ -297,6 +297,56 @@ interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_qu
 A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))
 ```
 
+### Building a near quadrature on SCTL's pieces
+
+SCTL.jl exposes the steps of its own near correction as Julia data (see its manual page "Near-field pieces"). In
+DielectricBIE they are available as follows:
+
+- [`SCTLNearCorrection`](@ref)`(tol = …)` is SCTL's complete correction as a sparse `C`, usable with either far field.
+- [`sctl_near_list`](@ref)`(interface; tol, radius)` is SCTL's classification alone: which interface nodes are
+  near which panel. It works for any panel type when you pass the radii.
+- [`dt_node_rule_block`](@ref)`(interface, k, targets)` is the node-rule block that a correction subtracts.
+
+So a quadrature written in Julia only has to produce the accurate rows. This example uses SCTL's classification
+with DielectricBIE's adaptive quadtree for the rows. The tree's moments use the panel's Lagrange basis, so they act
+on nodal values. Targets in the panel's plane keep the node rule, since `Dᵀ` vanishes there:
+
+```julia
+using DielectricBIE, SCTL
+import DielectricBIE as BI
+using LinearAlgebra
+
+interface = single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
+nl = sctl_near_list(interface; tol = 1e-10)              # SCTL's near test
+X, Nrm = BI._interface_targets_normals(interface)
+owner = reduce(vcat, [fill(k, BI.num_points(p)) for (k, p) in enumerate(interface.panels)])
+cfg = BI.AdaptiveConfig(atol = 1e-12)
+
+coplanar(p, q) = abs(dot(p.normal, q.normal)) > 1 - 1e-12 && abs(dot(p.normal, q.points[1] .- p.points[1])) < 1e-12
+
+accurate = map(eachindex(interface.panels)) do k                   # your quadrature goes here
+    p = interface.panels[k]
+    ts = SCTL.near_targets(nl, k)
+    B = dt_node_rule_block(interface, k, ts)               # start from the node rule
+    for k2 in unique(owner[ts])
+        coplanar(p, interface.panels[k2]) && continue      # Dᵀ = 0 in the panel's plane
+        rows = findall(t -> owner[t] == k2, ts)
+        K = zeros(length(rows), BI.num_points(p))
+        BI.adaptive_block_moments_tree!(K, p, [Tuple(X[:, t]) for t in ts[rows]], interface.panels[k2].normal, :DT, cfg)
+        B[rows, :] = K
+    end
+    B
+end
+plain = [dt_node_rule_block(interface, k, SCTL.near_targets(nl, k)) for k in eachindex(interface.panels)]
+C = SCTL.assemble_near_correction(nl, accurate, [BI.num_points(p) for p in interface.panels]; subtract = plain)
+
+A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = C)
+```
+
+On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-9. That comparison is part of the
+tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, give the radii:
+`sctl_near_list(interface; radius = r)`, with one radius per node or one for all.
+
 The GCQ solvers take the same keywords:
 `solve_dielectric_boxes_gcq(parts, sources; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))`.
 

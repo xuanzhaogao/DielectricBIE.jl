@@ -84,6 +84,47 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         Ags = dielectric_operator(gcq; far = SCTLFarField(tol = 1e-12))
         @test relerr(Ags * xg, Ag_ref * xg) < 1e-10
 
+        # SCTL's near correction as a matrix: with FMM3D's far field it is SCTL's operator again
+        Anc = dielectric_operator(itf; far = FMM3DFarField(1e-12), near = SCTLNearCorrection(tol = 1e-10))
+        @test relerr(Anc * X, Aq * X) < 1e-8          # quadratures at 1e-10 vs 1e-12
+        @test relerr(dielectric_operator(mixed; far = FMM3DFarField(1e-12), near = SCTLNearCorrection(tol = 1e-11)) * xm,
+                     Am_ref * xm) < 1e-7
+
+        # a near quadrature written in Julia on SCTL's classification: DielectricBIE's adaptive quadtree for the
+        # accurate rows (its moments use the panel's Lagrange basis, so they act on nodal values), the node rule where
+        # D^T vanishes (targets in the panel's plane)
+        small = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
+        nl = sctl_near_list(small; tol = 1e-10)
+        @test nl isa SCTL.NearList && SCTL.nelem(nl) == length(small.panels)
+        Xs, Ns = BI._interface_targets_normals(small)
+        cfg = BI.AdaptiveConfig(atol = 1e-12)
+        offs = cumsum([0; [BI.num_points(p) for p in small.panels]])
+        owner = reduce(vcat, [fill(k, BI.num_points(p)) for (k, p) in enumerate(small.panels)])
+        acc = map(eachindex(small.panels)) do k
+            p = small.panels[k]
+            ts = SCTL.near_targets(nl, k)
+            @test all(t -> t in ts, offs[k]+1:offs[k+1])      # a panel's own nodes are near it
+            B = dt_node_rule_block(small, k, ts)
+            for k2 in unique(owner[ts])
+                coplanar = abs(dot(p.normal, small.panels[k2].normal)) > 1 - 1e-12 &&
+                           abs(dot(p.normal, small.panels[k2].points[1] .- p.points[1])) < 1e-12
+                coplanar && continue
+                rows = findall(t -> owner[t] == k2, ts)
+                K = zeros(length(rows), BI.num_points(p))
+                BI.adaptive_block_moments_tree!(K, p, [Tuple(Xs[:, t]) for t in ts[rows]], small.panels[k2].normal, :DT, cfg)
+                B[rows, :] = K
+            end
+            B
+        end
+        plain = [dt_node_rule_block(small, k, SCTL.near_targets(nl, k)) for k in eachindex(small.panels)]
+        Cj = SCTL.assemble_near_correction(nl, acc, [BI.num_points(p) for p in small.panels]; subtract = plain)
+        xs = randn(rng, BI.num_points(small))
+        Aj = dielectric_operator(small; far = FMM3DFarField(1e-13), near = Cj)
+        As_ = dielectric_operator(small; far = FMM3DFarField(1e-13), near = SCTLNearCorrection(tol = 1e-12))
+        @test relerr(Aj * xs, As_ * xs) < 1e-9
+        @test sctl_near_list(small; radius = 0.0).trg == Int[]
+        @test_throws DimensionMismatch sctl_near_list(small; radius = [1.0])
+
         # batch mode: block GMRES through solve_dielectric_box3d_block (two sources, one solve)
         xs = -0.3:0.3:0.3
         P = [(x, y, z) for x in xs for y in xs for z in xs]
@@ -101,6 +142,7 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test relerr(Σ2, Σ0) < 1e-6
     else
         @test_throws ErrorException dielectric_operator(itf; far = SCTLFarField())
+        @test_throws ErrorException dielectric_operator(itf; near = SCTLNearCorrection())
         @info "SCTL.jl not installed: skipping the SCTL backend tests"
     end
 end
