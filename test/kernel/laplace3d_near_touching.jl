@@ -83,4 +83,14 @@ using Test
 
     @test err_on < err_off
     @test err_on < 1e-5    # loose acceptance: adaptive should reach reasonable accuracy
+
+    # Every target node of panel_b, not only the one closest to the corners: the
+    # quadtree of a touching pair must resolve targets all along the shared edge.
+    errs_on = map(1:length(panel_b.points)) do t
+        tg = panel_b.points[t]
+        ref = hcub_DT(panel_a, tg, target_normal) + hcub_DT(panel_b, tg, target_normal)
+        abs(y_on[panel_b_idx + t] - ref)
+    end
+    @info "cross-face DT, all targets of panel_b" maximum(errs_on)
+    @test maximum(errs_on) < 1e-6
 end
