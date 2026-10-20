@@ -437,7 +437,7 @@ function laplace3d_DT_fmm3d_corrected(
         adaptive_cfg = adaptive_cfg,
     )
     @info "neighbor list: upsample=$(length(upsample)) adaptive=$(length(adaptive)) of $(length(interface.panels)^2)"
-    corrections = laplace3d_DT_corrections(interface, upsample, adaptive)
+    corrections = BlockCorrection(laplace3d_DT_corrections(interface, upsample, adaptive), interface)
 
     f = charges -> (D_base * charges) + (corrections * charges)
     return LinearMap{Float64}(f, n_points, n_points)
@@ -463,7 +463,7 @@ function laplace3d_D_fmm3d_corrected(
         adaptive_cfg = adaptive_cfg,
     )
     @info "neighbor list: upsample=$(length(upsample)) adaptive=$(length(adaptive)) of $(length(interface.panels)^2)"
-    corrections = laplace3d_D_corrections(interface, upsample, adaptive)
+    corrections = BlockCorrection(laplace3d_D_corrections(interface, upsample, adaptive), interface)
 
     f = charges -> (D_base * charges) + (corrections * charges)
     return LinearMap{Float64}(f, n_points, n_points)

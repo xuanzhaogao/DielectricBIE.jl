@@ -17,6 +17,7 @@ using Test
 
     # core
     include("core/panels.jl")
+    include("core/block_corrections.jl")
     include("core/sources.jl")
     include("core/source_geometry.jl")
     include("core/tensor_panels.jl")

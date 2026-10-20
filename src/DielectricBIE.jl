@@ -79,6 +79,7 @@ export solve_dielectric_box3d_block, dielectric_diagonal_scaling
 export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!
 export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
 export default_near_quadrature, DielectricOperator, dielectric_operator
+export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block
 export SCTLProxyNearQuad, default_polynomial_panel
 export PotentialEvaluator, HCubaturePotential, SCTLPotential, potential_operator
@@ -115,6 +116,7 @@ export plot_campaign_geometry
 include("core/panels.jl")
 include("utils/edge_gcq.jl")       # needed by the tensor panels (EdgeGCQRule)
 include("core/tensor_panels.jl")
+include("core/block_corrections.jl") # near corrections as per-panel dense blocks
 include("core/sources.jl")
 include("core/source_geometry.jl")
 

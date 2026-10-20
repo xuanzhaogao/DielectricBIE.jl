@@ -362,7 +362,7 @@ work for a vector or an `N × K` block, so it serves `Krylov.gmres` and `Krylov.
 """
 struct DielectricOperator{F}
     far::F
-    corrections::Union{Nothing, SparseMatrixCSC{Float64, Int}}
+    corrections::Union{Nothing, BlockCorrection{Float64}}   # per-panel dense blocks
     diag::Vector{Float64}
     n::Int
 end
@@ -384,6 +384,7 @@ A = dielectric_operator(gcq_interface; near = MyQuad(...))             # a self-
 function dielectric_operator(interface::DielectricInterface;
                              far::FarField = FMM3DFarField(1e-9), near = default_near_quadrature(interface))
     F, C = _dt_parts(far, _near_quadrature(near), interface)
+    C === nothing || (C = BlockCorrection(C, interface))
     diag = reduce(vcat, [fill(dielectric_tau(interface.eps_in[i], interface.eps_out[i]), num_points(p))
                          for (i, p) in enumerate(interface.panels)])
     return DielectricOperator(F, C, diag, length(diag))

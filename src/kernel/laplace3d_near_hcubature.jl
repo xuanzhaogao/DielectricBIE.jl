@@ -328,7 +328,7 @@ function laplace3d_DT_fmm3d_corrected_hcubature(
     max_order = maximum(panel.n_quad for panel in interface.panels)
     (; upsample, adaptive) = build_neighbor_list(interface, max_order, hcubature_atol)
     @info "neighbor list: upsample=$(length(upsample)) adaptive=$(length(adaptive)) of $(length(interface.panels)^2)"
-    corrections = laplace3d_DT_corrections_hcubature(interface, upsample, hcubature_atol)
+    corrections = BlockCorrection(laplace3d_DT_corrections_hcubature(interface, upsample, hcubature_atol), interface)
 
     f = charges -> (D_base * charges) + (corrections * charges)
     return LinearMap{Float64}(f, n_points, n_points)
@@ -377,7 +377,9 @@ function laplace3d_pottrg_fmm3d_corrected_hcubature(
         @info "num of hcub calculations: $(sum(length(v) for v in values(target_neighbor_list)))"
     end
 
-    corrections = laplace3d_pottrg_corrections_hcubature(refined_interface, targets, target_neighbor_list, hcubature_atol)
+    corrections = BlockCorrection(laplace3d_pottrg_corrections_hcubature(refined_interface, targets,
+                                                                          target_neighbor_list, hcubature_atol),
+                                  refined_interface)
 
     f = charges -> begin
         charges_refined = prolongation * charges
