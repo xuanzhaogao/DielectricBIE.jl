@@ -41,11 +41,15 @@ function lhs_dielectric_box3d_gcq_dense(interface::DielectricInterface{TensorPan
 end
 
 """
-    solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500, constraints=nothing)
+    solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500, constraints=nothing, precondition=true)
 
 GMRES on the W^{1/2}-scaled system (unknowns W^{1/2} σ, W the quadrature
 weights), which keeps the unknowns O(1)-scaled when σ is singular. Returns
 (σ, stats) with the Krylov stats.
+
+`precondition` (default `true`) applies the contrast scaling of [`dielectric_diagonal_scaling`](@ref),
+`1/τ` per panel, as a right preconditioner, as the flat-panel solvers do: `A P = I + (Dᵀ + C) P` then has
+one eigenvalue cluster at 1 instead of one per distinct contrast (a no-op with a single contrast).
 
 `constraints` imposes each body's total charge, which high-contrast problems and
 perfect conductors (`eps_in = Inf`) otherwise leave undetermined. Given the total charges
@@ -62,7 +66,8 @@ is solved instead. The rank-one terms move each body's near-zero eigenvalue τ +
 const _CHARGE_SHIFT = -0.5
 
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
-                                    rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing)
+                                    rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing,
+                                    precondition::Bool = true)
     w = all_weights(interface)
     d = sqrt.(abs.(w))
     n = length(b)
@@ -81,7 +86,9 @@ function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricI
             y
         end
     end
-    As = LinearMap{Float64}(x -> d .* (Ad * (x ./ d)), n, n)
-    ρ, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory = itmax)
-    return ρ ./ d, stats
+    # right preconditioner P: σ = P W^{-1/2} z, with z the GMRES unknowns
+    p = precondition ? 1 ./ _tensor_tau(interface) : ones(n)
+    As = LinearMap{Float64}(z -> d .* (Ad * (p .* (z ./ d))), n, n)
+    z, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory = itmax)
+    return p .* (z ./ d), stats
 end
