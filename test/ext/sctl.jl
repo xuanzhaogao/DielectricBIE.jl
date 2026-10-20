@@ -209,18 +209,20 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test relerr(Σ1, Σ0) < 1e-8
         @test relerr(Σ2, Σ0) < 1e-6
         # ... and the potential at the sources' grid points with either evaluator: the results differ by exactly the
-        # evaluators' difference (on this coarse 24-panel interface the HCubature evaluator is off by ~5e-4, SCTL's not)
+        # evaluators' difference, which is now rounding (before the HCubature path corrected every near pair it was off
+        # by ~5e-4 on this coarse 24-panel interface)
         Ph_b = potential_operator(HCubaturePotential(1e-10), bitf, pos)
         Ps_b = potential_operator(SCTLPotential(tol = 1e-10), bitf, pos)
         dU = reduce(hcat, [Ps_b * Σ0[:, a] - Ph_b * Σ0[:, a] for a in 1:2])
         Φh = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8)
         Φs = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8,
                                          potential = SCTLPotential(tol = 1e-10))
-        @test Φs - Φh ≈ dU rtol = 1e-10
+        @test maximum(abs, (Φs - Φh) - dU) < 1e-12 * maximum(abs, Φs)
+        @test maximum(abs, Φs - Φh) < 1e-9 * maximum(abs, Φs)
         Vh = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8)
         Vs = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
         tw = [v.weights .* v.density for v in vss]
-        @test Vs - Vh ≈ [dot(tw[a], dU[:, b]) for a in 1:2, b in 1:2] rtol = 1e-10
+        @test maximum(abs, (Vs - Vh) - [dot(tw[a], dU[:, b]) for a in 1:2, b in 1:2]) < 1e-12 * maximum(abs, Vs)
         sref = [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in 1:4:size(pos, 2)]
         @test maximum(abs, Ps_b * Σ0[:, 1] - [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in axes(pos, 2)]) /
               maximum(abs, sref) < 1e-12

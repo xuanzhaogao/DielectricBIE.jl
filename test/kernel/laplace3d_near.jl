@@ -722,10 +722,13 @@ end
     )
     interface = BI.DielectricInterface([p1, p2], fill(2.0, 2), fill(1.0, 2))
 
+    # far enough that no pair is near: outside range_factor * size / n_quad of the centres and outside the
+    # Bernstein ellipse at which the 2-point rule reaches hcub_tol (ρ⋆ = 1e-8^(-1/4) = 100, i.e. ~50 panel sizes);
+    # at 3 to 3.5 the 2-point rule is off by ~3e-7, and those pairs are corrected
     targets = [
-        3.0  3.5;
-        3.0  3.5;
-        3.0  3.5
+        300.0  350.0;
+        300.0  350.0;
+        300.0  350.0
     ]
     fmm_tol = 1e-10
     hcub_tol = 1e-8

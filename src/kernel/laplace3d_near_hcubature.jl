@@ -334,12 +334,23 @@ function laplace3d_DT_fmm3d_corrected_hcubature(
     return LinearMap{Float64}(f, n_points, n_points)
 end
 
+"""
+    laplace3d_pottrg_fmm3d_corrected_hcubature(interface, targets, fmm_tol, hcubature_atol, range_factor;
+                                               correct_edges = true)
+
+Off-surface single-layer potential operator (`Nt × N` `LinearMap`): panels near the targets are refined, FMM3D
+evaluates the node rule, and every (panel, target) pair whose node rule misses `hcubature_atol` (Bernstein
+radius, see `build_target_neighbor_list`), or whose target lies within `range_factor × (panel size) / n_quad` of
+the panel's centre, gets an HCubature correction. `correct_edges = false` skips the panels touching box edges
+(`is_edge`) as sources, as before 2026-10: their nearby targets then get no correction.
+"""
 function laplace3d_pottrg_fmm3d_corrected_hcubature(
     interface::DielectricInterface{P, Float64},
     targets::Matrix{Float64},
     fmm_tol::Float64,
     hcubature_atol::Float64,
     range_factor::Float64;
+    correct_edges::Bool = true,
 ) where {P <: AbstractPanel}
     @assert size(targets, 1) == 3
 
@@ -358,7 +369,8 @@ function laplace3d_pottrg_fmm3d_corrected_hcubature(
     end
 
     pot_base = laplace3d_pottrg_fmm3d(refined_interface, targets, fmm_tol)
-    target_neighbor_list = build_target_neighbor_list(refined_interface, targets, false; range_factor = range_factor)
+    target_neighbor_list = build_target_neighbor_list(refined_interface, targets, correct_edges;
+        range_factor = range_factor, atol = P <: FlatPanel ? hcubature_atol : nothing)
 
     @info "num of sources: $(num_points(interface)) → $(num_points(refined_interface))"
     if !isempty(target_neighbor_list)
