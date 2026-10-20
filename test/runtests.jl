@@ -46,6 +46,7 @@ using Test
     include("solver/dielectric_box3d_gcq.jl")
     include("solver/dielectric_boxes_gcq.jl")
     include("solver/gcq_batched_potential.jl")
+    include("solver/gcq_target_refine.jl")
     include("solver/multi_box3d_gcq.jl")
 
     # multi-rhs solver

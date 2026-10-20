@@ -208,3 +208,92 @@ function _gcq_rhs_split(p::TensorPanel{T}, eu, ev, atol, gq::TensorRule1D, glc::
         end
         return kids
 end
+
+# Target-driven refinement: split every panel that some target is near (`tensor_isfar` false) in the direction(s)
+# that make it near, until each target is far from every panel, so that the off-surface potential needs no near
+# corrections. A Gauss-Legendre direction is near when its Bernstein estimate is ≥ quad_tol / 2; a GCQ direction
+# when the target is within η_gcq lengths (`gcq_far` as in `tensor_isfar`; with `:max`, the panel's longer side).
+function _tensor_near_dirs(p::TensorPanel, xl; quad_tol, η_gcq, gcq_far)
+    nu = nv = false
+    if is_gcq(p.ru) || is_gcq(p.rv)
+        both = is_gcq(p.ru) && is_gcq(p.rv)
+        Lg = gcq_far === :max || both ? max(p.Lu, p.Lv) : is_gcq(p.ru) ? p.Lu : p.Lv
+        if _tensor_rect_dist(p, xl) <= η_gcq * Lg
+            if gcq_far === :max || both
+                nu = p.Lu >= p.Lv; nv = p.Lv >= p.Lu
+            else
+                nu = is_gcq(p.ru); nv = is_gcq(p.rv)
+            end
+        end
+    end
+    r = xl .- p.o
+    u = dot(r, p.eu) / p.Lu; v = dot(r, p.ev) / p.Lv; h = abs(dot(r, p.normal))
+    du = max(0.0, -u, u - 1) * p.Lu; dv = max(0.0, -v, v - 1) * p.Lv
+    eu = is_gcq(p.ru) ? 0.0 : _bernstein_rho(2u - 1, 2 * hypot(h, dv) / p.Lu)^(-2 * length(p.ru.x))
+    ev = is_gcq(p.rv) ? 0.0 : _bernstein_rho(2v - 1, 2 * hypot(h, du) / p.Lv)^(-2 * length(p.rv.x))
+    if eu + ev >= quad_tol
+        eu >= quad_tol / 2 && (nu = true)
+        ev >= quad_tol / 2 && (nv = true)
+    end
+    return nu, nv
+end
+
+# the directions of p to split for the targets in `tree` (columns of X): every candidate within the radius that
+# tensor_isfar can reject (as in GCQPotential) is tested; directions shorter than min_size are not split
+function _tensor_target_dirs(p::TensorPanel, X, tree; quad_tol, η_gcq, gcq_far, min_size)
+    L = max(p.Lu, p.Lv)
+    cc = p.anchor .+ p.o .+ (p.Lu / 2) .* p.eu .+ (p.Lv / 2) .* p.ev
+    n = min(length(p.ru.x), length(p.rv.x))
+    ρs = quad_tol^(-1 / (2n)); As = (ρs + 1 / ρs) / 2; Bs = (ρs - 1 / ρs) / 2
+    R = 1.05 * max(η_gcq * L + hypot(p.Lu, p.Lv) / 2, L / 2 * sqrt(As^2 + (1 + Bs)^2 + Bs^2))
+    ok_u = p.Lu >= 2min_size; ok_v = p.Lv >= 2min_size
+    nu = nv = false
+    for t in inrange(tree, collect(cc), R)
+        xl = (X[1, t], X[2, t], X[3, t]) .- p.anchor
+        a, b = _tensor_near_dirs(p, xl; quad_tol, η_gcq, gcq_far)
+        nu |= a & ok_u; nv |= b & ok_v
+        (nu || !ok_u) && (nv || !ok_v) && break
+    end
+    return nu, nv
+end
+
+# children of p splitting the flagged directions: a GL panel in halves along u and/or v, an edge panel as in the
+# RHS refinement (across: an edge panel and a GL panel; along: two edge panels), a corner panel by a vertex level
+function _gcq_target_split(p::TensorPanel{T}, nu::Bool, nv::Bool, gq::TensorRule1D, glc::TensorRule1D) where T
+    p.kind == :gl || return _gcq_rhs_split(p, nu ? one(T) : zero(T), nv ? one(T) : zero(T), one(T), gq, glc)
+    us = nu ? ((0, p.Lu / 2), (1, p.Lu / 2)) : ((0, p.Lu),)
+    vs = nv ? ((0, p.Lv / 2), (1, p.Lv / 2)) : ((0, p.Lv),)
+    return [TensorPanel(p.normal, p.anchor, p.o .+ (iu * Lu) .* p.eu .+ (iv * Lv) .* p.ev, p.eu, p.ev, Lu, Lv,
+                        p.ru, p.rv, :gl, p.plane) for (iu, Lu) in us for (iv, Lv) in vs]
+end
+
+# refine groups (panels, gq, glc) for the targets X (3 × M), level by level (threaded over the panels of a level);
+# returns the refined panels of each group
+function _gcq_target_refine(groups, X::AbstractMatrix; quad_tol::Real = 1e-10, η_gcq::Real = 2.0,
+                            gcq_far::Symbol = :direction, max_depth::Int = 20, min_size::Real = 0.0)
+    T = Float64
+    Xm = Matrix{Float64}(X)
+    tree = KDTree(Xm)
+    out = [TensorPanel{T}[] for _ in groups]
+    level = [(g, p) for (g, (ps, _, _)) in enumerate(groups) for p in ps]
+    for depth in 0:max_depth
+        isempty(level) && break
+        dirs = Vector{Tuple{Bool, Bool}}(undef, length(level))
+        Threads.@threads :dynamic for i in eachindex(level)
+            dirs[i] = depth == max_depth ? (false, false) :
+                _tensor_target_dirs(level[i][2], Xm, tree; quad_tol, η_gcq, gcq_far, min_size)
+        end
+        next = Tuple{Int, TensorPanel{T}}[]
+        for (i, (g, p)) in enumerate(level)
+            nu, nv = dirs[i]
+            if !(nu || nv)
+                push!(out[g], p)
+            else
+                _, gq, glc = groups[g]
+                append!(next, [(g, k) for k in _gcq_target_split(p, nu, nv, gq, glc)])
+            end
+        end
+        level = next
+    end
+    return out
+end
