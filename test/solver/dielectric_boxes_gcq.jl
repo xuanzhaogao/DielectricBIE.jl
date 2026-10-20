@@ -57,3 +57,17 @@ end
         end
     end
 end
+
+@testset "GCQ solve: right contrast preconditioner" begin
+    boxes = [(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0), (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]
+    m = multi_dielectric_box3d_gcq(boxes, [12.0, 3.0], 1.0; nlev = 1, n_quad = 4, tol = 1e-6)
+    itf = m.interface
+    src = DielectricBIE.PointSource((0.3, 0.1, 0.8), 1.0)
+    A = first(DielectricBIE.lhs_dielectric_box3d_gcq_fmm3d(itf, 1e-12; quad_tol = 1e-8))
+    b = DielectricBIE.rhs_dielectric_box3d(itf, src, 1.0)
+    σ0, st0 = solve_dielectric_box3d_gcq(A, b, itf; rtol = 1e-10, precondition = false)
+    σ1, st1 = solve_dielectric_box3d_gcq(A, b, itf; rtol = 1e-10)
+    @test st1.niter < st0.niter
+    # both to residual 1e-10; without the charge constraint σ is set only to about κ × 1e-10
+    @test norm(σ1 - σ0) / norm(σ0) < 1e-6
+end
