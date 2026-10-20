@@ -234,3 +234,25 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @info "SCTL.jl not installed: skipping the SCTL backend tests"
     end
 end
+
+@testset "point_charge_field: SCTL vs FMM3D" begin
+    rng = MersenneTwister(21)
+    S = rand(rng, 3, 50000); q = randn(rng, 50000); T = rand(rng, 3, 45000) .+ [1.5, 0.0, 0.0]   # 95k points: the FMM
+    if HAVE_SCTL
+        for tol in (1e-6, 1e-10)
+            u0 = point_charge_field(FMM3DFarField(1e-14), S, q, T); g0 = point_charge_field(FMM3DFarField(1e-14), S, q, T; grad = true)
+            u = point_charge_field(SCTLFarField(tol = tol), S, q, T); g = point_charge_field(SCTLFarField(tol = tol), S, q, T; grad = true)
+            @test size(u) == size(u0) && size(g) == size(g0)
+            @test maximum(abs, u - u0) < tol * maximum(abs, u0)
+            @test maximum(abs, g - g0) < tol * maximum(abs, g0)
+        end
+        @test size(point_charge_field(SCTLFarField(), S, q, zeros(3, 0); grad = true)) == (3, 0)
+        # the RHS of a volume source through either evaluator
+        gsrc = BI.GaussianVolumeSource((0.0, 0.0, 0.0), 0.3, 12, 1e-6)
+        iface = BI.single_dielectric_box3d(8.0, 8.0, 8.0, 3, 1.0, 4.0, 1.0)
+        r0 = rhs_dielectric_box3d(iface, gsrc, 2.0, FMM3DFarField(1e-12))
+        @test maximum(abs, rhs_dielectric_box3d(iface, gsrc, 2.0, SCTLFarField(tol = 1e-10)) - r0) < 1e-10 * maximum(abs, r0)
+    else
+        @test_throws ErrorException point_charge_field(SCTLFarField(), S, q, T)
+    end
+end

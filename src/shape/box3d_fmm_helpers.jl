@@ -140,7 +140,8 @@ function _rhs_volume_targets_hybrid(
     eps_src::T,
     fmm_tol::T,
     tkm_kmax::T,
-    is_near::Vector{Bool},
+    is_near::Vector{Bool};
+    far = nothing,
 ) where T
     n_targets = size(targets, 2)
     @assert size(normals, 2) == n_targets
@@ -161,11 +162,10 @@ function _rhs_volume_targets_hybrid(
     n_far = length(far_idxs)
     if n_far > 0
         far_targets = targets[:, far_idxs]
-        vals_far = lfmm3d(fmm_tol, sources, charges = charges, targets = far_targets, pgt = 2)
-        grad_far = vals_far.gradtarg
+        # point charges, 1/(4π r) (FMM3D at fmm_tol unless `far` is given)
+        grad_far = point_charge_field(something(far, FMM3DFarField(fmm_tol)), sources, charges, far_targets; grad = true)
         for (k, i) in enumerate(far_idxs)
-            # FMM3D gradient uses the 1/r kernel normalization.
-            rhs_vals[i] = _rhs_from_grad(view(normals, :, i), view(grad_far, :, k), eps_src, T(4π))
+            rhs_vals[i] = _rhs_from_grad(view(normals, :, i), view(grad_far, :, k), eps_src, one(T))
         end
     end
 

@@ -152,19 +152,8 @@ function _ltkm3dc_eval(
     trgy = Δk_y .* (vec(view(trg, 2, :)) .- cy)
     trgz = Δk_z .* (vec(view(trg, 3, :)) .- cz)
 
-    coeff = nufft3d1(srcx, srcy, srcz, complex.(q), -1, T(eps), length(kx), length(ky), length(kz); nthreads = nthreads)
-    if ndims(coeff) == 4 && size(coeff, 4) == 1
-        coeff = dropdims(coeff; dims = 4)
-    end
-
-    @inbounds for iz in eachindex(kz), iy in eachindex(ky), ix in eachindex(kx)
-        k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
-        if k <= T(kmax)
-            coeff[ix, iy, iz] *= truncated_laplace3d_hat(k, L)
-        else
-            coeff[ix, iy, iz] = zero(eltype(coeff))
-        end
-    end
+    coeff = _tkm_coeff3(nufft3d1(srcx, srcy, srcz, complex.(q), -1, T(eps), length(kx), length(ky), length(kz); nthreads = nthreads))
+    _truncated_kernel_multiply!(coeff, kx, ky, kz, T(kmax), L)
 
     prefactor = (Δk_x * Δk_y * Δk_z) / (T(2π)^3)
     pot = nothing
