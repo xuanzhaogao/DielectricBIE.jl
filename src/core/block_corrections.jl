@@ -53,6 +53,18 @@ function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; ch
     blocks = Vector{Matrix{T}}(undef, np)
     rv = rowvals(C); nzv = nonzeros(C)
     Threads.@threads :dynamic for k in 1:np
+        # fast path: every column of the panel has the same rows (as the builders produce), copied column by column
+        c1 = first(cols[k], 1)
+        r1 = isempty(c1) ? Int[] : rv[nzrange(C, c1[1])]
+        if !isempty(c1) && issorted(r1; lt = <=) &&
+           all(c -> length(nzrange(C, c)) == length(r1) && view(rv, nzrange(C, c)) == r1, cols[k])
+            B = Matrix{T}(undef, length(r1), length(cols[k]))
+            for (jc, c) in enumerate(cols[k])
+                copyto!(view(B, :, jc), view(nzv, nzrange(C, c)))
+            end
+            rows[k] = r1; blocks[k] = B
+            continue
+        end
         rs = Int[]
         for c in cols[k], idx in nzrange(C, c)
             push!(rs, rv[idx])

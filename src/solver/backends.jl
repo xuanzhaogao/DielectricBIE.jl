@@ -497,8 +497,11 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
     tree = KDTree(Xt)
     rows = [Int[] for _ in panels]; cols = [Int[] for _ in panels]; vals = [T[] for _ in panels]
+    foreach(p -> (_tensor_near_tables(p.ru); _tensor_near_tables(p.rv)), panels)
+    _blas_single() do
     Threads.@threads :dynamic for k in eachindex(panels)
         ps = panels[k]
+        ws = _TensorRowWS([ps])
         L = max(ps.Lu, ps.Lv)
         cc = ps.anchor .+ ps.o .+ (ps.Lu / 2) .* ps.eu .+ (ps.Lv / 2) .* ps.ev
         half_diag = hypot(ps.Lu, ps.Lv) / 2
@@ -512,12 +515,13 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
             x = (Xt[1, t], Xt[2, t], Xt[3, t])
             xl = x .- ps.anchor
             tensor_isfar(ps, xl; quad_tol = ev.quad_tol, η_gcq = ev.η_gcq, gcq_far = ev.gcq_far) && continue
-            row = tensor_near_row(G, ps, xl)
+            row = tensor_near_row(G, ps, xl; ws)
             for (j, y) in enumerate(ps.points)
                 push!(rows[k], t); push!(cols[k], offs[k] + j)
                 push!(vals[k], row[j] - G(x .- y) * ps.weights[j])
             end
         end
+    end
     end
     C = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
     F = _pottrg_far(ev.far, interface, Xt)
