@@ -18,7 +18,8 @@ near correction plus the diagonal τ. Returns (A::LinearMap, stats), where
 function lhs_dielectric_box3d_gcq_fmm3d(interface::DielectricInterface{TensorPanel{Float64}, Float64},
                                         fmm_tol::Float64; reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0)
     D = laplace3d_DT_fmm3d(interface, fmm_tol)
-    C, stats = laplace3d_DT_tensor_corrections(interface; reuse, quad_tol, η_gcq)
+    C0, stats = laplace3d_DT_tensor_corrections(interface; reuse, quad_tol, η_gcq)
+    C = BlockCorrection(C0, interface)
     τ = _tensor_tau(interface)
     n = length(τ)
     return LinearMap{Float64}(x -> D * x .+ C * x .+ τ .* x, n, n), stats
