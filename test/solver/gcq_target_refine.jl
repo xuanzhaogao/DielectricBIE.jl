@@ -41,3 +41,28 @@ using Test
     end
     @test norm(u[2] - u[1]) / norm(u[1]) < 1e-4
 end
+
+@testset "GCQ: target-driven refinement for many targets (target_skin)" begin
+    boxes = [(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0), (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]
+    rng = MersenneTwister(5)
+    X = [0.1, -0.2, 0.3] .+ [0.3, 0.4, 0.12] .* rand(rng, 3, 8000)          # a dense cloud under the top face
+    kw = (; nlev = 1, n_quad = 4, tol = 1e-6, targets = X, target_tol = 1e-8)
+    isfar(p, t) = BI.tensor_isfar(p, Tuple(X[:, t]) .- p.anchor; quad_tol = 1e-8, gcq_far = :direction)
+    nnear(ps) = sum(p -> count(t -> !isfar(p, t), axes(X, 2)), ps)
+    m0 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; nlev = 1, n_quad = 4, tol = 1e-6)
+    m1 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw...)
+    m2 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw..., target_skin = 0.02)
+    # the skin is a small subset; the mesh is nearly the same, and nearly no target is left near
+    sk = BI._target_skin(X, BI._panel_planes(m0.interface.panels), 0.02)
+    @test size(sk, 2) < size(X, 2) / 5
+    @test all(any(sk[:, j] == X[:, t] for t in axes(X, 2)) for j in 1:25:size(sk, 2))
+    @test abs(length(m2.interface.panels) - length(m1.interface.panels)) <= length(m1.interface.panels) ÷ 100
+    @test nnear(m1.interface.panels) == 0
+    @test nnear(m2.interface.panels) <= 1e-4 * nnear(m0.interface.panels)
+    # the pairs left near are corrected by GCQPotential
+    p2 = m2.interface.panels; σ = randn(rng, BI.num_points(m2.interface))
+    T = X[:, 1:40:end]
+    uref = BI.potential_tensor(m2.interface, σ, [Tuple(T[:, t]) for t in axes(T, 2)]; quad_tol = 1e-8, gcq_far = :direction)
+    u = potential_operator(GCQPotential(quad_tol = 1e-8, gcq_far = :direction, far = FMM3DFarField(1e-13)), m2.interface, T) * σ
+    @test maximum(abs, u - uref) / maximum(abs, uref) < 1e-10
+end

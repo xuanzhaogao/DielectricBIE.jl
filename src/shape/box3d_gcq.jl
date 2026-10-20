@@ -267,12 +267,53 @@ function _gcq_target_split(p::TensorPanel{T}, nu::Bool, nv::Bool, gq::TensorRule
                         p.ru, p.rv, :gl, p.plane) for (iu, Lu) in us for (iv, Lv) in vs]
 end
 
+# The targets that decide the refinement for an interface of axis-aligned planes: for each axis, each cell of side δ
+# in the other two coordinates, and the nearest plane of `planes[a]` on each side of the target, the target closest to
+# that plane. A panel's near test grows stricter as the target approaches its plane at a fixed lateral position, so
+# these targets (within δ laterally) stand for the others; a target that stays near after the refinement is still
+# corrected exactly by the evaluator.
+function _target_skin(X::AbstractMatrix, planes::NTuple{3, Vector{Float64}}, δ::Real)
+    n = size(X, 2)
+    keep = falses(n)
+    for a in 1:3
+        isempty(planes[a]) && continue
+        pl = planes[a]; b, c = mod1(a + 1, 3), mod1(a + 2, 3)
+        best = Dict{NTuple{4, Int}, Tuple{Float64, Int}}()
+        for t in 1:n
+            x = X[a, t]
+            ib = floor(Int, X[b, t] / δ); ic = floor(Int, X[c, t] / δ)
+            j = searchsortedlast(pl, x)                       # pl[j] <= x < pl[j+1]
+            for (k, side) in ((j, 1), (j + 1, 0))
+                1 <= k <= length(pl) || continue
+                d = abs(x - pl[k])
+                key = (k, side, ib, ic)
+                e = get(best, key, (Inf, 0))
+                d < e[1] && (best[key] = (d, t))
+            end
+        end
+        for (_, (_, t)) in best
+            keep[t] = true
+        end
+    end
+    return X[:, keep]
+end
+
+# the plane coordinates of the panels, per normal axis
+function _panel_planes(panels)
+    planes = (Float64[], Float64[], Float64[])
+    for p in panels
+        a = argmax(abs.(p.normal))
+        push!(planes[a], (p.anchor .+ p.o)[a])
+    end
+    return map(v -> sort!(unique!(round.(v; digits = 10))), planes)
+end
+
 # refine groups (panels, gq, glc) for the targets X (3 × M), level by level (threaded over the panels of a level);
-# returns the refined panels of each group
+# returns the refined panels of each group. `skin > 0` first reduces the targets with _target_skin(·, skin).
 function _gcq_target_refine(groups, X::AbstractMatrix; quad_tol::Real = 1e-10, η_gcq::Real = 2.0,
-                            gcq_far::Symbol = :direction, max_depth::Int = 20, min_size::Real = 0.0)
+                            gcq_far::Symbol = :direction, max_depth::Int = 20, min_size::Real = 0.0, skin::Real = 0.0)
     T = Float64
-    Xm = Matrix{Float64}(X)
+    Xm = skin > 0 ? _target_skin(X, _panel_planes(p for (ps, _, _) in groups for p in ps), skin) : Matrix{Float64}(X)
     tree = KDTree(Xm)
     out = [TensorPanel{T}[] for _ in groups]
     level = [(g, p) for (g, (ps, _, _)) in enumerate(groups) for p in ps]
