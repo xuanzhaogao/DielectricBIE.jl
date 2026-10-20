@@ -175,13 +175,37 @@ function _spectral_gradient_coeffs_3d(
     kz::AbstractVector{T},
 ) where {T <: AbstractFloat}
     grad_coeff = Array{Complex{T}, 4}(undef, size(coeff)..., 3)
-    @inbounds for iz in eachindex(kz), iy in eachindex(ky), ix in eachindex(kx)
-        c = coeff[ix, iy, iz]
-        grad_coeff[ix, iy, iz, 1] = (im * kx[ix]) * c
-        grad_coeff[ix, iy, iz, 2] = (im * ky[iy]) * c
-        grad_coeff[ix, iy, iz, 3] = (im * kz[iz]) * c
+    Threads.@threads for iz in eachindex(kz)
+        @inbounds for iy in eachindex(ky), ix in eachindex(kx)
+            c = coeff[ix, iy, iz]
+            grad_coeff[ix, iy, iz, 1] = (im * kx[ix]) * c
+            grad_coeff[ix, iy, iz, 2] = (im * ky[iy]) * c
+            grad_coeff[ix, iy, iz, 3] = (im * kz[iz]) * c
+        end
     end
     return grad_coeff
+end
+
+# the type-1 coefficients as a 3D array (FINUFFT returns a trailing singleton dimension for one transform)
+_tkm_coeff3(c::Array{<:Complex, 3}) = c
+_tkm_coeff3(c::Array{<:Complex, 4}) = (size(c, 4) == 1 || throw(DimensionMismatch("one transform expected")); dropdims(c; dims = 4))
+
+"""
+    _truncated_kernel_multiply!(coeff, kx, ky, kz, kmax, L)
+
+Multiply the type-1 coefficients by the truncated Laplace kernel `truncated_laplace3d_hat(|k|, L)` inside the ball
+|k| ≤ kmax and zero them outside, in place (threaded over the z modes; a typed kernel, so the loop over the up to
+~10⁸ modes does not dispatch per entry).
+"""
+function _truncated_kernel_multiply!(coeff::Array{Complex{T}, 3}, kx::AbstractVector{T}, ky::AbstractVector{T},
+                                     kz::AbstractVector{T}, kmax::T, L::T) where {T <: AbstractFloat}
+    Threads.@threads for iz in eachindex(kz)
+        @inbounds for iy in eachindex(ky), ix in eachindex(kx)
+            k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
+            coeff[ix, iy, iz] = k <= kmax ? coeff[ix, iy, iz] * truncated_laplace3d_hat(k, L) : zero(Complex{T})
+        end
+    end
+    return coeff
 end
 
 @inline function truncated_laplace3d_hat(k::T, L::T) where {T <: Real}

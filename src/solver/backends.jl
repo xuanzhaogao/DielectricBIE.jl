@@ -44,6 +44,24 @@ end
 SCTLFarField(; tol::Real = 1e-10) = SCTLFarField(Float64(tol))
 
 """
+    point_charge_field(far::FarField, sources, charges, targets; grad = false)
+
+Free-space Laplace field of point charges, kernel `1/(4π r)`: the potential `Σ_s q_s / (4π |x_t - x_s|)` at the
+targets (a vector), or its gradient (`grad = true`, `3 × Nt`). `sources` and `targets` are `3 × N` matrices. Used
+for volume sources (their quadrature points and masses) away from the source support: right-hand sides and
+the far part of `PrecomputedVolumeField`. `FMM3DFarField` uses `lfmm3d`; `SCTLFarField` SCTL's `ParticleFMM`
+(after `using SCTL`), whose cost is set mostly by the points actually present rather than by a fixed source tree.
+"""
+function point_charge_field(far::FMM3DFarField, sources::AbstractMatrix, charges::AbstractVector,
+                            targets::AbstractMatrix; grad::Bool = false)
+    v = lfmm3d(far.tol, Matrix{Float64}(sources); charges = Vector{Float64}(charges),
+               targets = Matrix{Float64}(targets), pgt = grad ? 2 : 1)
+    return grad ? v.gradtarg ./ (4π) : v.pottarg ./ (4π)       # FMM3D's kernel is 1/r
+end
+point_charge_field(far::SCTLFarField, sources, charges, targets; grad::Bool = false) =
+    error("SCTLFarField needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
     far_field_operator(far::FarField, interface) -> F
 
 Prepare the far-field evaluation of `D^T_nodes` on the nodes of `interface`; apply it with `apply_far!(Y, F, X)`.

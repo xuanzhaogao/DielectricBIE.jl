@@ -269,6 +269,19 @@ function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, inter
     return DielectricBIE.LinearMap{Float64}(apply, nt, offs[end])
 end
 
+# point charges -> targets (volume sources: right-hand sides, the far part of PrecomputedVolumeField)
+function DielectricBIE.point_charge_field(far::SCTLFarField, sources::AbstractMatrix, charges::AbstractVector,
+                                          targets::AbstractMatrix; grad::Bool = false)
+    size(targets, 2) == 0 && return grad ? zeros(3, 0) : zeros(0)
+    # PVFMM needs about 5 digits more than requested for a max error (relative to the largest value) below tol on
+    # point charges, measured with 1e5 random points: gradients at digits 10 -> 2.5e-6, 12 -> 1.5e-8, 15 -> 7.8e-11;
+    # potentials at 12 -> 4e-10 to 3.5e-9, 15 -> 8e-13
+    d = clamp(ceil(Int, -log10(far.tol)) + 5, 1, 15)
+    U = fmm_eval(grad ? Laplace3D_FxdU() : Laplace3D_FxU(), Matrix{Float64}(sources), Vector{Float64}(charges),
+                 Matrix{Float64}(targets); digits = d)
+    return grad ? U : vec(U)
+end
+
 # node-rule single-layer potential, nodes -> targets, by ParticleFMM (for GCQPotential(far = SCTLFarField()))
 function DielectricBIE._pottrg_far(far::SCTLFarField, interface::DielectricInterface, targets::AbstractMatrix)
     X, _ = _interface_targets_normals(interface)

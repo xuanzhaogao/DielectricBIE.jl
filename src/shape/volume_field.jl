@@ -139,13 +139,8 @@ function PrecomputedVolumeField(
     srcz = dks[3] .* (vec(view(sources, 3, :)) .- center[3])
     coeff0 = FINUFFT.nufft3d1(srcx, srcy, srcz, complex.(charges), -1, tolT, nmodes...;
         nthreads = nthreads)
-    coeff = ndims(coeff0) == 4 ? dropdims(coeff0; dims = 4) : coeff0
-    @inbounds for iz in eachindex(kz), iy in eachindex(ky), ix in eachindex(kx)
-        k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
-        coeff[ix, iy, iz] = k <= km ?
-            coeff[ix, iy, iz] * TKM3D.truncated_laplace3d_hat(k, geom.L) :
-            zero(eltype(coeff))
-    end
+    coeff = TKM3D._tkm_coeff3(coeff0)
+    TKM3D._truncated_kernel_multiply!(coeff, kx, ky, kz, km, T(geom.L))
     grad_coeff = compute_grad ? TKM3D._spectral_gradient_coeffs_3d(coeff, kx, ky, kz) : nothing
     prefactor = dks[1] * dks[2] * dks[3] / T(2π)^3
     nfdim = nothing; pot_grid = nothing; grad_grid = nothing
@@ -340,9 +335,9 @@ end
 
 Potential of the precomputed field at `targets` (3 x n), free-space
 `1/(4π r)` normalization. In-box targets via type-2 NUFFT, out-of-box via
-FMM at the field tolerance.
+the far-field evaluator `far` ([`point_charge_field`](@ref); default `FMM3DFarField(field.tol)`).
 """
-function volume_field_potential(f::PrecomputedVolumeField{T}, targets::AbstractMatrix{<:Real}) where {T}
+function volume_field_potential(f::PrecomputedVolumeField{T}, targets::AbstractMatrix{<:Real}; far = nothing) where {T}
     size(targets, 1) == 3 || throw(ArgumentError("targets must have shape (3, n)"))
     (f.coeff === nothing && f.pot_grid === nothing) &&
         throw(ArgumentError("field was built with compute_pot = false"))
@@ -361,9 +356,9 @@ function volume_field_potential(f::PrecomputedVolumeField{T}, targets::AbstractM
         end
     end
     if !isempty(oidx)
-        vals = lfmm3d(f.tol, f.sources; charges = f.charges, targets = trg[:, oidx], pgt = 1)
+        vals = point_charge_field(something(far, FMM3DFarField(f.tol)), f.sources, f.charges, trg[:, oidx])
         for (k, i) in enumerate(oidx)
-            out[i] = vals.pottarg[k] / (4 * T(π))   # FMM3D uses the 1/r kernel
+            out[i] = vals[k]
         end
     end
     return out
@@ -374,9 +369,9 @@ end
 
 Gradient of the precomputed field at `targets` (3 x n), free-space
 `1/(4π r)` normalization. In-box targets via type-2 NUFFT, out-of-box via
-FMM at the field tolerance.
+the far-field evaluator `far` ([`point_charge_field`](@ref); default `FMM3DFarField(field.tol)`).
 """
-function volume_field_gradient(f::PrecomputedVolumeField{T}, targets::AbstractMatrix{<:Real}) where {T}
+function volume_field_gradient(f::PrecomputedVolumeField{T}, targets::AbstractMatrix{<:Real}; far = nothing) where {T}
     size(targets, 1) == 3 || throw(ArgumentError("targets must have shape (3, n)"))
     (f.grad_coeff === nothing && f.grad_grid === nothing) &&
         throw(ArgumentError("field was built with compute_grad = false"))
@@ -397,11 +392,9 @@ function volume_field_gradient(f::PrecomputedVolumeField{T}, targets::AbstractMa
         end
     end
     if !isempty(oidx)
-        vals = lfmm3d(f.tol, f.sources; charges = f.charges, targets = trg[:, oidx], pgt = 2)
+        vals = point_charge_field(something(far, FMM3DFarField(f.tol)), f.sources, f.charges, trg[:, oidx]; grad = true)
         for (k, i) in enumerate(oidx)
-            out[1, i] = vals.gradtarg[1, k] / (4 * T(π))   # FMM3D uses the 1/r kernel
-            out[2, i] = vals.gradtarg[2, k] / (4 * T(π))
-            out[3, i] = vals.gradtarg[3, k] / (4 * T(π))
+            out[1, i] = vals[1, k]; out[2, i] = vals[2, k]; out[3, i] = vals[3, k]
         end
     end
     return out
@@ -419,12 +412,13 @@ function _rhs_volume_targets_field(
     field::PrecomputedVolumeField{T},
     targets::Matrix{T},
     normals::Matrix{T},
-    eps_src::T,
+    eps_src::T;
+    far = nothing,
 ) where {T}
     n = size(targets, 2)
     @assert size(normals, 2) == n
     @assert size(normals, 1) == 3
-    grad = volume_field_gradient(field, targets)
+    grad = volume_field_gradient(field, targets; far)
     rhs_vals = Vector{T}(undef, n)
     @inbounds for i in 1:n
         rhs_vals[i] = _rhs_from_grad(view(normals, :, i), view(grad, :, i), eps_src, one(T))

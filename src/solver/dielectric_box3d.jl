@@ -124,6 +124,24 @@ function rhs_dielectric_box3d(interface::DielectricInterface{P, T}, vs::VolumeSo
 end
 const Rhs_dielectric_box3d = rhs_dielectric_box3d # backward compat
 
+"""
+    rhs_dielectric_box3d(interface, vs::VolumeSource, eps_src, far::FarField)
+
+Right-hand side of a volume source (its quadrature points as point charges) at the interface nodes, by the
+far-field evaluator `far` ([`point_charge_field`](@ref)): `FMM3DFarField(tol)` is `rhs_dielectric_box3d_fmm3d`,
+`SCTLFarField(tol = tol)` SCTL's FMM. Accurate where the nodes are well separated from the source support (point
+charges); near it use `PrecomputedVolumeField`.
+"""
+function rhs_dielectric_box3d(interface::DielectricInterface{P, Float64}, vs::VolumeSource{Float64, 3},
+                              eps_src::Float64, far::FarField) where {P <: AbstractPanel}
+    length(vs.density) == 0 && return zeros(Float64, num_points(interface))
+    sources, charges = _volume_source_fmm_sources(vs)
+    targets, normals = _interface_targets_normals(interface)
+    g = point_charge_field(far, sources, charges, targets; grad = true)
+    return [(normals[1, i] * g[1, i] + normals[2, i] * g[2, i] + normals[3, i] * g[3, i]) / eps_src
+            for i in axes(targets, 2)]
+end
+
 function rhs_dielectric_box3d_fmm3d(
     interface::DielectricInterface{P, Float64},
     vs::VolumeSource{Float64, 3},

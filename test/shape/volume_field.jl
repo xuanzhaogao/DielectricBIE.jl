@@ -225,3 +225,37 @@ end
     # margin_h is gone
     @test_throws MethodError PrecomputedVolumeField(gsrc; tol = 1e-6, margin_h = 5.0)
 end
+
+@testset "point_charge_field and rhs_dielectric_box3d(…, far)" begin
+    gsrc = DielectricBIE.GaussianVolumeSource((0.0, 0.0, 0.0), 0.3, 12, 1e-6)
+    src, q = DielectricBIE._volume_source_fmm_sources(gsrc)
+    targets = [3.0 -3.0 4.0 0.0; 0.0 2.0 4.0 -5.0; 0.0 -2.0 4.0 1.0]
+    direct = [sum(q[s] / (4π * norm(targets[:, t] - src[:, s])) for s in eachindex(q)) for t in axes(targets, 2)]
+    @test point_charge_field(FMM3DFarField(1e-13), src, q, targets) ≈ direct rtol = 1e-11
+    g = point_charge_field(FMM3DFarField(1e-13), src, q, targets; grad = true)
+    gd = reduce(hcat, [sum(q[s] * (src[:, s] - targets[:, t]) / (4π * norm(targets[:, t] - src[:, s])^3) for s in eachindex(q))
+                       for t in axes(targets, 2)])
+    @test g ≈ gd rtol = 1e-11
+    # the RHS with an explicit far-field evaluator equals rhs_dielectric_box3d_fmm3d
+    iface = DielectricBIE.single_dielectric_box3d(8.0, 8.0, 8.0, 3, 1.0, 4.0, 1.0)
+    @test rhs_dielectric_box3d(iface, gsrc, 2.0, FMM3DFarField(1e-12)) ≈ rhs_dielectric_box3d_fmm3d(iface, gsrc, 2.0, 1e-12) rtol = 1e-13
+    # the hybrid's far part with an explicit evaluator equals the default
+    normals = repeat([0.0, 0.0, 1.0], 1, 4)
+    h = DielectricBIE._estimate_source_spacing(gsrc); kmax = DielectricBIE._estimate_tkm3dc_kmax(h)
+    isn = DielectricBIE._classify_near_far_targets(targets, gsrc)
+    a = first(DielectricBIE._rhs_volume_targets_hybrid(src, q, targets, normals, 1.0, 1e-10, kmax, isn))
+    b = first(DielectricBIE._rhs_volume_targets_hybrid(src, q, targets, normals, 1.0, 1e-10, kmax, isn; far = FMM3DFarField(1e-12)))
+    @test a ≈ b rtol = 1e-9
+end
+
+@testset "TKM: threaded kernel multiply == plain loop" begin
+    TK = DielectricBIE.TKM3D
+    kx = TK.centered_mode_axis(0.3, 4.0); ky = TK.centered_mode_axis(0.25, 4.0); kz = TK.centered_mode_axis(0.4, 4.0)
+    c = randn(ComplexF64, length(kx), length(ky), length(kz)); L = 7.0
+    ref = [sqrt(kx[i]^2 + ky[j]^2 + kz[k]^2) <= 4.0 ? c[i, j, k] * TK.truncated_laplace3d_hat(sqrt(kx[i]^2 + ky[j]^2 + kz[k]^2), L) : 0.0im
+           for i in eachindex(kx), j in eachindex(ky), k in eachindex(kz)]
+    @test TK._truncated_kernel_multiply!(copy(c), kx, ky, kz, 4.0, L) == ref
+    @test TK._tkm_coeff3(reshape(c, size(c)..., 1)) == c
+    g = TK._spectral_gradient_coeffs_3d(c, kx, ky, kz)
+    @test g[:, :, :, 2] == [im * ky[j] * c[i, j, k] for i in eachindex(kx), j in eachindex(ky), k in eachindex(kz)]
+end
