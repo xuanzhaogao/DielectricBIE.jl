@@ -81,7 +81,7 @@ end
 
 """
     solve_dielectric_boxes_gcq(parts, sources; deflate = true, fmm_tol = 1e-13, quad_tol = 1e-12,
-                               η_gcq = 2.0, rtol = 1e-13, itmax = 1000)
+                               η_gcq = 2.0, gcq_far = :max, rtol = 1e-13, itmax = 1000)
 
 Solve the interface equation for several box bodies (`parts`, one interface per body, e.g. from
 `single_dielectric_box3d_gcq`; `eps_in = Inf` is a perfect conductor) excited by point charges
@@ -97,7 +97,7 @@ charge grows like the contrast (see `solve_dielectric_box3d_gcq`).
 `far` and `near` select the operator backends (see [`dielectric_operator`](@ref)): e.g.
 `far = SCTLFarField(tol = 1e-12)` for SCTL's FMM (after `using SCTL`), or `near = q` for a
 self-defined [`NearQuadrature`](@ref) `q`. Unset, they are `FMM3DFarField(fmm_tol)` and
-`GCQNearQuad(; quad_tol, η_gcq)`.
+`GCQNearQuad(; quad_tol, η_gcq, gcq_far)`.
 """
 function solve_dielectric_boxes_gcq(parts::AbstractVector{<:DielectricInterface}, sources; deflate::Bool = true, kw...)
     srcs = sources isa PointSource ? [sources] : collect(sources)
@@ -108,7 +108,7 @@ end
 
 """
     solve_dielectric_boxes_gcq(mesh::MultiBoxGCQ, sources; deflate = true, fmm_tol = 1e-13,
-                               quad_tol = 1e-12, η_gcq = 2.0, rtol = 1e-13, itmax = 1000)
+                               quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, rtol = 1e-13, itmax = 1000)
 
 The same for a mesh from `multi_dielectric_box3d_gcq` (boxes that may share faces), with one
 total-charge constraint per cluster of face-sharing boxes. `bodies` in the result are the
@@ -121,13 +121,13 @@ function solve_dielectric_boxes_gcq(m::MultiBoxGCQ, sources; deflate::Bool = tru
 end
 
 function _solve_boxes_gcq(interface, bodies, srcs, epsat, constraints; fmm_tol::Real = 1e-13,
-                          quad_tol::Real = 1e-12, η_gcq::Real = 2.0, rtol::Real = 1e-13, itmax::Int = 1000,
+                          quad_tol::Real = 1e-12, η_gcq::Real = 2.0, gcq_far::Symbol = :max, rtol::Real = 1e-13, itmax::Int = 1000,
                           far::Union{Nothing, FarField} = nothing, near = nothing)
     A = if far === nothing && near === nothing
-        first(lhs_dielectric_box3d_gcq_fmm3d(interface, Float64(fmm_tol); quad_tol, η_gcq))
+        first(lhs_dielectric_box3d_gcq_fmm3d(interface, Float64(fmm_tol); quad_tol, η_gcq, gcq_far))
     else
         dielectric_operator(interface; far = something(far, FMM3DFarField(Float64(fmm_tol))),
-            near = something(near, GCQNearQuad(; quad_tol = Float64(quad_tol), η_gcq = Float64(η_gcq))))
+            near = something(near, GCQNearQuad(; quad_tol = Float64(quad_tol), η_gcq = Float64(η_gcq), gcq_far)))
     end
     b = zeros(Float64, num_points(interface))
     for s in srcs

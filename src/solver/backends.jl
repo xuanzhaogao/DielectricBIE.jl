@@ -176,22 +176,25 @@ function near_corrections(q::UpsampledNearQuad, interface::DielectricInterface)
 end
 
 """
-    GCQNearQuad(; quad_tol = 1e-12, η_gcq = 2.0, reuse = true)
+    GCQNearQuad(; quad_tol = 1e-12, η_gcq = 2.0, reuse = true, gcq_far = :max)
 
 Near corrections of `TensorPanel` (GCQ) interfaces, from [`laplace3d_DT_tensor_corrections`](@ref).
+`gcq_far = :direction` measures the near distance of edge panels against their GCQ direction instead of their
+larger side (see `tensor_isfar`).
 """
 Base.@kwdef struct GCQNearQuad <: NearQuadrature
     quad_tol::Float64 = 1e-12
     η_gcq::Float64 = 2.0
     reuse::Bool = true
+    gcq_far::Symbol = :max
 end
 
 near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:TensorPanel}) =
     SparseMatrixCSC{Float64, Int}(first(laplace3d_DT_tensor_corrections(interface;
-        reuse = q.reuse, quad_tol = q.quad_tol, η_gcq = q.η_gcq)))
+        reuse = q.reuse, quad_tol = q.quad_tol, η_gcq = q.η_gcq, gcq_far = q.gcq_far)))
 near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:TensorPanel}, sources::AbstractVector{<:Integer}) =
     SparseMatrixCSC{Float64, Int}(first(laplace3d_DT_tensor_corrections(interface;
-        reuse = q.reuse, quad_tol = q.quad_tol, η_gcq = q.η_gcq, sources = sources)))
+        reuse = q.reuse, quad_tol = q.quad_tol, η_gcq = q.η_gcq, gcq_far = q.gcq_far, sources = sources)))
 
 """
     SCTLNearQuad(; tol = nothing)
@@ -463,17 +466,18 @@ potential_operator(::SCTLPotential, interface, targets) =
     error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """
-    GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, far = FMM3DFarField(1e-12))
+    GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, far = FMM3DFarField(1e-12))
 
 Off-surface single-layer potential for `TensorPanel` (GCQ) interfaces, accurate near edges and corners: the node
 rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus, for
 every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration row of
 `tensor_near_row` minus the node rule. The same quadrature as `potential_tensor`, which sums directly over all
-pairs; candidate pairs are found with a KD tree.
+pairs; candidate pairs are found with a KD tree. `gcq_far` as for [`GCQNearQuad`](@ref).
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
     η_gcq::Float64 = 2.0
+    gcq_far::Symbol = :max
     far::F = FMM3DFarField(1e-12)
 end
 
@@ -507,7 +511,7 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
         for t in inrange(tree, collect(cc), R)
             x = (Xt[1, t], Xt[2, t], Xt[3, t])
             xl = x .- ps.anchor
-            tensor_isfar(ps, xl; quad_tol = ev.quad_tol, η_gcq = ev.η_gcq) && continue
+            tensor_isfar(ps, xl; quad_tol = ev.quad_tol, η_gcq = ev.η_gcq, gcq_far = ev.gcq_far) && continue
             row = tensor_near_row(G, ps, xl)
             for (j, y) in enumerate(ps.points)
                 push!(rows[k], t); push!(cols[k], offs[k] + j)

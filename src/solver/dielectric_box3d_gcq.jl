@@ -9,16 +9,18 @@ function _tensor_tau(interface::DielectricInterface)
 end
 
 """
-    lhs_dielectric_box3d_gcq_fmm3d(interface, fmm_tol; reuse=true, quad_tol=1e-12, η_gcq=2.0)
+    lhs_dielectric_box3d_gcq_fmm3d(interface, fmm_tol; reuse=true, quad_tol=1e-12, η_gcq=2.0, gcq_far=:max)
 
 FMM-accelerated operator for a `TensorPanel` interface: FMM D^T plus the sparse
 near correction plus the diagonal τ. Returns (A::LinearMap, stats), where
-`stats` reports the number of near pairs and of distinct near rows computed.
+`stats` reports the number of near pairs and of distinct near rows computed. `η_gcq` and
+`gcq_far` set the near test of GCQ panels (see `tensor_isfar`).
 """
 function lhs_dielectric_box3d_gcq_fmm3d(interface::DielectricInterface{TensorPanel{Float64}, Float64},
-                                        fmm_tol::Float64; reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0)
+                                        fmm_tol::Float64; reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0,
+                                        gcq_far::Symbol = :max)
     D = laplace3d_DT_fmm3d(interface, fmm_tol)
-    C0, stats = laplace3d_DT_tensor_corrections(interface; reuse, quad_tol, η_gcq)
+    C0, stats = laplace3d_DT_tensor_corrections(interface; reuse, quad_tol, η_gcq, gcq_far)
     C = BlockCorrection(C0, interface)
     τ = _tensor_tau(interface)
     n = length(τ)
