@@ -79,11 +79,20 @@ share one rule. `nlev`, `n_quad`, `rhs`, `rhs_atol` and `max_depth` are as in
 over all panels, e.g. an FMM for a volume source. The face
 coordinates of all boxes define the grid, so boxes that are offset against each other create
 smaller rectangles. Solve with `solve_dielectric_boxes_gcq(mesh, sources)`.
+
+`targets` (3 × M, points off the interface where the potential will be evaluated) switches on a
+target-driven refinement after the RHS one: every panel that a target is near (`tensor_isfar` with
+`quad_tol = target_tol`, `η_gcq = target_eta`, `gcq_far = target_far`) is split in the near direction(s),
+up to `target_depth` levels and down to sides of `target_min_size`. Every target is then far from every
+panel, so `GCQPotential` with the same three parameters needs no near corrections (the node rule, i.e. the
+FMM, is the potential).
 """
 function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector{<:Real},
                                     eps_out::Real = 1.0; nlev::Int = 2, n_quad = 8,
                                     tol::Real = 1e-10, qmax = nothing, gmax::Real = 20.0,
-                                    rhs = nothing, rhs_batch = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30)
+                                    rhs = nothing, rhs_batch = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30,
+                                    targets = nothing, target_tol::Real = 1e-10, target_eta::Real = 2.0,
+                                    target_far::Symbol = :direction, target_depth::Int = 20, target_min_size::Real = 0.0)
     length(boxes) == length(epses) || throw(ArgumentError("boxes and epses must have equal length"))
     isempty(boxes) && throw(ArgumentError("no boxes"))
     isinf(eps_out) && throw(ArgumentError("eps_out must be finite"))
@@ -216,24 +225,28 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                 push!(quad, TensorPanel(nrm, cpt, (zero(T), zero(T), zero(T)), d1, d2, b1, b2,
                                         something(g2, glc), something(g1, glc),
                                         g1 === nothing && g2 === nothing ? :gl : :corner, fid))
-                if rhs_batch !== nothing    # refined below, all quadrants together
-                    push!(pending, (c, em, ep, quad, glc))
-                    continue
+                # a pointwise rhs refines here; rhs_batch and targets refine below, all quadrants together
+                if rhs !== nothing && rhs_batch === nothing
+                    quad = _gcq_rhs_refine(quad, rhs, T(rhs_atol), max_depth, glc, glc, glc)
                 end
-                quad = rhs === nothing ? quad : _gcq_rhs_refine(quad, rhs, T(rhs_atol), max_depth, glc, glc, glc)
-                append!(cpanels[c], quad)
-                append!(ceps_in[c], fill(em, length(quad)))
-                append!(ceps_out[c], fill(ep, length(quad)))
+                push!(pending, (c, em, ep, quad, glc))
             end
         end
     end
+    quads = [q for (_, _, _, q, _) in pending]
     if rhs_batch !== nothing
-        refined = _gcq_rhs_refine_batched([(q, glc, glc) for (_, _, _, q, glc) in pending], rhs_batch, T(rhs_atol), max_depth)
-        for ((c, em, ep, _, _), quad) in zip(pending, refined)
-            append!(cpanels[c], quad)
-            append!(ceps_in[c], fill(em, length(quad)))
-            append!(ceps_out[c], fill(ep, length(quad)))
-        end
+        quads = _gcq_rhs_refine_batched([(q, glc, glc) for (q, (_, _, _, _, glc)) in zip(quads, pending)],
+                                        rhs_batch, T(rhs_atol), max_depth)
+    end
+    if targets !== nothing
+        quads = _gcq_target_refine([(q, glc, glc) for (q, (_, _, _, _, glc)) in zip(quads, pending)], targets;
+                                   quad_tol = target_tol, η_gcq = target_eta, gcq_far = target_far,
+                                   max_depth = target_depth, min_size = target_min_size)
+    end
+    for ((c, em, ep, _, _), quad) in zip(pending, quads)
+        append!(cpanels[c], quad)
+        append!(ceps_in[c], fill(em, length(quad)))
+        append!(ceps_out[c], fill(ep, length(quad)))
     end
     interface = DielectricInterface(reduce(vcat, cpanels), reduce(vcat, ceps_in), reduce(vcat, ceps_out))
     offs = cumsum([0; [sum(num_points, ps; init = 0) for ps in cpanels]])
