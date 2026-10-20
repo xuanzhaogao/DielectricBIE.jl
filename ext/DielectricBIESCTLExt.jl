@@ -269,6 +269,21 @@ function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, inter
     return DielectricBIE.LinearMap{Float64}(apply, nt, offs[end])
 end
 
+# node-rule single-layer potential, nodes -> targets, by ParticleFMM (for GCQPotential(far = SCTLFarField()))
+function DielectricBIE._pottrg_far(far::SCTLFarField, interface::DielectricInterface, targets::AbstractMatrix)
+    X, _ = _interface_targets_normals(interface)
+    w = Vector{Float64}(all_weights(interface))
+    nt = size(targets, 2); n = length(w)
+    fmm = ParticleFMM(Laplace3D_FxU(); digits = _digits(far.tol))
+    set_sources!(fmm, X); set_targets!(fmm, Matrix{Float64}(targets))
+    F = Matrix{Float64}(undef, 1, n); U = Matrix{Float64}(undef, 1, nt)
+    return DielectricBIE.LinearMap{Float64}(nt, n) do σ
+        F[1, :] .= w .* σ
+        set_density!(fmm, F)
+        vec(copy(fmm_evaluate!(U, fmm)))
+    end
+end
+
 function DielectricBIE.sctl_near_list(interface::DielectricInterface; tol::Real = 1e-10, radius = nothing,
                                       targets = nothing)
     X, _ = _interface_targets_normals(interface)

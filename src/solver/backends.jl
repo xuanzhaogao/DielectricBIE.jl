@@ -461,3 +461,61 @@ potential_operator(ev::HCubaturePotential, interface::DielectricInterface, targe
 
 potential_operator(::SCTLPotential, interface, targets) =
     error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
+    GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, far = FMM3DFarField(1e-12))
+
+Off-surface single-layer potential for `TensorPanel` (GCQ) interfaces, accurate near edges and corners: the node
+rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus, for
+every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration row of
+`tensor_near_row` minus the node rule. The same quadrature as `potential_tensor`, which sums directly over all
+pairs; candidate pairs are found with a KD tree.
+"""
+Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
+    quad_tol::Float64 = 1e-12
+    η_gcq::Float64 = 2.0
+    far::F = FMM3DFarField(1e-12)
+end
+
+# node-rule single-layer potential from the interface nodes to the targets (Nt × N LinearMap)
+_pottrg_far(far::FMM3DFarField, interface::DielectricInterface, targets::AbstractMatrix) =
+    laplace3d_pottrg_fmm3d(interface, Matrix{Float64}(targets), far.tol)
+_pottrg_far(far::SCTLFarField, interface, targets) =
+    error("SCTLFarField needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+function potential_operator(ev::GCQPotential, interface::DielectricInterface{TensorPanel{T}, T},
+                            targets::AbstractMatrix) where T
+    size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
+    Xt = Matrix{Float64}(targets)
+    nt = size(Xt, 2)
+    panels = interface.panels
+    offs = cumsum([0; num_points.(panels)])
+    G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
+    tree = KDTree(Xt)
+    rows = [Int[] for _ in panels]; cols = [Int[] for _ in panels]; vals = [T[] for _ in panels]
+    Threads.@threads :dynamic for k in eachindex(panels)
+        ps = panels[k]
+        L = max(ps.Lu, ps.Lv)
+        cc = ps.anchor .+ ps.o .+ (ps.Lu / 2) .* ps.eu .+ (ps.Lv / 2) .* ps.ev
+        half_diag = hypot(ps.Lu, ps.Lv) / 2
+        # every target that tensor_isfar can reject: within η L of a GCQ panel, or inside the Bernstein ellipse of
+        # the Gauss-Legendre directions (semi-axes A⋆, B⋆ in units of L/2, as in build_neighbor_list)
+        n = min(length(ps.ru.x), length(ps.rv.x))
+        ρs = ev.quad_tol^(-1 / (2n))
+        As = (ρs + 1 / ρs) / 2; Bs = (ρs - 1 / ρs) / 2
+        R = 1.05 * max(ev.η_gcq * L + half_diag, L / 2 * sqrt(As^2 + (1 + Bs)^2 + Bs^2))
+        for t in inrange(tree, collect(cc), R)
+            x = (Xt[1, t], Xt[2, t], Xt[3, t])
+            xl = x .- ps.anchor
+            tensor_isfar(ps, xl; quad_tol = ev.quad_tol, η_gcq = ev.η_gcq) && continue
+            row = tensor_near_row(G, ps, xl)
+            for (j, y) in enumerate(ps.points)
+                push!(rows[k], t); push!(cols[k], offs[k] + j)
+                push!(vals[k], row[j] - G(x .- y) * ps.weights[j])
+            end
+        end
+    end
+    C = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
+    F = _pottrg_far(ev.far, interface, Xt)
+    return LinearMap{Float64}(σ -> F * σ .+ C * σ, nt, offs[end])
+end

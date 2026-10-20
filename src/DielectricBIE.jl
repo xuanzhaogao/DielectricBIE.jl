@@ -82,7 +82,7 @@ export default_near_quadrature, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block
 export SCTLProxyNearQuad, default_polynomial_panel
-export PotentialEvaluator, HCubaturePotential, SCTLPotential, potential_operator
+export PotentialEvaluator, HCubaturePotential, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
 
 # lattice batch
