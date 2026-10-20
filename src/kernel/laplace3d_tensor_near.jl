@@ -141,7 +141,7 @@ function _bernstein_rho(t, δ)
 end
 
 """
-    tensor_isfar(p, xl; quad_tol=1e-12, η_gcq=2.0)
+    tensor_isfar(p, xl; quad_tol=1e-12, η_gcq=2.0, gcq_far=:max)
 
 Whether the panel's own rule may be used for target `xl` (in p's anchor frame).
 A Gauss-Legendre direction with n points has error ≈ ρ^{-2n}, with ρ the
@@ -149,11 +149,19 @@ Bernstein-ellipse parameter of the target for that direction (its distance from
 the panel in the other two directions counted as the ellipse's minor axis); the
 sum over the GL directions must be below `quad_tol`. A GCQ direction (span of
 polynomial degree ≈ 20 times the edge powers) requires a distance of at least
-`η_gcq` panel sizes.
+`η_gcq` lengths: of the panel's larger side (`gcq_far = :max`, the default), or of
+the GCQ direction itself (`gcq_far = :direction`; for a corner panel, GCQ in both
+directions, the larger side). The node rule of an edge or corner panel, for a
+density s^pw × smooth, is accurate to about 5e-10 at 1, and 1e-10 at 2, lengths of
+its GCQ direction once the GL direction is resolved, so `:direction` with
+η_gcq = 2 keeps quad_tol ≥ 1e-10 while skipping the long sides of edge panels.
 """
-function tensor_isfar(p::TensorPanel, xl; quad_tol = 1e-12, η_gcq = 2.0)
-    if (is_gcq(p.ru) || is_gcq(p.rv)) && _tensor_rect_dist(p, xl) <= η_gcq * max(p.Lu, p.Lv)
-        return false
+function tensor_isfar(p::TensorPanel, xl; quad_tol = 1e-12, η_gcq = 2.0, gcq_far::Symbol = :max)
+    if is_gcq(p.ru) || is_gcq(p.rv)
+        Lg = gcq_far === :max ? max(p.Lu, p.Lv) :
+             gcq_far === :direction ? (is_gcq(p.ru) && is_gcq(p.rv) ? max(p.Lu, p.Lv) : is_gcq(p.ru) ? p.Lu : p.Lv) :
+             throw(ArgumentError("gcq_far must be :max or :direction, got :$gcq_far"))
+        _tensor_rect_dist(p, xl) <= η_gcq * Lg && return false
     end
     r = xl .- p.o
     u = dot(r, p.eu) / p.Lu; v = dot(r, p.ev) / p.Lv; h = abs(dot(r, p.normal))
@@ -176,17 +184,17 @@ end
 _tensor_dnG(nx, d) = -(nx[1] * d[1] + nx[2] * d[2] + nx[3] * d[3]) / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2)^3)
 
 """
-    laplace3d_DT_tensor_corrections(interface; reuse=true, quad_tol=1e-12, η_gcq=2.0, sources=nothing)
+    laplace3d_DT_tensor_corrections(interface; reuse=true, quad_tol=1e-12, η_gcq=2.0, gcq_far=:max, sources=nothing)
 
 Sparse correction C such that `laplace3d_DT_fmm3d(interface, tol) + C` is the
 near-corrected D^T operator in DielectricBIE's sign convention
 (entries laplace3d_grad(y_j, x_i, n_i) w_j). Pairs that `tensor_isfar` rejects at
-`quad_tol` get the product-integration row. With `sources` (panel indices) only the
+`quad_tol` (and `η_gcq`, `gcq_far`) get the product-integration row. With `sources` (panel indices) only the
 columns of those source panels are computed, the others are zero. Returns (C, stats).
 """
 function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPanel{T}, T};
                                          reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0,
-                                         sources = nothing) where T
+                                         gcq_far::Symbol = :max, sources = nothing) where T
     panels = interface.panels
     counts = num_points.(panels)
     offs = cumsum([0; counts])
@@ -201,7 +209,7 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
                 is_src[js] || continue
                 ps.plane == pt.plane && continue
                 xl = (pt.anchor .- ps.anchor) .+ xo
-                tensor_isfar(ps, xl; quad_tol, η_gcq) || push!(near[it], (i, js, xl, pt.normal))
+                tensor_isfar(ps, xl; quad_tol, η_gcq, gcq_far) || push!(near[it], (i, js, xl, pt.normal))
             end
         end
     end
@@ -258,7 +266,7 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
 end
 
 """
-    potential_tensor(interface, σ, targets; quad_tol=1e-12, η_gcq=2.0)
+    potential_tensor(interface, σ, targets; quad_tol=1e-12, η_gcq=2.0, gcq_far=:max)
 
 Single-layer potential u(x) = ∫ σ(y) / (4π|x - y|) dA(y) at off-surface `targets`
 (absolute coordinates). Panels that `tensor_isfar` accepts use their own rule; the
@@ -266,7 +274,8 @@ others the product-integration row of `tensor_near_row` (accurate for targets cl
 to edges and corners, down to the floating-point resolution of the target position).
 """
 function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ::AbstractVector,
-                          targets::AbstractVector; quad_tol = 1e-12, η_gcq = 2.0) where T
+                          targets::AbstractVector; quad_tol = 1e-12, η_gcq = 2.0,
+                          gcq_far::Symbol = :max) where T
     panels = interface.panels
     offs = cumsum([0; num_points.(panels)])
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
@@ -277,7 +286,7 @@ function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ:
         for (k, ps) in enumerate(panels)
             σk = view(σ, offs[k]+1:offs[k+1])
             xl = x .- ps.anchor
-            if tensor_isfar(ps, xl; quad_tol, η_gcq)
+            if tensor_isfar(ps, xl; quad_tol, η_gcq, gcq_far)
                 for (j, y) in enumerate(ps.points)
                     acc += G(x .- y) * ps.weights[j] * σk[j]
                 end

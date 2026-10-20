@@ -1,6 +1,6 @@
 using DielectricBIE
 import DielectricBIE as BI
-using LinearAlgebra, Random
+using LinearAlgebra, SparseArrays, Random
 using Test
 
 @testset "GCQ: batched RHS refinement and GCQPotential" begin
@@ -28,4 +28,19 @@ using Test
     P = potential_operator(GCQPotential(far = FMM3DFarField(1e-13)), itf, T)
     @test size(P) == (size(T, 2), BI.num_points(itf))
     @test maximum(abs, P * σ - uref) / maximum(abs, uref) < 1e-11
+
+    # gcq_far = :direction: the near distance of edge panels against their GCQ direction; same results at the tolerance
+    Pd = potential_operator(GCQPotential(far = FMM3DFarField(1e-13), gcq_far = :direction), itf, T)
+    @test maximum(abs, Pd * σ - uref) / maximum(abs, uref) < 1e-9
+    ud = BI.potential_tensor(itf, σ, [Tuple(T[:, t]) for t in axes(T, 2)]; gcq_far = :direction)
+    @test maximum(abs, ud - uref) / maximum(abs, uref) < 1e-9
+    Cm = BI.near_corrections(GCQNearQuad(), itf)
+    Cd = BI.near_corrections(GCQNearQuad(gcq_far = :direction), itf)
+    @test nnz(Cd) <= nnz(Cm)
+    A = BI.laplace3d_DT(itf)                       # node rule, dense
+    @test norm((A + Cd) * σ - (A + Cm) * σ) / norm((A + Cm) * σ) < 1e-9
+    L1 = first(BI.lhs_dielectric_box3d_gcq_fmm3d(itf, 1e-13))
+    L2 = first(BI.lhs_dielectric_box3d_gcq_fmm3d(itf, 1e-13; gcq_far = :direction))
+    @test norm(L2 * σ - L1 * σ) / norm(L1 * σ) < 1e-9
+    @test_throws ArgumentError BI.tensor_isfar(itf.panels[1], (5.0, 5.0, 5.0); gcq_far = :nearest)
 end
