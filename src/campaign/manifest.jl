@@ -31,9 +31,10 @@ and record the realized Cartesian center. Orbital id = 1-based index in `c.orbit
 function enumerate_centers(c::CampaignInput)
     temps = load_templates!(c)
     out = CenterInfo[]
+    centroid = Dict{Int, NTuple{3, Float64}}()            # one centroid per template, not per orbital
     for (id, o) in enumerate(c.orbitals)
         dg = temps[o.type][2]
-        c0 = ntuple(d -> Float64(density_centroid(dg)[d]), 3)
+        c0 = get!(() -> ntuple(d -> Float64(density_centroid(dg)[d]), 3), centroid, o.type)
         steps = snap_orbital(dg, c0, o.pos)
         At, Bt, Ct = true_cell_vectors(dg)
         G = hcat(collect(At) ./ dg.nx, collect(Bt) ./ dg.ny, collect(Ct) ./ dg.nz)

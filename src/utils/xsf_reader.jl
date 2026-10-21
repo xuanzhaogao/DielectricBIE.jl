@@ -169,15 +169,21 @@ Assumes the function does not wrap the supercell boundary (interior-localized).
 """
 function density_centroid(datagrid)
     nx, ny, nz = datagrid.nx, datagrid.ny, datagrid.nz
-    sx = sy = sz = 0.0
+    # grid_point(i, j, k) = o + (i-1)/nx At + (j-1)/ny Bt + (k-1)/nz Ct: sum the weighted fractional coordinates, then map
+    # once (the cell vectors are not recomputed per point)
+    su = sv = sw_ = 0.0
     sw = 0.0
-    for ix in 1:nx, iy in 1:ny, iz in 1:nz
-        w = abs2(datagrid.values[ix, iy, iz])
-        p = grid_point(datagrid, ix, iy, iz)
-        sx += w * p[1]; sy += w * p[2]; sz += w * p[3]; sw += w
+    vals = datagrid.values
+    @inbounds for iz in 1:nz, iy in 1:ny, ix in 1:nx        # memory order
+        w = abs2(vals[ix, iy, iz])
+        su += w * (ix - 1); sv += w * (iy - 1); sw_ += w * (iz - 1); sw += w
     end
     sw > 0 || error("density_centroid: density has zero total weight")
-    return (sx / sw, sy / sw, sz / sw)
+    o = Tuple(datagrid.origin)
+    At, Bt, Ct = true_cell_vectors(datagrid)
+    u, v, t = su / (sw * nx), sv / (sw * ny), sw_ / (sw * nz)
+    return (o[1] + u * At[1] + v * Bt[1] + t * Ct[1], o[2] + u * At[2] + v * Bt[2] + t * Ct[2],
+            o[3] + u * At[3] + v * Bt[3] + t * Ct[3])
 end
 
 """

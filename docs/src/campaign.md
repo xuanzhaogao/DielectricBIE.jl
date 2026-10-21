@@ -128,3 +128,65 @@ Notes for cluster runs:
 - **One worker per node** (`--ntasks-per-node=1`, `--cpus-per-task=<cores>`); the FMM
   saturates many cores, so node-sized tasks are the right grain.
 - **Crash/walltime recovery:** just resubmit the same phase — completed batches are skipped.
+
+## GCQ campaign mode
+
+[`run_gcq_campaign`](@ref) (and [`gcq_four_index`](@ref) underneath) computes the whole four-index matrix of a campaign
+on **one** GCQ interface (`TensorPanel`s with GCQ edge rules), instead of one interface per batch:
+
+```julia
+using DielectricBIE, SCTL
+
+c = load_campaign("campaign.toml")
+run_gcq_campaign(c)                    # -> <root>/gcq/V_full_eV.jls, V_full.tsv, V_full_eV.tsv, report.txt
+```
+
+How it works:
+
+1. **Shapes.** On a lattice every pair density is a grid translate of a few *shapes* (template_i, template_j, relative
+   step), each truncated on its own support (`support_rtol`). The targets are the union of all supports.
+2. **One interface and operator.** The interface is refined for the envelope of all pair densities and for all targets
+   (`target_skin`), so no target is near a panel. The induced part of V is then the node rule: by the symmetry of the
+   single layer, V_layer = G' A^{-1} F, with G[j, a] = w_j φ_a(y_j).
+3. **F and G** of every pair by one point-charge FMM per shape, over the interface nodes shifted by each pair's offset.
+4. **Low rank.** The right-hand sides are numerically low-rank: Q, the range of W^{1/2} F at tolerance `tau`, needs
+   only r solves (r ≪ number of pairs).
+5. **The volume part** by shapes: one screened volume solve per source shape, then one dot product per distinct
+   (shape, shape, shift).
+
+Requirements and tolerances:
+
+- Every pair density must lie inside one dielectric box (the same screening for all pairs); the mode checks this.
+- The tolerances default to the campaign's `[solve]` values. Further keywords: `nlev`, `quad_tol`, `edge_tol`, `tau`,
+  `fg_tol`, `target_skin`, and `far = :sctl` (`using SCTL`) or `:fmm3d`.
+
+For the Sec. 5.3 campaign (198 graphene orbitals, 2623 pairs, Si|SiO₂ substrate), the comparison is:
+
+| run | resources | wall time | cost |
+|---|---|---|---|
+| batch pipeline | 10 nodes | 2 h | about 2000 core-hours |
+| this mode, 4 processes | one node | 160 s | about 4 core-hours |
+
+The results agree with the batch pipeline to 1e-6 for the same pair densities.
+
+### Several processes
+
+The work splits over `nparts` processes started together, which exchange data through files in `sync`. Shapes,
+solves and volume shapes are divided over the parts; part 1 builds the interface and assembles V. For example, four
+processes on a two-socket node:
+
+```bash
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --exclusive
+SYNC=/dev/shm/gcq_$SLURM_JOB_ID; mkdir -p $SYNC
+for k in 1 2 3 4; do
+  JULIA_NUM_THREADS=24 OMP_NUM_THREADS=24 numactl --cpunodebind=$(( (k - 1) / 2 )) --membind=$(( (k - 1) / 2 )) \
+    julia --project -e "using DielectricBIE, SCTL;
+                        run_gcq_campaign(load_campaign(\"campaign.toml\"); part = $k, nparts = 4, sync = \"$SYNC\")" &
+done
+wait
+```
+
+Keep `OMP_NUM_THREADS` at or below the cores of one socket: with SCTL's FMM, more OpenMP threads than that made the
+solves about 3× slower on two-socket genoa nodes. Across nodes, use a shared directory for `sync`.
