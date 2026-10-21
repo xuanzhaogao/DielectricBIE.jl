@@ -256,3 +256,21 @@ end
         @test_throws ErrorException point_charge_field(SCTLFarField(), S, q, T)
     end
 end
+
+@testset "GCQ campaign mode: SCTL and FMM3D far fields agree" begin
+    if HAVE_SCTL
+        include(joinpath(@__DIR__, "..", "campaign", "fixture_campaign.jl"))
+        dir = mktempdir(); toml = write_fixture_campaign(dir); txt = read(toml, String)
+        two = "[[orbital]]\ntype = 1\nx = 5.4\ny = 1.8\nz = 1.8\n"
+        write(toml, replace(txt, two => "[[orbital]]\ntype = 1\nx = 3.6\ny = 1.8\nz = 1.8\n\n" * two))
+        c = load_campaign(toml)
+        kw = (; nlev = 1, n_quad = 4, rhs_tol = 1e-4, lhs_tol = 1e-9, gmres_rtol = 1e-10, volume_tol = 1e-8,
+                quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-10, fg_tol = 1e-9, verbose = false)
+        rf = gcq_four_index(c; kw..., far = :fmm3d)
+        rs = gcq_four_index(c; kw..., far = :sctl)
+        @test rs.stats.N == rf.stats.N
+        @test maximum(abs, rs.V - rf.V) < 1e-6 * maximum(abs, rf.V)
+    else
+        @test_throws ErrorException point_charge_field(SCTLFarField(), zeros(3, 1), [1.0], ones(3, 1))
+    end
+end

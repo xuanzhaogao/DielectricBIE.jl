@@ -101,6 +101,7 @@ export snap_orbital
 export CenterInfo, BatchSpec, enumerate_centers, enumerate_pairs, build_batches
 export write_centers, read_centers, write_manifest, read_manifest
 export prepare, solve_batch, consolidate, eval_batch, assemble_v, pending_batches
+export gcq_four_index, run_gcq_campaign, gcq_pair_shapes
 export four_index_integrals
 export run_phase
 export write_v_table
@@ -166,6 +167,7 @@ include("campaign/geometry.jl")
 include("campaign/manifest.jl")
 include("campaign/tasks.jl")
 include("campaign/v_output.jl")
+include("campaign/gcq.jl")       # GCQ campaign mode: the whole V on one GCQ interface
 
 # # visualization
 include("visualization/viz_2d.jl")
