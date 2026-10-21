@@ -83,7 +83,9 @@ smaller rectangles. Solve with `solve_dielectric_boxes_gcq(mesh, sources)`.
 `targets` (3 × M, points off the interface where the potential will be evaluated) switches on a
 target-driven refinement after the RHS one: every panel that a target is near (`tensor_isfar` with
 `quad_tol = target_tol`, `η_gcq = target_eta`, `gcq_far = target_far`) is split in the near direction(s),
-up to `target_depth` levels and down to sides of `target_min_size`. Every target is then far from every
+up to `target_depth` levels and down to sides of `target_min_size`. For many targets (e.g. millions of
+density points), `target_skin = δ` refines for the targets closest to the interface planes only (per cell of side
+δ across each plane, the nearest one on each side): a target left near is corrected exactly by `GCQPotential`. Every target is then far from every
 panel, so `GCQPotential` with the same three parameters needs no near corrections (the node rule, i.e. the
 FMM, is the potential).
 """
@@ -92,7 +94,8 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                                     tol::Real = 1e-10, qmax = nothing, gmax::Real = 20.0,
                                     rhs = nothing, rhs_batch = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30,
                                     targets = nothing, target_tol::Real = 1e-10, target_eta::Real = 2.0,
-                                    target_far::Symbol = :direction, target_depth::Int = 20, target_min_size::Real = 0.0)
+                                    target_far::Symbol = :direction, target_depth::Int = 20, target_min_size::Real = 0.0,
+                                    target_skin::Real = 0.0)
     length(boxes) == length(epses) || throw(ArgumentError("boxes and epses must have equal length"))
     isempty(boxes) && throw(ArgumentError("no boxes"))
     isinf(eps_out) && throw(ArgumentError("eps_out must be finite"))
@@ -241,7 +244,7 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
     if targets !== nothing
         quads = _gcq_target_refine([(q, glc, glc) for (q, (_, _, _, _, glc)) in zip(quads, pending)], targets;
                                    quad_tol = target_tol, η_gcq = target_eta, gcq_far = target_far,
-                                   max_depth = target_depth, min_size = target_min_size)
+                                   max_depth = target_depth, min_size = target_min_size, skin = target_skin)
     end
     for ((c, em, ep, _, _), quad) in zip(pending, quads)
         append!(cpanels[c], quad)
