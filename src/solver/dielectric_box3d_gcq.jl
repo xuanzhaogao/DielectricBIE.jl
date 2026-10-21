@@ -50,6 +50,8 @@ weights), which keeps the unknowns O(1)-scaled when σ is singular. Returns
 `precondition` (default `true`) applies the contrast scaling of [`dielectric_diagonal_scaling`](@ref),
 `1/τ` per panel, as a right preconditioner, as the flat-panel solvers do: `A P = I + (Dᵀ + C) P` then has
 one eigenvalue cluster at 1 instead of one per distinct contrast (a no-op with a single contrast).
+`memory` is the Krylov basis size (GMRES restarts after that many iterations); its workspace is `N × memory`, so the
+default caps it at 100 instead of preallocating `itmax` vectors per solve.
 
 `constraints` imposes each body's total charge, which high-contrast problems and
 perfect conductors (`eps_in = Inf`) otherwise leave undetermined. Given the total charges
@@ -67,7 +69,7 @@ const _CHARGE_SHIFT = -0.5
 
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
                                     rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing,
-                                    precondition::Bool = true)
+                                    precondition::Bool = true, memory::Int = min(itmax, 100))
     w = all_weights(interface)
     d = sqrt.(abs.(w))
     n = length(b)
@@ -89,6 +91,6 @@ function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricI
     # right preconditioner P: σ = P W^{-1/2} z, with z the GMRES unknowns
     p = precondition ? 1 ./ _tensor_tau(interface) : ones(n)
     As = LinearMap{Float64}(z -> d .* (Ad * (p .* (z ./ d))), n, n)
-    z, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory = itmax)
+    z, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory)
     return p .* (z ./ d), stats
 end
