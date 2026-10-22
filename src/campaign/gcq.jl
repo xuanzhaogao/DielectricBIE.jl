@@ -45,12 +45,16 @@ _grid_positions(dg, gidx) = (X = Matrix{Float64}(undef, 3, length(gidx));
     for (k, g) in enumerate(gidx); X[:, k] .= grid_point(dg, g[1], g[2], g[3]); end; X)
 
 """
-    gcq_pair_shapes(c, centers, pairs; support_rtol) -> (shapes, shape_of, delta, dg)
+    gcq_pair_shapes(c, centers, pairs; support_rtol, support = :global) -> (shapes, shape_of, delta, dg)
 
-The shapes of `pairs`: pair `p` is `shapes[shape_of[p]]` shifted by `delta[p]` grid steps.
+The shapes of `pairs`: pair `p` is `shapes[shape_of[p]]` shifted by `delta[p]` grid steps. Each pair density is kept
+where `|rho| >= support_rtol * m`, with `m` the largest |rho| of all pairs (`support = :global`, the default: one
+absolute threshold, as the batch pipeline's envelope truncation) or of the pair itself (`support = :pair`, which keeps
+large regions of negligible density for weakly overlapping pairs).
 """
 function gcq_pair_shapes(c::CampaignInput, centers::Vector{CenterInfo}, pairs;
-                         support_rtol = get(c.solve, "support_rtol", 1e-6))
+                         support_rtol = get(c.solve, "support_rtol", 1e-6), support::Symbol = :global)
+    support in (:global, :pair) || throw(ArgumentError("support must be :global or :pair"))
     byid = Dict(ct.id => ct for ct in centers)
     grids = [t[2] for t in load_templates!(c)]
     sid = Dict{Any, Int}(); shapes = GCQPairShape[]
@@ -59,11 +63,19 @@ function gcq_pair_shapes(c::CampaignInput, centers::Vector{CenterInfo}, pairs;
         key = (byid[i].template_id, byid[j].template_id, byid[j].steps .- byid[i].steps)
         s = get!(sid, key) do
             insts = Dict(o => OrbitalInstance(o, byid[o].template_id, byid[o].steps) for o in unique([i, j]))
+            # the per-pair cut keeps every point the global one keeps (a pair's maximum is at most the global one)
             b = assemble_lattice_batch(grids, insts, [(i, j)]; support_rtol)
             push!(shapes, GCQPairShape((i, j), byid[i].steps, b.gidx, b.weights .* b.densities[:, 1]))
             length(shapes)
         end
         shape_of[p] = s; delta[p] = byid[i].steps .- shapes[s].anchor
+    end
+    if support === :global && support_rtol > 0          # one absolute threshold (tw = w rho, w uniform)
+        m = maximum(sh -> maximum(abs, sh.tw; init = 0.0), shapes)
+        shapes = map(shapes) do sh
+            keep = findall(t -> abs(t) >= support_rtol * m, sh.tw)
+            GCQPairShape(sh.rep, sh.anchor, sh.gidx[keep], sh.tw[keep])
+        end
     end
     return shapes, shape_of, delta, grids[1]
 end
@@ -130,12 +142,21 @@ function gcq_campaign_interface(c::CampaignInput, X, env, dg; nlev, n_quad, rhs_
     return mesh.interface
 end
 
-# the target_skin default: 3 grid steps, but at most 1/8 of the smallest distance from a target to a box face plane
+# the target_skin default: 3 grid steps, but at most 1/8 of the smallest distance from a target to a box face (the
+# face's rectangle, not its plane: e.g. a junction plane running under a slab does not cut the slab's targets)
 function _gcq_default_skin(c::CampaignInput, X, dg)
     dmin = Inf
     for b in c.boxes, a in 1:3, sg in (-1, 1)
-        f = b.center[a] + sg * (b.Lx, b.Ly, b.Lz)[a] / 2
-        dmin = min(dmin, minimum(abs(X[a, t] - f) for t in axes(X, 2)))
+        L = (b.Lx, b.Ly, b.Lz)
+        f = b.center[a] + sg * L[a] / 2
+        l1, l2 = mod1(a + 1, 3), mod1(a + 2, 3)
+        d = Threads.Atomic{Float64}(Inf)
+        Threads.@threads for t in axes(X, 2)
+            e1 = max(0.0, abs(X[l1, t] - b.center[l1]) - L[l1] / 2)
+            e2 = max(0.0, abs(X[l2, t] - b.center[l2]) - L[l2] / 2)
+            Threads.atomic_min!(d, sqrt((X[a, t] - f)^2 + e1^2 + e2^2))
+        end
+        dmin = min(dmin, d[])
     end
     return min(3 * minimum(norm, _grid_frame(dg)[2:4]), dmin / 8)
 end
@@ -264,6 +285,7 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
 `(; pair_ids, V, V_vol, V_layer, stats)` (raw units, `V` symmetrized) on part 1 and `nothing` on the others.
 
 - `pairs`: the pair list (default: as `prepare`, `pair_overrides` or every pair within `neighbor_cutoff`).
+- `support`: the truncation of the pair densities (`:global` or `:pair`, see [`gcq_pair_shapes`](@ref)).
 - `far = :sctl` (SCTL's ParticleFMM; needs `using SCTL`) or `:fmm3d`, for the operator and for every point-charge
   field.
 - Tolerances: `n_quad`, `rhs_tol`, `lhs_tol` (operator far field), `gmres_rtol` and `volume_tol` default to the
@@ -284,7 +306,7 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         rhs_tol::Real = get(c.solve, "rhs_tol", 1e-5), lhs_tol::Real = get(c.solve, "lhs_tol", 1e-5),
                         gmres_rtol::Real = get(c.solve, "gmres_rtol", 1e-5), volume_tol::Real = get(c.solve, "volume_tol", 1e-5),
                         quad_tol::Real = 1e-8, edge_tol::Real = 1e-8, tau::Real = 1e-3, fg_tol::Real = 1e-4,
-                        target_skin = nothing, c_pad::Real = c.c_pad, verbose::Bool = true)
+                        target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global, verbose::Bool = true)
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
     nparts > 1 && sync === nothing && throw(ArgumentError("nparts > 1 needs a sync directory"))
     ff = _gcq_far(far)
@@ -296,7 +318,7 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         centers = enumerate_centers(c)
         pids = pairs !== nothing ? collect(pairs) :
                c.pair_overrides !== nothing ? c.pair_overrides : enumerate_pairs(centers, c.neighbor_cutoff)
-        shapes, shape_of, delta, dg = gcq_pair_shapes(c, centers, pids)
+        shapes, shape_of, delta, dg = gcq_pair_shapes(c, centers, pids; support)
         _gcq_uniform_box(c, dg, shapes, shape_of, delta)
         X, env = _gcq_targets(shapes, shape_of, delta, dg)
     end
