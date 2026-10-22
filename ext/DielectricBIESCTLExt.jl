@@ -297,8 +297,14 @@ end
 
 # point charges -> targets (volume sources: right-hand sides, the far part of PrecomputedVolumeField)
 function DielectricBIE.point_charge_field(far::SCTLFarField, sources::AbstractMatrix, charges::AbstractVector,
-                                          targets::AbstractMatrix; grad::Bool = false)
-    size(targets, 2) == 0 && return grad ? zeros(3, 0) : zeros(0)
+                                          targets::AbstractMatrix; grad::Bool = false, hess::Bool = false)
+    (grad && hess) && throw(ArgumentError("ask for the gradient or the Hessian"))
+    size(targets, 2) == 0 && return hess ? zeros(6, 0) : grad ? zeros(3, 0) : zeros(0)
+    if hess                                    # Laplace3D_Fxd2U: row-major 3x3 per target -> xx, yy, zz, xy, xz, yz
+        d = clamp(ceil(Int, -log10(far.tol)) + 5, 1, 15)
+        U = fmm_eval(Laplace3D_Fxd2U(), Matrix{Float64}(sources), Vector{Float64}(charges), Matrix{Float64}(targets); digits = d)
+        return U[[1, 5, 9, 2, 3, 6], :]
+    end
     # PVFMM needs about 5 digits more than requested for a max error (relative to the largest value) below tol on
     # point charges, measured with 1e5 random points: gradients at digits 10 -> 2.5e-6, 12 -> 1.5e-8, 15 -> 7.8e-11;
     # potentials at 12 -> 4e-10 to 3.5e-9, 15 -> 8e-13
@@ -306,6 +312,22 @@ function DielectricBIE.point_charge_field(far::SCTLFarField, sources::AbstractMa
     U = fmm_eval(grad ? Laplace3D_FxdU() : Laplace3D_FxU(), Matrix{Float64}(sources), Vector{Float64}(charges),
                  Matrix{Float64}(targets); digits = d)
     return grad ? U : vec(U)
+end
+
+# single- and double-layer potentials of nd densities on the same sources (layer_field): Laplace3D_FxU for the charges,
+# Laplace3D_DxU (source normals) for the dipoles, one tree per kernel, nd evaluations on it
+function DielectricBIE.layer_field(far::SCTLFarField, sources::AbstractMatrix, normals::AbstractMatrix,
+                                   charges::AbstractMatrix, dipoles::AbstractMatrix, targets::AbstractMatrix)
+    nd = size(charges, 1)
+    size(targets, 2) == 0 && return zeros(nd, 0)
+    d = clamp(ceil(Int, -log10(far.tol)) + 5, 1, 15)
+    Xs = Matrix{Float64}(sources); Xn = Matrix{Float64}(normals); Xt = Matrix{Float64}(targets)
+    U = zeros(nd, size(Xt, 2))
+    for f in 1:nd
+        U[f, :] .= vec(fmm_eval(Laplace3D_FxU(), Xs, Vector{Float64}(charges[f, :]), Xt; digits = d)) .+
+                   vec(fmm_eval(Laplace3D_DxU(), Xs, Xn, Matrix{Float64}(reshape(dipoles[f, :], 1, :)), Xt; digits = d))
+    end
+    return U
 end
 
 # node-rule single-layer potential, nodes -> targets, by ParticleFMM (for GCQPotential(far = SCTLFarField()))

@@ -27,7 +27,7 @@ export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
 export EdgeGCQRule, edge_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
-export PrecomputedVolumeField, volume_field_potential, volume_field_gradient, volume_field_hessian,
+export PrecomputedVolumeField, volume_field_potential, volume_field_gradient, volume_field_hessian, volume_field_derivatives,
        rhs_dielectric_box3d_field
 export NearFieldGeometry, near_field_geometry, in_near_region, lattice_spacing, source_box
 export screened_volume_source
@@ -76,7 +76,7 @@ export batched_lhs_dielectric_box3d_fmm3d_corrected, BatchedDielectricOperator
 export solve_dielectric_box3d_block, dielectric_diagonal_scaling
 
 # operator backends (far field x near quadrature)
-export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!, point_charge_field
+export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!, point_charge_field, layer_field
 export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
 export default_near_quadrature, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges

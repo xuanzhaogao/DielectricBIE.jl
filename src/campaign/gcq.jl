@@ -200,9 +200,9 @@ end
 
 # Hessian (6 × n: xx, yy, zz, xy, xz, yz) of the volume potential of sv at the points X: TKM near the source, point
 # charges elsewhere
-function _gcq_volume_hessian(sv, X; tol, c_pad)
+function _gcq_volume_hessian(sv, X; tol, c_pad, far = FMM3DFarField)
     fld = PrecomputedVolumeField(sv; tol, c_pad, compute_grad = false)
-    return volume_field_hessian(fld, X)
+    return volume_field_hessian(fld, X; far = far(tol))
 end
 
 # distinct keys of V_vol[a, b] = <rho_a, N[rho_b / eps]>: keys[s] maps (s', D, k) to its index among the values of
@@ -339,6 +339,10 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
     quadrature at `cut_tol`; needs `using SCTL`);
   - `:halfspace`: the half-space formula, an error where it does not apply.
   See `gcq_cut.jl` and `gcq_surface.jl`.
+- `field_derivs`: how the TKM field of each shape gives the potential, gradient and Hessian at the nodes and the
+  surface-correction nodes: `:spectral` (default; one type-2 NUFFT per component, the derivatives as ik and -k k
+  multipliers) or `:window` (one scalar grid per shape, derivatives of the gathering window:
+  `PrecomputedVolumeField(...; window_derivatives = true)`; one field serves every quantity and batch).
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
@@ -356,8 +360,9 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         quad_tol::Real = 1e-8, edge_tol::Real = 1e-8, tau::Real = 1e-3, fg_tol::Real = 1e-4,
                         target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global,
                         refine_targets::Bool = false, cut_rhs::Symbol = :auto, cut_order::Int = 8, cut_κ::Real = 0.25,
-                        cut_L0 = nothing, cut_tol::Real = 1e-10, verbose::Bool = true)
+                        cut_L0 = nothing, cut_tol::Real = 1e-10, field_derivs::Symbol = :spectral, verbose::Bool = true)
     cut_rhs in (:auto, :surface, :halfspace) || throw(ArgumentError("cut_rhs must be :auto, :surface or :halfspace"))
+    field_derivs in (:spectral, :window) || throw(ArgumentError("field_derivs must be :spectral or :window"))
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
     nparts > 1 && sync === nothing && throw(ArgumentError("nparts > 1 needs a sync directory"))
     ff = _gcq_far(far)
@@ -445,8 +450,14 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         # g, u: gradient and potential of the bare shape, near it (nodes inside its padded box) by its TKM field,
         # elsewhere by point charges. G' sigma = int sigma phi_a dA is then the node rule of a smooth integrand, with no
         # condition on the distance from the density to the interface. F = n . g / eps for a pair inside one region
-        g = _gcq_volume_gradient(sv0, T; tol = fg_tol, c_pad, far = ff)
-        u = _gcq_volume_potential(sv0, T; tol = fg_tol, c_pad, far = ff)
+        fld = field_derivs === :window ? PrecomputedVolumeField(sv0; tol = fg_tol, c_pad, window_derivatives = true) : nothing
+        if fld === nothing
+            g = _gcq_volume_gradient(sv0, T; tol = fg_tol, c_pad, far = ff)
+            u = _gcq_volume_potential(sv0, T; tol = fg_tol, c_pad, far = ff)
+        else
+            r = volume_field_derivatives(fld, T; pot = true, grad = true, hess = false, far = ff(fg_tol))
+            g, u = r.grad, r.pot
+        end
         Threads.@threads for k in eachindex(ps)
             ck = col[ps[k]]; off = (k - 1) * N; a = inveps[ps[k]]
             @inbounds for j in 1:N
@@ -469,8 +480,13 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
             if !isempty(sk)
                 ns = size(surf.X, 2)
                 Ts = reduce(hcat, [surf.X .- _grid_shift(dg, delta[ps[k]]) for k in sk])
-                Ψa = _gcq_volume_gradient(sv0, Ts; tol = fg_tol, c_pad, far = ff)
-                Ha = _gcq_volume_hessian(sv0, Ts; tol = fg_tol, c_pad)
+                if fld === nothing
+                    Ψa = _gcq_volume_gradient(sv0, Ts; tol = fg_tol, c_pad, far = ff)
+                    Ha = _gcq_volume_hessian(sv0, Ts; tol = fg_tol, c_pad, far = ff)
+                else
+                    r = volume_field_derivatives(fld, Ts; pot = false, grad = true, hess = true, far = ff(fg_tol))
+                    Ψa, Ha = r.grad, r.hess
+                end
                 for (i, k) in enumerate(sk)
                     src[k] = (Ψa[:, (i - 1) * ns .+ (1:ns)], Ha[:, (i - 1) * ns .+ (1:ns)])
                 end

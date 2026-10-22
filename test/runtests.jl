@@ -22,6 +22,7 @@ using Test
     include("core/source_geometry.jl")
     include("core/tensor_panels.jl")
     include("shape/volume_field.jl")
+    include("shape/volume_field_window.jl")
 
     # kernel functions
     include("kernel/laplace2d.jl")

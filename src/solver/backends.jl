@@ -44,21 +44,46 @@ end
 SCTLFarField(; tol::Real = 1e-10) = SCTLFarField(Float64(tol))
 
 """
-    point_charge_field(far::FarField, sources, charges, targets; grad = false)
+    point_charge_field(far::FarField, sources, charges, targets; grad = false, hess = false)
 
 Free-space Laplace field of point charges, kernel `1/(4π r)`: the potential `Σ_s q_s / (4π |x_t - x_s|)` at the
-targets (a vector), or its gradient (`grad = true`, `3 × Nt`). `sources` and `targets` are `3 × N` matrices. Used
+targets (a vector), its gradient (`grad = true`, `3 × Nt`) or its Hessian (`hess = true`, `6 × Nt`, rows ∂xx, ∂yy,
+∂zz, ∂xy, ∂xz, ∂yz). `sources` and `targets` are `3 × N` matrices. Used
 for volume sources (their quadrature points and masses) away from the source support: right-hand sides and
 the far part of `PrecomputedVolumeField`. `FMM3DFarField` uses `lfmm3d`; `SCTLFarField` SCTL's `ParticleFMM`
 (after `using SCTL`), whose cost is set mostly by the points actually present rather than by a fixed source tree.
 """
 function point_charge_field(far::FMM3DFarField, sources::AbstractMatrix, charges::AbstractVector,
-                            targets::AbstractMatrix; grad::Bool = false)
+                            targets::AbstractMatrix; grad::Bool = false, hess::Bool = false)
+    (grad && hess) && throw(ArgumentError("ask for the gradient or the Hessian"))
+    size(targets, 2) == 0 && return hess ? zeros(6, 0) : grad ? zeros(3, 0) : zeros(0)
     v = lfmm3d(far.tol, Matrix{Float64}(sources); charges = Vector{Float64}(charges),
-               targets = Matrix{Float64}(targets), pgt = grad ? 2 : 1)
-    return grad ? v.gradtarg ./ (4π) : v.pottarg ./ (4π)       # FMM3D's kernel is 1/r
+               targets = Matrix{Float64}(targets), pgt = hess ? 3 : grad ? 2 : 1)
+    return hess ? v.hesstarg ./ (4π) : grad ? v.gradtarg ./ (4π) : v.pottarg ./ (4π)   # FMM3D's kernel is 1/r
 end
-point_charge_field(far::SCTLFarField, sources, charges, targets; grad::Bool = false) =
+point_charge_field(far::SCTLFarField, sources, charges, targets; grad::Bool = false, hess::Bool = false) =
+    error("SCTLFarField needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
+    layer_field(far::FarField, sources, normals, charges, dipoles, targets) -> nd × Nt
+
+Free-space Laplace potentials of `nd` densities of point charges and normal dipoles on the same sources:
+row f is `Σ_s charges[f, s] / (4π r) + dipoles[f, s] n_s · (x_t - x_s) / (4π r³)`, `r = |x_t - x_s|` (the node rule of
+single and double layers with source normals `normals`, 3 × Ns). Coincident points are skipped.
+"""
+function layer_field(far::FMM3DFarField, sources::AbstractMatrix, normals::AbstractMatrix, charges::AbstractMatrix,
+                     dipoles::AbstractMatrix, targets::AbstractMatrix)
+    nd, ns = size(charges)
+    size(targets, 2) == 0 && return zeros(nd, 0)
+    dip = zeros(nd, 3, ns)
+    for i in 1:ns, f in 1:nd, d in 1:3
+        dip[f, d, i] = dipoles[f, i] * normals[d, i]
+    end
+    v = lfmm3d(far.tol, Matrix{Float64}(sources); charges = Matrix{Float64}(charges), dipvecs = dip,
+               targets = Matrix{Float64}(targets), pgt = 1, nd = nd)
+    return reshape(v.pottarg, nd, :) ./ (4π)                  # FMM3D: q/r and d·(t - s)/r³
+end
+layer_field(far::SCTLFarField, sources, normals, charges, dipoles, targets) =
     error("SCTLFarField needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """

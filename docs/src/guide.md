@@ -178,6 +178,32 @@ grad = volume_field_gradient(field, targets)    #              ->  3×n gradient
 rhs  = rhs_dielectric_box3d_field(interface, field, 1.0)
 ```
 
+`volume_field_hessian(field, targets)` returns the Hessian (6×n: ∂xx, ∂yy, ∂zz, ∂xy, ∂xz, ∂yz). By default every
+derivative is evaluated spectrally: each component is its own type-2 NUFFT of `ik`- or `-kk`-multiplied
+coefficients, so every batch pays one full FFT per component.
+
+`window_derivatives = true` (opt-in) builds one real scalar fine grid instead. Every derivative then comes from
+differentiating the gathering window, and repeated batches only gather:
+
+```julia
+field = PrecomputedVolumeField(vs; tol = 1e-10, window_derivatives = true)   # window_sigma = 1.5, window_tol = tol * 1e-4
+r = volume_field_derivatives(field, targets)                    # (; pot, grad, hess) in one pass
+r = volume_field_derivatives(field, targets; pot = false)       # any subset
+```
+
+- **The window.** The ES window tapered as `exp(β(√(1−z²) − 1))·(1 − z²)³`, evaluated analytically together with its
+  first two derivatives.
+- **Why analytic.** A fitted, piecewise-polynomial window, as in FINUFFT, loses about N² of its accuracy per
+  derivative. The untruncated ES has singular derivatives at the support ends, where stencils change.
+- **Accuracy.** At equal `tol` it matches the spectral route on smooth fields, because both are then limited by the
+  TKM field itself.
+- **Limitation.** Modes at the edge of the mode box are about 100× less accurate (the window's Fourier correction is
+  largest there); the TKM `kmax` keeps the spectrum decayed there.
+- **Far field.** Out-of-box targets take the same point-charge far field (`far`) as the other evaluators.
+
+In the GCQ campaign mode, `gcq_four_index(c; field_derivs = :window)` uses one such field per shape for the bare
+potential and gradient at the nodes, and for ψ and H of the surface corrections.
+
 ## Many right-hand sides and four-index integrals
 
 For several sources sharing one interface, assemble and block-solve all right-hand sides

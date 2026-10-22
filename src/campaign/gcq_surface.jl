@@ -143,21 +143,13 @@ end
     _gcq_surface_layers(S, Y, Ψs, Hs; tol = 1e-12) -> 3 × Nt
 
 sum_m coef_m (D_m[psi] - S_m[s]) at the targets `Y` (those of `S`'s corrections), for psi (`Ψs`, 3 × nodes) and its
-Hessian (`Hs`, 6 × nodes) at the source nodes: the node rule by one FMM3D call (three densities, charges and dipoles
-along the normals; FMM3D's q/r and d·(t - s)/r³) plus SCTL's near corrections.
+Hessian (`Hs`, 6 × nodes) at the source nodes: the node rule by the far field `far` (three densities, charges and
+dipoles along the normals: [`layer_field`](@ref)) plus SCTL's near corrections.
 """
-function _gcq_surface_layers(S::GCQSurface, Y::AbstractMatrix, Ψs::AbstractMatrix, Hs::AbstractMatrix; tol = 1e-12)
+function _gcq_surface_layers(S::GCQSurface, Y::AbstractMatrix, Ψs::AbstractMatrix, Hs::AbstractMatrix;
+                             tol = 1e-12, far::FarField = FMM3DFarField(tol))
     Sd = _gcq_surface_sdensity(Hs, S.Nrm)
-    ns = size(S.X, 2); chg = zeros(3, ns); dip = zeros(3, 3, ns)
-    for i in 1:ns
-        cw = S.coef[i] * S.W[i]
-        for f in 1:3
-            chg[f, i] = -cw * Sd[f, i]
-            for d in 1:3
-                dip[f, d, i] = cw * Ψs[f, i] * S.Nrm[d, i]
-            end
-        end
-    end
-    v = lfmm3d(tol, S.X; charges = chg, dipvecs = dip, targets = Matrix{Float64}(Y), pgt = 1, nd = 3)
-    return v.pottarg ./ (4π) .+ Matrix((S.CD * (S.coef .* Ψs'))') .- Matrix((S.CS * (S.coef .* Sd'))')
+    cw = S.coef .* S.W
+    L = layer_field(far, S.X, S.Nrm, .-(cw' .* Sd), cw' .* Ψs, Y)
+    return L .+ Matrix((S.CD * (S.coef .* Ψs'))') .- Matrix((S.CS * (S.coef .* Sd'))')
 end
