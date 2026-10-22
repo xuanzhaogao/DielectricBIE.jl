@@ -145,10 +145,12 @@ How it works:
 
 1. **Shapes.** On a lattice every pair density is a grid translate of a few *shapes* (template_i, template_j, relative
    step), each truncated on its own support (`support_rtol`). The targets are the union of all supports.
-2. **One interface and operator.** The interface is refined for the envelope of all pair densities and for all targets
-   (`target_skin`), so no target is near a panel. The induced part of V is then the node rule: by the symmetry of the
-   single layer, V_layer = G' A^{-1} F, with G[j, a] = w_j φ_a(y_j).
-3. **F and G** of every pair by one point-charge FMM per shape, over the interface nodes shifted by each pair's offset.
+2. **One interface and operator.** The interface is refined for the envelope of all pair densities (the field and the
+   potential of each). The induced part of V is then the node rule: by the symmetry of the single layer,
+   V_layer = G' A^{-1} F, with G[j, a] = w_j φ_a(y_j). This rule needs no refinement for the targets, only accurate
+   φ_a at the nodes; `refine_targets = true` refines for them too (`target_skin`), a larger mesh for the same V.
+3. **F and G** of every pair by one volume field per shape (TKM near the density, point charges far from it), over the
+   interface nodes shifted by each pair's offset.
 4. **Low rank.** The right-hand sides are numerically low-rank: Q, the range of W^{1/2} F at tolerance `tau`, needs
    only r solves (r ≪ number of pairs).
 5. **The volume part** by shapes: one screened volume solve per source shape, then one dot product per distinct
@@ -158,7 +160,7 @@ Requirements and tolerances:
 
 - Every pair density must lie inside one dielectric box (the same screening for all pairs); the mode checks this.
 - The tolerances default to the campaign's `[solve]` values. Further keywords: `nlev`, `quad_tol`, `edge_tol`, `tau`,
-  `fg_tol`, `target_skin`, and `far = :sctl` (`using SCTL`) or `:fmm3d`.
+  `fg_tol`, `refine_targets`, `target_skin`, and `far = :sctl` (`using SCTL`) or `:fmm3d`.
 
 For the Sec. 5.3 campaign (198 graphene orbitals, 2623 pairs, Si|SiO₂ substrate), the comparison is:
 

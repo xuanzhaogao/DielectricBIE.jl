@@ -127,18 +127,22 @@ end
 The GCQ interface of the campaign's boxes, RHS-refined for the envelope density `env` at the points `X` and refined
 for the targets `X` (`target_skin`); `far(tol)` is the point-charge far field of the refinement.
 """
-function gcq_campaign_interface(c::CampaignInput, X, env, dg; nlev, n_quad, rhs_tol, edge_tol, quad_tol, target_skin, far)
+function gcq_campaign_interface(c::CampaignInput, X, env, dg; nlev, n_quad, rhs_tol, edge_tol, quad_tol, target_skin, far,
+                                refine_targets::Bool = true, pot_tol = rhs_tol)
     lb, dv = _grid_basis(dg)
     envs = VolumeSource(X, fill(dv, length(env)), env ./ dv; lattice_basis = lb)
     senv = screened_volume_source(c.boxes, c.epses, c.eps_out, envs, SharpScreening())
     srcpos, srcq = _volume_source_fmm_sources(senv)
     kmax = _estimate_tkm3dc_kmax(senv)
+    # the panels must interpolate the RHS (n . grad phi, the solve) and the potential itself (the layer part G' sigma is
+    # the node rule of sigma phi): one scalar, each part over its tolerance, refined to 1
     rhs_batch = (Pts, Nrm) -> (T = reduce(hcat, collect.(Pts)); N = reduce(hcat, collect.(Nrm));
         first(_rhs_volume_targets_hybrid(srcpos, srcq, T, N, 1.0, rhs_tol / 10, kmax,
-                                         _classify_near_far_targets(T, senv); far = far(rhs_tol / 10))))
+                                         _classify_near_far_targets(T, senv); far = far(rhs_tol / 10))) ./ rhs_tol .+
+        _gcq_volume_potential(senv, T; tol = pot_tol / 10, c_pad = c.c_pad, far) ./ pot_tol)
     mesh = multi_dielectric_box3d_gcq(c.boxes, c.epses, c.eps_out; nlev, n_quad, tol = edge_tol,
-        rhs_batch, rhs_atol = rhs_tol, max_depth = Int(get(c.solve, "max_depth", 30)),
-        targets = X, target_tol = quad_tol, target_eta = 2.0, target_far = :direction, target_skin)
+        rhs_batch, rhs_atol = 1.0, max_depth = Int(get(c.solve, "max_depth", 30)),
+        (refine_targets ? (; targets = X, target_tol = quad_tol, target_eta = 2.0, target_far = :direction, target_skin) : (;))...)
     return mesh.interface
 end
 
@@ -187,6 +191,23 @@ function _gcq_volume_potential(sv, X; tol, c_pad, far)
     end
     isempty(fi) || (Φ[fi] .= point_charge_field(far(tol), sv.positions, sv.weights .* sv.density, X[:, fi]))
     return Φ
+end
+
+# gradient of the screened volume potential of sv at the points X (3 x n): TKM field near the source, far field elsewhere
+function _gcq_volume_gradient(sv, X; tol, c_pad, far)
+    geom = near_field_geometry(sv; c_pad)
+    near = zeros(Bool, size(X, 2))                     # a Vector{Bool}: a BitVector is not safe for threaded writes
+    Threads.@threads for i in axes(X, 2)
+        near[i] = in_near_region(geom, X, i)
+    end
+    ni = findall(near); fi = findall(!, near)
+    g = zeros(3, size(X, 2))
+    if !isempty(ni)
+        fld = PrecomputedVolumeField(sv; tol, c_pad, compute_pot = false)
+        g[:, ni] .= volume_field_gradient(fld, X[:, ni])
+    end
+    isempty(fi) || (g[:, fi] .= point_charge_field(far(tol), sv.positions, sv.weights .* sv.density, X[:, fi]; grad = true))
+    return g
 end
 
 # distinct keys of V_vol: keys[s] maps (s', D) to its index among the values of source shape s;
@@ -291,6 +312,11 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
 - Tolerances: `n_quad`, `rhs_tol`, `lhs_tol` (operator far field), `gmres_rtol` and `volume_tol` default to the
   campaign's `[solve]` values. `quad_tol` and `edge_tol` set the GCQ near quadrature and edge rules, `fg_tol` the F
   and G fields, `tau` the low-rank truncation (relative to the largest singular value of W^{1/2} F).
+- `refine_targets` (default `false`): also refine the interface for the targets (the support points), as
+  `GCQPotential` needs for near-free node rules. Not needed here: the layer part is G' σ = ∫ σ φ_a dA with φ_a
+  evaluated accurately at the nodes (TKM near the density), the node rule of a smooth integrand that the RHS
+  refinement resolves. On Sec. 5.3 both give the same V to 2.3e-6, without on a 43% smaller interface. A density cut
+  by a face needs `false`.
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
@@ -306,7 +332,8 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         rhs_tol::Real = get(c.solve, "rhs_tol", 1e-5), lhs_tol::Real = get(c.solve, "lhs_tol", 1e-5),
                         gmres_rtol::Real = get(c.solve, "gmres_rtol", 1e-5), volume_tol::Real = get(c.solve, "volume_tol", 1e-5),
                         quad_tol::Real = 1e-8, edge_tol::Real = 1e-8, tau::Real = 1e-3, fg_tol::Real = 1e-4,
-                        target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global, verbose::Bool = true)
+                        target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global,
+                        refine_targets::Bool = false, verbose::Bool = true)
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
     nparts > 1 && sync === nothing && throw(ArgumentError("nparts > 1 needs a sync directory"))
     ff = _gcq_far(far)
@@ -329,7 +356,8 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     # one interface for every part: part 1 builds it (the refinement sums are not bit-reproducible across processes)
     local itf, A
     t = @elapsed if part == 1
-        itf = gcq_campaign_interface(c, X, env, dg; nlev, n_quad, rhs_tol, edge_tol, quad_tol, target_skin = skin, far = ff)
+        itf = gcq_campaign_interface(c, X, env, dg; nlev, n_quad, rhs_tol, edge_tol, quad_tol, target_skin = skin, far = ff,
+                                     refine_targets)
         nparts > 1 && _gcq_put(sync, part, "interface", itf)
     else
         itf = _gcq_take(sync, "interface")
@@ -339,7 +367,7 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     st("operator", t)
     nodes, nrm = _interface_targets_normals(itf); w = all_weights(itf); N = size(nodes, 2); d = sqrt.(abs.(w))
     # the layer part G' sigma is the node rule: every target must be far from every panel
-    nnear = part == 1 ? _gcq_near_pairs(itf, X; quad_tol) : 0
+    nnear = part == 1 && refine_targets ? _gcq_near_pairs(itf, X; quad_tol) : 0
     nnear > 0 && @warn "gcq_four_index: $nnear (panel, target) pairs are near on a sample of the targets: the layer " *
                        "part is inaccurate there (lower target_skin)"
     # 3. F, G of this part's shapes
@@ -352,8 +380,12 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         isempty(shapes[s].gidx) && continue             # zero density: F = G = 0
         sv = _gcq_shape_source(c, dg, shapes[s])
         T = reduce(hcat, [nodes .- _grid_shift(dg, delta[q]) for q in ps])        # the shape stays, the nodes move
-        g = point_charge_field(ff(fg_tol), sv.positions, sv.weights .* sv.density, T; grad = true)
-        u = point_charge_field(ff(fg_tol), sv.positions, shapes[s].tw, T)
+        # F: gradient of the screened shape; G: potential of the bare shape (the test density). Near the shape (nodes
+        # inside its padded box) by its TKM field, elsewhere by point charges: G' sigma = int sigma phi_a dA is then the
+        # node rule of a smooth integrand, with no condition on the distance from the density to the interface
+        g = _gcq_volume_gradient(sv, T; tol = fg_tol, c_pad, far = ff)
+        sv0 = with_density(sv, shapes[s].tw ./ sv.weights)                          # the bare density
+        u = _gcq_volume_potential(sv0, T; tol = fg_tol, c_pad, far = ff)
         Threads.@threads for k in eachindex(ps)
             ck = col[ps[k]]; off = (k - 1) * N
             @inbounds for j in 1:N
