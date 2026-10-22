@@ -42,6 +42,10 @@ import DielectricBIE as BI
     sv = BI.VolumeSource(Xs, fill(h^3, size(Xs, 2)), [ρf(x) for x in eachcol(Xs)]; lattice_basis = ((h, 0.0, 0.0), (0.0, h, 0.0), (0.0, 0.0, h)))
     ψt(Z) = BI._gcq_volume_gradient(sv, Z; tol = 1e-12, c_pad = 5.0, far = BI._gcq_far(:fmm3d))
     Ht(Z) = BI._gcq_volume_hessian(sv, Z; tol = 1e-12, c_pad = 5.0)
+    # the same from one window-derivative field (one scalar grid, reused for every batch)
+    fw = PrecomputedVolumeField(sv; tol = 1e-12, c_pad = 5.0, window_derivatives = true)
+    ψw(Z) = volume_field_derivatives(fw, Z; pot = false, hess = false).grad
+    Hw(Z) = volume_field_derivatives(fw, Z; pot = false, grad = false).hess
     # the Hessian against the exact one
     Hy = reduce(hcat, hrow.(eachcol(Y)))
     @test maximum(abs, Ht(Y) - Hy) < 1e-9 * maximum(abs, Hy)
@@ -60,6 +64,8 @@ import DielectricBIE as BI
         F(ΨY, Ψs, Hs) = (g = atr' .* ΨY .+ BI._gcq_surface_layers(S, Ys, Ψs, Hs); [dot(g[:, j], Nn[:, j]) for j in 1:nt])
         Fe = F(reduce(hcat, ψex.(eachcol(Y))), reduce(hcat, ψex.(eachcol(S.X))), reduce(hcat, hrow.(eachcol(S.X))))
         Ft = F(ψt(Y), ψt(S.X), Ht(S.X))
+        Fw = F(ψw(Y), ψw(S.X), Hw(S.X))
+        @test maximum(abs, Fw - Fref) < 1e-8 * maximum(abs, Fref)
         @info "surface corrections, $(length(boxes)) box(es), $(size(S.X, 2)) source nodes: error $(maximum(abs, Fe - Fref) / maximum(abs, Fref)) (exact psi, H), $(maximum(abs, Ft - Fref) / maximum(abs, Fref)) (TKM)"
         @test maximum(abs, Fe - Fref) < 1e-8 * maximum(abs, Fref)
         @test maximum(abs, Ft - Fref) < 1e-8 * maximum(abs, Fref)
@@ -81,5 +87,8 @@ include(joinpath(@__DIR__, "..", "campaign", "fixture_cut.jl"))
     c = load_campaign(write_cut_campaign(mktempdir(), 21; box = [c0 + 1.53 + 6.0, c0, c0 + 0.13 - 6.0, 12.0, 12.0, 12.0, 4.0]))
     re = gcq_four_index(c; kw...)
     @test re.stats.cut_pairs > 0 && re.stats.asym < 1e-4
+    # the window-derivative fields give the same V
+    rw = gcq_four_index(c; kw..., field_derivs = :window)
+    @test maximum(abs, rw.V - re.V) < 1e-8 * maximum(abs, re.V)
     @test_throws ErrorException gcq_four_index(c; kw..., cut_rhs = :halfspace)
 end

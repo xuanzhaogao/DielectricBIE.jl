@@ -309,7 +309,8 @@ function _gcq_cut_rhs!(Floc, cols, blk, cl::GCQCutClass, dg, sh::GCQPairShape, s
     if method === :surface
         for (bk, k) in enumerate(blk)
             Ψs, Hs = src[k]
-            g = atr' .* g0[:, (k - 1) * N .+ (1:N)] .+ _gcq_surface_layers(surf, nodes, Ψs, Hs; tol = max(tol, 1e-14))
+            g = atr' .* g0[:, (k - 1) * N .+ (1:N)] .+ _gcq_surface_layers(surf, nodes, Ψs, Hs; tol = max(tol, 1e-14),
+                                                                         far = far(max(tol, 1e-14)))
             for j in 1:N
                 Floc[j, cols[bk]] = nrm[1, j] * g[1, j] + nrm[2, j] * g[2, j] + nrm[3, j] * g[3, j]
             end

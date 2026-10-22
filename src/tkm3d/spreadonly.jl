@@ -166,7 +166,7 @@ end
 
 function _ltkm3dd_spreadonly_onedim_fseries_kernel(nf::Int, params, coeffs)
     J2 = params.nspread / 2.0
-    q = Int(2 + 3.0 * J2)
+    q = floor(Int, 2 + 3.0 * J2)          # FINUFFT: (int)(2 + 3.0*J2), truncated (odd ns)
     z, w = _ltkm3dd_spreadonly_gaussquad(2 * q)
     f = Vector{Float64}(undef, q)
     a = Vector{ComplexF64}(undef, q)
