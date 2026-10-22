@@ -168,6 +168,7 @@ include("campaign/manifest.jl")
 include("campaign/tasks.jl")
 include("campaign/v_output.jl")
 include("campaign/gcq.jl")       # GCQ campaign mode: the whole V on one GCQ interface
+include("campaign/gcq_cut.jl")   # GCQ campaign mode: pair densities cut by a horizontal face
 
 # # visualization
 include("visualization/viz_2d.jl")
