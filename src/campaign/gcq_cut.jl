@@ -1,16 +1,20 @@
-# GCQ campaign mode: pair densities cut by a horizontal dielectric face.
+# GCQ campaign mode: pair densities cut by dielectric faces.
 #
-# Where a face z = zf runs through a pair density rho, the screened source rho / eps(x) jumps, and every spectral or
+# Where a face runs through a pair density rho, the screened source rho / eps(x) jumps, and every spectral or
 # point-charge rule on the screened samples converges only like O(h) to O(h^2). Instead, every spectral computation
-# acts on the smooth, unscreened rho, and the face enters through quadrature:
+# acts on the smooth, unscreened rho, and the faces enter through quadrature:
 #
 # - V_vol[a, b] = <rho_a, N[rho_b / eps]> = int phi0_a rho_b / eps dx (symmetry of N; phi0_a = N[rho_a] is smooth): the
 #   samples of phi0_a rho_b with the cut-cell screening dv m(x), m = the sum over the two sides of 1/eps_side times the
 #   side's weights (the trapezoid weight, corrected on the few lattice levels next to the face).
+#   For box regions this is a tensor product of 1D rules along the cut axes (each needs the grid aligned with it).
 # - F far from the density: point charges dv m rho (high order for a smooth kernel).
-# - F near the density (nodes on the face, or on faces parallel to it): u_inc = sum_side N[chi_side rho] / eps_side
-#   with N[chi_hi rho] = phi0 - N[chi_lo rho], and dz N[chi_side rho] on the face or across it by the in-plane Fourier
-#   transform of the half-space Green's function, exact in z (_gcq_halfspace_dz).
+# - F near the density, either
+#   - (one horizontal face, interface nodes near it horizontal) u_inc = sum_side N[chi_side rho] / eps_side with
+#     N[chi_hi rho] = phi0 - N[chi_lo rho], and dz N[chi_side rho] on the face or across it by the in-plane Fourier
+#     transform of the half-space Green's function, exact in z (_gcq_halfspace_dz); or
+#   - (any cut) the surface corrections of gcq_surface.jl: grad N[a rho] from psi = grad N[rho] and layer potentials of
+#     psi and its tangential derivatives on the interface rectangles.
 # - G (the potential of the test density at the nodes) needs no change: phi0_a is smooth.
 
 """
@@ -49,21 +53,87 @@ end
 """
     GCQCutClass
 
-Pairs of one shape whose densities a horizontal face cuts at the same height: the face `zf` (in the frame of the
-shape's representative placement), 1/ε below and above it (`a_lo`, `a_hi`), and the cut-cell screening `m` at the
-shape's support points (the weights of V_vol and of the far field of F, per unit dv).
+Pairs of one shape with the same cut-cell screening `m` at the shape's support points (the weights of V_vol and of
+the far field of F, per unit dv). If one horizontal face cuts them (`plane`), its height `zf` in the frame of the
+shape's representative placement and 1/ε below and above it (`a_lo`, `a_hi`); otherwise these are NaN.
 """
 struct GCQCutClass
     shape::Int
+    plane::Bool
     zf::Float64
     a_lo::Float64
     a_hi::Float64
     m::Vector{Float64}
 end
 
+# 1D cut-cell weights (per unit h) of the interval (lo, hi] at the lattice positions t (spacing h along the line):
+# the rule of int_{-inf}^{hi} minus that of int_{-inf}^{lo}
+function _cutcell_interval(t, lo, hi, h; p::Int = 7)
+    w = zeros(length(t))
+    for (z, sg) in ((hi, 1.0), (lo, -1.0))
+        dep = (z .- t) ./ h                                     # depth below z, in levels: m - 1 + θ
+        θ = mod(dep[1], 1.0); (θ > 1 - 1e-9 || θ < 1e-9) && (θ = 0.0)
+        δ, mlo = _cutcell_correction(θ; p)
+        for i in eachindex(t)
+            mi = round(Int, dep[i] - θ) + 1
+            w[i] += sg * ((mi >= 1) + (mlo <= mi <= mlo + p ? δ[mi - mlo + 1] : 0.0))
+        end
+    end
+    return w
+end
+
+# the cut-cell screening at the support points X (absolute) of a cut density: a0 + sum over boxes of (a_b - a0) times
+# the product over the axes of the 1D interval weights (the indicator along an axis whose faces are out of reach).
+# A face within reach must be normal to an axis along which the lattice has exactly one vector.
+function _gcq_cut_m(c::CampaignInput, dg, X; p::Int = 7)
+    _, ea, eb, ec = _grid_frame(dg); E = (ea, eb, ec); sc = maximum(norm, E); tl = 1e-12 * sc
+    a0 = 1 / c.eps_out; n = size(X, 2); m = fill(a0, n)
+    reach = (p + 2) * sc
+    for (bi, b) in enumerate(c.boxes)
+        ab = 1 / c.epses[bi]; ab == a0 && continue
+        lo, hi = _box_lohi(b)
+        W = ones(n)
+        for d in 1:3
+            xd = view(X, d, :)
+            if !any(x -> abs(x - lo[d]) < reach || abs(x - hi[d]) < reach, xd)
+                W .*= (xd .> lo[d]) .& (xd .<= hi[d])
+                continue
+            end
+            al = [abs(e[d]) > tl for e in E]
+            count(al) == 1 || error("GCQ campaign mode: a density cut by a face normal to axis $d needs a grid with " *
+                                    "exactly one lattice vector not parallel to that face")
+            W .*= _cutcell_interval(xd, lo[d], hi[d], abs(E[findfirst(al)][d]); p)
+        end
+        m .+= (ab - a0) .* W
+    end
+    return m
+end
+
+# one horizontal face cutting the density (support gidx + dq, screening iv): (zf in the shape's frame, a_lo, a_hi),
+# or nothing
+function _gcq_horizontal_cut(c::CampaignInput, dg, gidx, dq, iv)
+    o, ea, eb, ec = _grid_frame(dg)
+    tl = 1e-12 * maximum(norm, (ea, eb, ec))
+    abs(ea[3]) <= tl && abs(eb[3]) <= tl || return nothing
+    lev = Dict{Int, Float64}()
+    for (g, v) in zip(gidx, iv)
+        v0 = get!(lev, g[3] + dq[3], v)
+        v0 == v || return nothing                                      # not constant on a level: not horizontal
+    end
+    zk(k) = o[3] + (k - 1) * ec[3]
+    ks = sort!(collect(Base.keys(lev)); by = zk)
+    sw = findall(i -> lev[ks[i]] != lev[ks[i + 1]], 1:length(ks)-1)
+    length(sw) == 1 || return nothing
+    za, zb = zk(ks[sw[1]]), zk(ks[sw[1] + 1])
+    tz = 1e-9 * max(1.0, abs(za), abs(zb))
+    faces = unique(round.([b.center[3] + s * b.Lz / 2 for b in c.boxes, s in (-1, 1)
+                           if za - tz <= b.center[3] + s * b.Lz / 2 <= zb + tz]; sigdigits = 12))
+    length(faces) == 1 || return nothing
+    return faces[1] - _grid_shift(dg, dq)[3], lev[ks[sw[1]]], lev[ks[sw[1] + 1]]
+end
+
 # the screening of every pair: cls[q] = 0 and inveps[q] = 1/ε for a density inside one region, or cls[q] = k for a
-# density cut by one horizontal face (classes[k]). A density cut otherwise (by a vertical face, by two faces, or by a
-# face that does not cover it) is an error.
+# density cut by faces (classes[k]: pairs of one shape with the same cut-cell screening)
 function _gcq_screening(c::CampaignInput, dg, shapes, shape_of, delta; p::Int = 7)
     o, ea, eb, ec = _grid_frame(dg)
     P = length(shape_of); cls = zeros(Int, P); inveps = zeros(P)
@@ -87,40 +157,12 @@ function _gcq_screening(c::CampaignInput, dg, shapes, shape_of, delta; p::Int = 
         if all(==(iv[1]), iv)
             inveps[q] = iv[1]; continue
         end
-        # cut: by one horizontal face, on a lattice with horizontal first and second vectors
-        tl = 1e-12 * maximum(norm, (ea, eb, ec))
-        abs(ea[3]) <= tl && abs(eb[3]) <= tl ||
-            error("GCQ campaign mode: pair $q is cut by a face, which needs the grid's first two lattice vectors horizontal")
-        lev = Dict{Int, Float64}()
-        for (g, v) in zip(sh.gidx, iv)
-            k = g[3] + delta[q][3]
-            v0 = get!(lev, k, v)
-            v0 == v || error("GCQ campaign mode: pair $q is cut by a face that is not horizontal or does not cover it")
-        end
-        zk(k) = o[3] + (k - 1) * ec[3]
-        ks = sort!(collect(Base.keys(lev)); by = zk)
-        sw = findall(i -> lev[ks[i]] != lev[ks[i + 1]], 1:length(ks)-1)
-        length(sw) == 1 || error("GCQ campaign mode: pair $q is cut by more than one face")
-        za, zb = zk(ks[sw[1]]), zk(ks[sw[1] + 1])
-        tz = 1e-9 * max(1.0, abs(za), abs(zb))
-        faces = unique(round.([b.center[3] + s * b.Lz / 2 for b in c.boxes, s in (-1, 1)
-                               if za - tz <= b.center[3] + s * b.Lz / 2 <= zb + tz]; sigdigits = 12))
-        length(faces) == 1 || error("GCQ campaign mode: no single face between the levels where pair $q's screening changes")
-        zf = faces[1] - _grid_shift(dg, delta[q])[3]                         # in the shape's frame
-        a_lo, a_hi = lev[ks[sw[1]]], lev[ks[sw[1] + 1]]
-        key = (shape_of[q], round(zf; sigdigits = 12), a_lo, a_hi)
+        m = _gcq_cut_m(c, dg, X; p)
+        hc = _gcq_horizontal_cut(c, dg, sh.gidx, delta[q], iv)
+        key = (shape_of[q], round.(m; sigdigits = 12))
         cls[q] = get!(cid, key) do
-            hz = abs(ec[3])
-            zs = [zk(g[3]) for g in sh.gidx]                                  # the shape's frame: delta = 0
-            t = (zf .- zs) ./ hz                                              # depth below the face, in levels
-            θ = mod(t[1], 1.0); θ > 1 - 1e-9 && (θ = 0.0)
-            δ, mlo = _cutcell_correction(θ; p)
-            m = map(t) do tt
-                mi = round(Int, tt - θ) + 1
-                dm = mlo <= mi <= mlo + p ? δ[mi - mlo + 1] : 0.0
-                (mi >= 1 ? a_lo : a_hi) + dm * (a_lo - a_hi)
-            end
-            push!(classes, GCQCutClass(shape_of[q], zf, a_lo, a_hi, m))
+            push!(classes, hc === nothing ? GCQCutClass(shape_of[q], false, NaN, NaN, NaN, m) :
+                                            GCQCutClass(shape_of[q], true, hc..., m))
             length(classes)
         end
     end
@@ -257,9 +299,23 @@ function _gcq_shape_array(dg, sh::GCQPairShape)
     return Fd, o .+ (lo[1] - 1) .* ea .+ (lo[2] - 1) .* eb .+ (lo[3] - 1) .* ec, ea, eb, ec
 end
 
-# F (n . grad u_inc) of the pairs `qs` (columns `cols` of Floc, blocks `blk` of the targets T) of the cut class cl:
-# g0 = grad phi0 of the shape at T (TKM near, point charges far), `near` the shape's near region on T
-function _gcq_cut_rhs!(Floc, cols, blk, cl::GCQCutClass, dg, sh::GCQPairShape, sv0, T, g0, near, nrm, N; far, tol)
+# F (n . grad u_inc) of the pairs in the blocks `blk` (columns `cols` of Floc) of the targets T (the interface nodes
+# shifted into the shape's frame per pair, N per block) of the cut class cl. g0 = grad phi0 of the shape at T (TKM
+# near, point charges far). `method = :surface`: g at every node by the surface corrections (`surf` with the targets
+# `nodes`, `atr` the trace coefficients there, `src[k]` psi and its Hessian at surf's nodes for block k); `:halfspace`: point charges with the cut-cell screening far from the shape
+# and the half-space formula near it (`near`).
+function _gcq_cut_rhs!(Floc, cols, blk, cl::GCQCutClass, dg, sh::GCQPairShape, sv0, T, g0, near, nrm, N; far, tol,
+                       method::Symbol = :halfspace, surf = nothing, atr = nothing, nodes = nothing, src = nothing)
+    if method === :surface
+        for (bk, k) in enumerate(blk)
+            Ψs, Hs = src[k]
+            g = atr' .* g0[:, (k - 1) * N .+ (1:N)] .+ _gcq_surface_layers(surf, nodes, Ψs, Hs; tol = max(tol, 1e-14))
+            for j in 1:N
+                Floc[j, cols[bk]] = nrm[1, j] * g[1, j] + nrm[2, j] * g[2, j] + nrm[3, j] * g[3, j]
+            end
+        end
+        return
+    end
     fi = Int[]; ni = Int[]
     for k in blk, j in 1:N
         i = (k - 1) * N + j
@@ -274,8 +330,9 @@ function _gcq_cut_rhs!(Floc, cols, blk, cl::GCQCutClass, dg, sh::GCQPairShape, s
         end
     end
     isempty(ni) && return
-    all(i -> abs(abs(nrm[3, nodej(i)]) - 1) < 1e-12, ni) ||
-        error("GCQ campaign mode: a density cut by a face is near a non-horizontal face")
+    cl.plane && all(i -> abs(abs(nrm[3, nodej(i)]) - 1) < 1e-12, ni) ||
+        error("GCQ campaign mode: the half-space formula needs one horizontal face and the nodes near the density " *
+              "on horizontal faces (use cut_rhs = :surface)")
     Fd, o, ea, eb, ec = _gcq_shape_array(dg, sh)
     up = [i for i in ni if T[3, i] >= cl.zf]; dn = [i for i in ni if T[3, i] < cl.zf]
     # above the face: u = a_hi phi0 + (a_lo - a_hi) N[chi_lo rho]; below: u = a_lo phi0 + (a_hi - a_lo) N[chi_hi rho]

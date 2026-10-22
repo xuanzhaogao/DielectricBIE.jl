@@ -221,6 +221,32 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, inte
     return sparse(I, J, V, n, n)
 end
 
+# ---- the surface corrections of cut densities: double and single layers of smooth densities, SCTL elements ----
+
+# Gauss-Legendre elements on the rectangles (normal +e_k: the parametrization's d/du x d/dv), the nodes, normals and
+# weights of their node rule, and SCTL's near corrections (accurate minus node rule) of the double layer (source
+# normal) and the single layer at the targets
+function DielectricBIE.gcq_surface_corrections(rects, targets::AbstractMatrix; order::Int = 8, tol::Real = 1e-10)
+    # tangent pairs with t1 x t2 = +e_k
+    tg(k) = k == 1 ? (2, 3) : k == 2 ? (3, 1) : (1, 2)
+    el = QuadElemList(order, length(rects)) do e, u, v
+        k, c, lo, hi, _ = rects[e]
+        t1, t2 = DielectricBIE._surf_tang(k)                 # lo, hi are given in increasing axis order
+        a1, a2 = tg(k)
+        x = zeros(3); x[k] = c
+        val = Dict(t1 => (lo[1], hi[1]), t2 => (lo[2], hi[2]))
+        x[a1] = val[a1][1] + u * (val[a1][2] - val[a1][1]); x[a2] = val[a2][1] + v * (val[a2][2] - val[a2][1])
+        x
+    end
+    ff = far_field_nodes(el; tol = tol)
+    Y = Matrix{Float64}(targets)
+    CD, _ = near_correction(Laplace3D_DxU(), el; targets = Y, tol = tol)
+    CS, _ = near_correction(Laplace3D_FxU(), el; targets = Y, tol = tol)
+    coef = repeat([r[5] for r in rects], inner = order^2)
+    return DielectricBIE.GCQSurface(Matrix{Float64}(ff.X), Matrix{Float64}(ff.normal), Vector{Float64}(ff.weights), coef,
+                                    sparse(CD), sparse(CS))
+end
+
 # ---- off-surface potential: SCTL's BoundaryIntegralOp for the single layer, targets set ----
 
 function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, interface::DielectricInterface,
