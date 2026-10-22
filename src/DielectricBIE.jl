@@ -27,7 +27,7 @@ export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
 export EdgeGCQRule, edge_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
-export PrecomputedVolumeField, volume_field_potential, volume_field_gradient,
+export PrecomputedVolumeField, volume_field_potential, volume_field_gradient, volume_field_hessian,
        rhs_dielectric_box3d_field
 export NearFieldGeometry, near_field_geometry, in_near_region, lattice_spacing, source_box
 export screened_volume_source
@@ -168,7 +168,8 @@ include("campaign/manifest.jl")
 include("campaign/tasks.jl")
 include("campaign/v_output.jl")
 include("campaign/gcq.jl")       # GCQ campaign mode: the whole V on one GCQ interface
-include("campaign/gcq_cut.jl")   # GCQ campaign mode: pair densities cut by a horizontal face
+include("campaign/gcq_cut.jl")   # GCQ campaign mode: pair densities cut by faces
+include("campaign/gcq_surface.jl")  # GCQ campaign mode: the surface corrections of the RHS of cut densities
 
 # # visualization
 include("visualization/viz_2d.jl")

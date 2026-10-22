@@ -274,3 +274,6 @@ end
         @test_throws ErrorException point_charge_field(SCTLFarField(), zeros(3, 1), [1.0], ones(3, 1))
     end
 end
+
+# the surface corrections of cut densities in the GCQ campaign mode (SCTL's quadrature)
+HAVE_SCTL && include(joinpath(@__DIR__, "sctl_surface.jl"))

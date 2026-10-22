@@ -198,6 +198,13 @@ function _gcq_volume_gradient(sv, X; tol, c_pad, far)
     return g
 end
 
+# Hessian (6 × n: xx, yy, zz, xy, xz, yz) of the volume potential of sv at the points X: TKM near the source, point
+# charges elsewhere
+function _gcq_volume_hessian(sv, X; tol, c_pad)
+    fld = PrecomputedVolumeField(sv; tol, c_pad, compute_grad = false)
+    return volume_field_hessian(fld, X)
+end
+
 # distinct keys of V_vol[a, b] = <rho_a, N[rho_b / eps]>: keys[s] maps (s', D, k) to its index among the values of
 # source shape s, the bare potential of s at the points of s' shifted by D, summed with the weights tw (k = 0) or
 # tw .* classes[k].m (k > 0); V_vol[a, b] = vals[ksrc[a, b]][kidx[a, b]] * kfac[a, b].
@@ -320,10 +327,18 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
   evaluated accurately at the nodes (TKM near the density), the node rule of a smooth integrand that the RHS
   refinement resolves. On Sec. 5.3 both give the same V to 2.3e-6, without on a 43% smaller interface. A density cut
   by a face needs `false`.
-- Densities cut by a face: a pair density may cross one horizontal face (z = const, on a grid whose first two
-  lattice vectors are horizontal) that covers it, with the interface near it only on horizontal faces. Its volume part
-  and the far field of its RHS use cut-cell quadrature (`_cutcell_correction`), the RHS at the nodes near it the
-  half-space formula (`_gcq_halfspace_dz`); see `gcq_cut.jl`. Other cuts are an error.
+- Densities cut by faces: a pair density may cross any box faces, provided the grid has exactly one lattice vector
+  not parallel to each face that comes within reach (an orthogonal grid for vertical faces; a grid with horizontal
+  first and second vectors for horizontal faces only). Its volume part and the far field of its RHS use cut-cell
+  quadrature (a tensor product of 1D rules, `_cutcell_interval`); the RHS at the nodes near it depends on `cut_rhs`:
+  - `:auto` (default): the half-space formula (`_gcq_halfspace_dz`) for a class cut by one horizontal face with the
+    nodes near it on horizontal faces, the surface corrections otherwise;
+  - `:surface`: the surface corrections for every cut class (`gcq_surface.jl`: double and single layers of ψ and its
+    Hessian on SCTL Gauss-Legendre elements of `cut_order`² nodes on the interface rectangles, at most
+    `cut_κ (d + cut_L0)` in size at distance d from the cut densities (`cut_L0` = 8 grid steps by default), SCTL's near
+    quadrature at `cut_tol`; needs `using SCTL`);
+  - `:halfspace`: the half-space formula, an error where it does not apply.
+  See `gcq_cut.jl` and `gcq_surface.jl`.
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
@@ -340,7 +355,9 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         gmres_rtol::Real = get(c.solve, "gmres_rtol", 1e-5), volume_tol::Real = get(c.solve, "volume_tol", 1e-5),
                         quad_tol::Real = 1e-8, edge_tol::Real = 1e-8, tau::Real = 1e-3, fg_tol::Real = 1e-4,
                         target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global,
-                        refine_targets::Bool = false, verbose::Bool = true)
+                        refine_targets::Bool = false, cut_rhs::Symbol = :auto, cut_order::Int = 8, cut_κ::Real = 0.25,
+                        cut_L0 = nothing, cut_tol::Real = 1e-10, verbose::Bool = true)
+    cut_rhs in (:auto, :surface, :halfspace) || throw(ArgumentError("cut_rhs must be :auto, :surface or :halfspace"))
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
     nparts > 1 && sync === nothing && throw(ArgumentError("nparts > 1 needs a sync directory"))
     ff = _gcq_far(far)
@@ -383,6 +400,42 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     pos = [findall(==(s), shape_of) for s in 1:S]
     myshapes = _gcq_balance(length.(pos), nparts)[part]
     mypairs = reduce(vcat, [pos[s] for s in myshapes]; init = Int[])
+    # cut pairs: the RHS method of each class near the density, and the surface corrections (their own source surface,
+    # graded toward every cut density; corrections at all interface nodes)
+    meth = Dict{Int, Symbol}(); surf = nothing; atr = nothing; snodes = nodes
+    t = @elapsed if !isempty(classes)
+        for s in myshapes
+            any(q -> cls[q] > 0, pos[s]) || continue
+            geom = near_field_geometry(_gcq_shape_source0(dg, shapes[s]); c_pad)
+            for q in pos[s]
+                cls[q] > 0 || continue
+                Tq = nodes .- _grid_shift(dg, delta[q])
+                ok = classes[cls[q]].plane && all(j -> !in_near_region(geom, Tq, j) || abs(abs(nrm[3, j]) - 1) < 1e-12, 1:N)
+                mq = cut_rhs === :auto ? (ok ? :halfspace : :surface) : cut_rhs
+                meth[cls[q]] = mq === :surface || get(meth, cls[q], :halfspace) === :surface ? :surface : :halfspace
+            end
+        end
+        if any(==(:surface), values(meth))
+            o, ea, eb, ec = _grid_frame(dg)
+            env = map(findall(>(0), cls)) do q
+                gi = shapes[shape_of[q]].gidx
+                lo = ntuple(d -> minimum(g[d] for g in gi) + delta[q][d], 3)
+                hi = ntuple(d -> maximum(g[d] for g in gi) + delta[q][d], 3)
+                C = reduce(hcat, [o .+ (i - 1) .* ea .+ (j - 1) .* eb .+ (k - 1) .* ec
+                                  for i in (lo[1], hi[1]), j in (lo[2], hi[2]), k in (lo[3], hi[3])])
+                (Tuple(minimum(C; dims = 2)), Tuple(maximum(C; dims = 2)))
+            end
+            L0 = cut_L0 === nothing ? 8 * minimum(norm, (ea, eb, ec)) : Float64(cut_L0)
+            Base.get_extension(@__MODULE__, :DielectricBIESCTLExt) === nothing &&
+                throw(ArgumentError("the surface corrections of cut densities (cut_rhs = :surface) need `using SCTL`"))
+            rects = _gcq_surface_rects(_gcq_interface_rects(c.boxes, c.epses, c.eps_out), env; κ = cut_κ, L0)
+            snodes = _gcq_surface_snap(rects, nodes, nrm)
+            surf = gcq_surface_corrections(rects, snodes; order = cut_order, tol = cut_tol)
+            atr = _gcq_surface_trace(itf)
+        end
+    end
+    surf === nothing ||
+        st("surface corrections: $(size(surf.X, 2)) source nodes, for $(count(==(:surface), values(meth))) classes", t)
     Floc = zeros(N, length(mypairs)); Gloc = zeros(N, length(mypairs)); col = Dict(p => k for (k, p) in enumerate(mypairs))
     t = @elapsed for s in myshapes
         ps = pos[s]
@@ -401,7 +454,8 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                 Gloc[j, ck] = w[j] * u[off + j]
             end
         end
-        # pairs cut by a face, by class: F by the cut-cell screening far from the shape, the half-space formula near
+        # pairs cut by faces, by class: F by the cut-cell screening far from the shape, near it by the half-space
+        # formula, or (:surface) everywhere by the surface corrections of g
         ks = findall(k -> cls[ps[k]] > 0, eachindex(ps))
         if !isempty(ks)
             geom = near_field_geometry(sv0; c_pad)
@@ -409,10 +463,22 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
             Threads.@threads for i in axes(T, 2)
                 near[i] = in_near_region(geom, T, i)
             end
+            # psi and its Hessian at the source nodes of the surface corrections, for the :surface pairs (one evaluation)
+            sk = [k for k in ks if meth[cls[ps[k]]] === :surface]
+            src = Dict{Int, NTuple{2, Matrix{Float64}}}()
+            if !isempty(sk)
+                ns = size(surf.X, 2)
+                Ts = reduce(hcat, [surf.X .- _grid_shift(dg, delta[ps[k]]) for k in sk])
+                Ψa = _gcq_volume_gradient(sv0, Ts; tol = fg_tol, c_pad, far = ff)
+                Ha = _gcq_volume_hessian(sv0, Ts; tol = fg_tol, c_pad)
+                for (i, k) in enumerate(sk)
+                    src[k] = (Ψa[:, (i - 1) * ns .+ (1:ns)], Ha[:, (i - 1) * ns .+ (1:ns)])
+                end
+            end
             for kc in unique(cls[ps[ks]])
                 blk = [k for k in ks if cls[ps[k]] == kc]
                 _gcq_cut_rhs!(Floc, [col[ps[k]] for k in blk], blk, classes[kc], dg, shapes[s], sv0, T, g, near, nrm, N;
-                              far = ff, tol = fg_tol)
+                              far = ff, tol = fg_tol, method = meth[kc], surf, atr, nodes = snodes, src)
             end
         end
     end

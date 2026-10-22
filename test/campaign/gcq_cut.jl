@@ -70,10 +70,30 @@ include(joinpath(@__DIR__, "fixture_cut.jl"))
     @test maximum(abs, rs[1].V - rs[2].V) < 3e-4 * sc
     @test all(r -> r.stats.asym < 1e-4, rs)
     @test_throws ArgumentError gcq_four_index(load_campaign(write_cut_campaign(mktempdir(), 21)); kw..., refine_targets = true)
-    # unsupported cuts: a vertical face through the orbitals, and two horizontal faces
+    # other cuts (a vertical face through the orbitals, a slab cutting them twice) are classes without a plane (the
+    # surface corrections, test/ext/sctl.jl); a vertical cut needs one lattice vector across the face
+    function screening(c)
+        cs = BI.enumerate_centers(c); shapes, shape_of, delta, dg = gcq_pair_shapes(c, cs, BI.enumerate_pairs(cs, c.neighbor_cutoff))
+        return BI._gcq_screening(c, dg, shapes, shape_of, delta)..., shapes, dg
+    end
     for box in ([2.0 + 1.6 + 6.0 - 0.07, 2.0, 2.0, 12.0, 12.0, 12.0, 4.0], [3.6, 2.0, 2.0, 12.0, 12.0, 0.5, 4.0])
-        c = load_campaign(write_cut_campaign(mktempdir(), 21; box))
-        shapes, shape_of, delta, dg = gcq_pair_shapes(c, BI.enumerate_centers(c), BI.enumerate_pairs(BI.enumerate_centers(c), c.neighbor_cutoff))
-        @test_throws ErrorException BI._gcq_screening(c, dg, shapes, shape_of, delta)
+        cls, _, classes = screening(load_campaign(write_cut_campaign(mktempdir(), 21; box)))
+        @test count(>(0), cls) > 0 && any(cl -> !cl.plane, classes)
+    end
+    @test_throws ErrorException screening(load_campaign(write_cut_campaign(mktempdir(), 21; shear = 0.3,
+                                                        box = [2.0 + 1.6 + 6.0 - 0.07, 2.0, 2.0, 12.0, 12.0, 12.0, 4.0])))
+    # the cut-cell screening of one horizontal face (the tensor rule) is the 1D rule of the face:
+    # m = (a_lo or a_hi by side) + δ_m (a_lo - a_hi), δ from the depth below the face
+    cls, inveps, classes, shapes, dg = screening(load_campaign(write_cut_campaign(mktempdir(), 21)))
+    o, ea, eb, ec = BI._grid_frame(dg)
+    @test all(cl -> cl.plane, classes)
+    for cl in classes
+        t = [(cl.zf - (o[3] + (g[3] - 1) * ec[3])) / abs(ec[3]) for g in shapes[cl.shape].gidx]
+        θ = mod(t[1], 1.0); δ, mlo = BI._cutcell_correction(θ)
+        m1 = map(t) do tt
+            mi = round(Int, tt - θ) + 1
+            (mi >= 1 ? cl.a_lo : cl.a_hi) + (mlo <= mi <= mlo + 7 ? δ[mi - mlo + 1] : 0.0) * (cl.a_lo - cl.a_hi)
+        end
+        @test maximum(abs, cl.m - m1) < 1e-14
     end
 end

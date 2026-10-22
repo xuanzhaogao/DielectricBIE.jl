@@ -158,22 +158,38 @@ How it works:
 
 Requirements and tolerances:
 
-- Each pair density lies inside one region, or is cut by one horizontal face (z = const; the grid's first two lattice
-  vectors horizontal) whose rectangle covers it, with the interface near it only on horizontal faces; the mode checks
-  this. A cut density's screened source ρ/ε jumps at the face, so spectral and point-charge rules on its samples
-  converge only like O(h). The mode keeps every spectral computation on the smooth ρ instead:
+- Each pair density lies inside one region, or is cut by box faces, including edges, corners and junctions of
+  several boxes. A cut needs a grid with exactly one lattice vector not parallel to each face that comes within reach:
+  an orthogonal grid for vertical faces, or horizontal first and second vectors for horizontal faces only. The mode
+  checks this. A cut density's screened source ρ/ε jumps at the faces, so spectral and point-charge rules on its
+  samples converge only like O(h). The mode keeps every spectral computation on the smooth ρ instead:
   - V_vol[a, b] = ∫ φ0_a ρ_b / ε dx (symmetry of N, φ0_a = N[ρ_a]) by cut-cell quadrature: the trapezoid weights,
-    corrected on the few lattice levels next to the face by degree-7 interpolants centred on each cell;
-  - the RHS far from the density by point charges with the same weights;
-  - the RHS at the nodes near it from ∂z N[χ ρ] on the face, by the in-plane Fourier transform of the half-space
-    Green's function (exact in z), with the periodic images removed to second order.
+    corrected on the few lattice levels next to each face by degree-7 interpolants centred on each cell (a tensor
+    product of 1D rules for box regions).
+  - The RHS, chosen by `cut_rhs`:
+    - `:surface`: g = ∇N[aρ] (a = 1/ε) at every node, from ψ = ∇N[ρ] and its Hessian H, plus double- and single-layer
+      corrections on the interface rectangles:
+      g = (a_A + a_B)/2 ψ + Σ_m (a_A − a_B)_m (D_m[ψ] − S_m[Hn − tr(H) n]).
+      The layers live on their own SCTL Gauss-Legendre elements (`cut_order`² nodes), graded toward the cut densities
+      (size at most `cut_κ (d + cut_L0)` at distance d). SCTL's singular and near-singular quadrature (`cut_tol`)
+      and one FMM evaluate them. Needs `using SCTL`.
+    - `:halfspace`: for one horizontal face with the nodes near the density on horizontal faces, ∂z N[χρ] by the
+      in-plane Fourier transform of the half-space Green's function, exact in z, and point charges with the cut-cell
+      weights elsewhere.
+    - `:auto` (the default): `:halfspace` where it applies, `:surface` elsewhere.
 
-  On a Gaussian cut off-centre (σ = 0.5, h = 0.1) the volume term is accurate to 7e-8 and the face field to 1e-8,
-  where TKM on the screened samples gives 8e-2 and point charges 9e-2. On a campaign whose substrate face cuts the orbitals (test/campaign/fixture_cut.jl,
-  σ = 0.5), V differs from its h = 0.067 value by 1.3e-4, 7.5e-6 and 1.1e-6 at h = 0.2, 0.133 and 0.1, with
-  max |V - V'| / max |V| down to 1.2e-7; TKM on the screened samples is off by 2e-2 to 6e-2 at every h.
+  Measured accuracy:
+  - **Horizontal cut, Gaussian off-centre** (σ = 0.5, h = 0.1): the volume term is accurate to 7e-8 and the face
+    field to 1e-8. TKM on the screened samples gives 8e-2, point charges 9e-2.
+  - **Surface corrections, at points on the faces of one box and of four boxes meeting along an edge** (down to
+    1e-6 from it): accurate to 2e-12 (test/ext/sctl_surface.jl), where TKM of ρ/ε is off by 1e-2 to 1e-1.
+  - **Campaign whose substrate face cuts the orbitals** (test/campaign/fixture_cut.jl, σ = 0.5): V differs from its
+    h = 0.067 value by 1.3e-4, 7.5e-6 and 1.1e-6 at h = 0.2, 0.133 and 0.1, with max |V − V'| / max |V| down to
+    1.2e-7. `:surface` and `:halfspace` agree to 1.9e-6 at h = 0.133. TKM on the screened samples is off by 2e-2 to
+    6e-2 at every h.
 - The tolerances default to the campaign's `[solve]` values. Further keywords: `nlev`, `quad_tol`, `edge_tol`, `tau`,
-  `fg_tol`, `refine_targets`, `target_skin`, and `far = :sctl` (`using SCTL`) or `:fmm3d`.
+  `fg_tol`, `refine_targets`, `target_skin`, `cut_rhs`, `cut_order`, `cut_κ`, `cut_L0`, `cut_tol`, and `far = :sctl`
+  (`using SCTL`) or `:fmm3d`.
 
 For the Sec. 5.3 campaign (198 graphene orbitals, 2623 pairs, Si|SiO₂ substrate), the comparison is:
 

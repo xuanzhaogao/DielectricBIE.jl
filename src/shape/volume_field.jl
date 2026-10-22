@@ -401,6 +401,49 @@ function volume_field_gradient(f::PrecomputedVolumeField{T}, targets::AbstractMa
 end
 
 """
+    volume_field_hessian(field, targets) -> 6 x n Matrix
+
+Hessian of the precomputed field at `targets` (3 x n), free-space `1/(4π r)` normalization, rows ∂xx, ∂yy, ∂zz,
+∂xy, ∂xz, ∂yz. In-box targets via a type-2 NUFFT of the spectral second derivatives (needs the potential
+coefficients: `compute_pot = true`, `cache_fft = false`), out-of-box targets by point charges (FMM3D, at the field's
+tolerance).
+"""
+function volume_field_hessian(f::PrecomputedVolumeField{T}, targets::AbstractMatrix{<:Real}) where {T}
+    size(targets, 1) == 3 || throw(ArgumentError("targets must have shape (3, n)"))
+    f.coeff === nothing && throw(ArgumentError("the Hessian needs the potential coefficients (compute_pot = true, cache_fft = false)"))
+    trg = Matrix{T}(targets)
+    n = size(trg, 2)
+    out = Matrix{T}(undef, 6, n)
+    inb = [in_field_box(f, trg, i) for i in 1:n]
+    bidx = findall(inb); oidx = findall(!, inb)
+    if !isempty(bidx)
+        dks = f.geom.dks
+        ks = ntuple(d -> TKM3D.centered_mode_axis(dks[d], f.kmax), 3)
+        hc = Array{Complex{T}, 4}(undef, size(f.coeff)..., 6)
+        pairs = ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))
+        Threads.@threads for iz in axes(f.coeff, 3)
+            @inbounds for iy in axes(f.coeff, 2), ix in axes(f.coeff, 1)
+                kk = (ks[1][ix], ks[2][iy], ks[3][iz]); c = f.coeff[ix, iy, iz]
+                for (m, (a, b)) in enumerate(pairs)
+                    hc[ix, iy, iz, m] = -(kk[a] * kk[b]) * c
+                end
+            end
+        end
+        txn, tyn, tzn = _field_scaled_targets(f, trg, bidx)
+        vals = TKM3D._finufft_type2_eval_3d(txn, tyn, tzn, 1, f.tol, hc; nthreads = f.nthreads)
+        for (k, i) in enumerate(bidx), m in 1:6
+            out[m, i] = f.prefactor * real(vals[k, m])
+        end
+    end
+    if !isempty(oidx)
+        v = lfmm3d(Float64(f.tol), Matrix{Float64}(f.sources); charges = Vector{Float64}(f.charges),
+                   targets = Matrix{Float64}(trg[:, oidx]), pgt = 3)
+        out[:, oidx] .= v.hesstarg ./ (4π)                        # FMM3D's kernel is 1/r
+    end
+    return out
+end
+
+"""
     _rhs_volume_targets_field(field, targets, normals, eps_src) -> Vector
 
 Dielectric-interface RHS values `-(n · ∇φ) / eps_src` at `targets` from a
