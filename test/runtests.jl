@@ -66,6 +66,7 @@ using Test
     include("campaign/v_output.jl")
     include("campaign/tasks.jl")
     include("campaign/gcq.jl")
+    include("campaign/gcq_cut.jl")
     if run_full
         include("campaign/pipeline.jl")
         include("campaign/distributed_ext.jl")

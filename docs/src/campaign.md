@@ -158,7 +158,20 @@ How it works:
 
 Requirements and tolerances:
 
-- Every pair density must lie inside one dielectric box (the same screening for all pairs); the mode checks this.
+- Each pair density lies inside one region, or is cut by one horizontal face (z = const; the grid's first two lattice
+  vectors horizontal) whose rectangle covers it, with the interface near it only on horizontal faces; the mode checks
+  this. A cut density's screened source ρ/ε jumps at the face, so spectral and point-charge rules on its samples
+  converge only like O(h). The mode keeps every spectral computation on the smooth ρ instead:
+  - V_vol[a, b] = ∫ φ0_a ρ_b / ε dx (symmetry of N, φ0_a = N[ρ_a]) by cut-cell quadrature: the trapezoid weights,
+    corrected on the few lattice levels next to the face by degree-7 interpolants centred on each cell;
+  - the RHS far from the density by point charges with the same weights;
+  - the RHS at the nodes near it from ∂z N[χ ρ] on the face, by the in-plane Fourier transform of the half-space
+    Green's function (exact in z), with the periodic images removed to second order.
+
+  On a Gaussian cut off-centre (σ = 0.5, h = 0.1) the volume term is accurate to 7e-8 and the face field to 1e-8,
+  where TKM on the screened samples gives 8e-2 and point charges 9e-2. On a campaign whose substrate face cuts the orbitals (test/campaign/fixture_cut.jl,
+  σ = 0.5), V differs from its h = 0.067 value by 1.3e-4, 7.5e-6 and 1.1e-6 at h = 0.2, 0.133 and 0.1, with
+  max |V - V'| / max |V| down to 1.2e-7; TKM on the screened samples is off by 2e-2 to 6e-2 at every h.
 - The tolerances default to the campaign's `[solve]` values. Further keywords: `nlev`, `quad_tol`, `edge_tol`, `tau`,
   `fg_tol`, `refine_targets`, `target_skin`, and `far = :sctl` (`using SCTL`) or `:fmm3d`.
 

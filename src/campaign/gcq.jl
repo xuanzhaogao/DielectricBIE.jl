@@ -7,14 +7,16 @@
 #    step_j - step_i), each truncated on its own support (support_rtol). The targets are the union of all supports.
 # 2. One GCQ interface, refined for the envelope of all pair densities (RHS) and for all targets (target_skin), and its
 #    operator A. The interface is far from every target, so the layer part is the node rule: G' sigma.
-# 3. F and G of every pair by one point-charge FMM per shape over the interface nodes shifted by each pair's offset.
+# 3. F and G of every pair by one volume field per shape (TKM near the density, point charges far) over the interface
+#    nodes shifted by each pair's offset.
 # 4. Low rank: W^{1/2} F ~= Q (Q' W^{1/2} F) at tolerance tau (rank r), Y = A^{-1} W^{-1/2} Q (r GMRES solves),
 #    V_layer = (G' Y)(Q' W^{1/2} F).
-# 5. V_vol by shapes: one screened volume solve per source shape (TKM near the shape, FMM elsewhere) at the grid points
-#    needed, and one dot product per distinct (shape, shape, shift); symmetric, so each pair of shapes is done once.
+# 5. V_vol by shapes: one volume solve per source shape (TKM near the shape, FMM elsewhere) at the grid points needed,
+#    and one dot product per distinct (shape, shape, shift, screening). For densities inside one region V_vol is the
+#    unscreened overlap over eps, symmetric, so each pair of shapes is done once.
 #
-# The mode needs every pair density inside one dielectric box (the same screening for all, which makes the shapes
-# exact translates and V_vol symmetric); it checks this. The work can be split over `nparts` cooperating processes
+# A pair density is inside one region, or cut by one horizontal face (gcq_cut.jl: cut-cell quadrature and a
+# half-space formula near the face); the mode checks this. The work can be split over `nparts` cooperating processes
 # (e.g. one or two per socket; OpenMP above one socket slows the FMMs), coordinated through files in `sync`.
 
 """
@@ -80,32 +82,18 @@ function gcq_pair_shapes(c::CampaignInput, centers::Vector{CenterInfo}, pairs;
     return shapes, shape_of, delta, grids[1]
 end
 
-# the dielectric box holding every pair density (each support's bounding box inside it), or an error
-function _gcq_uniform_box(c::CampaignInput, dg, shapes, shape_of, delta)
-    o, ea, eb, ec = _grid_frame(dg)
-    inbox(b, x) = all(abs(x[d] - b.center[d]) <= (b.Lx, b.Ly, b.Lz)[d] / 2 for d in 1:3)
-    which = nothing
-    for p in eachindex(shape_of)
-        sh = shapes[shape_of[p]]
-        isempty(sh.gidx) && continue                     # a pair whose orbitals do not overlap: zero density
-        lo = ntuple(d -> minimum(g[d] for g in sh.gidx) + delta[p][d], 3)
-        hi = ntuple(d -> maximum(g[d] for g in sh.gidx) + delta[p][d], 3)
-        corners = [o .+ (i - 1) .* ea .+ (j - 1) .* eb .+ (k - 1) .* ec for i in (lo[1], hi[1]), j in (lo[2], hi[2]), k in (lo[3], hi[3])]
-        bs = [b for b in eachindex(c.boxes) if all(x -> inbox(c.boxes[b], x), corners)]
-        length(bs) == 1 && (which === nothing || which == bs[1]) ||
-            error("GCQ campaign mode: pair $p is not inside one dielectric box with all the others; " *
-                  "the shapes need the same screening for every pair")
-        which = bs[1]
-    end
-    return which
-end
-
 # screened VolumeSource of a shape shifted by delta (grid steps)
 function _gcq_shape_source(c::CampaignInput, dg, sh::GCQPairShape, delta = (0, 0, 0))
     lb, dv = _grid_basis(dg)
     X = _grid_positions(dg, [g .+ delta for g in sh.gidx])
     vs = VolumeSource(X, fill(dv, length(sh.tw)), sh.tw ./ dv; lattice_basis = lb)
     return screened_volume_source(c.boxes, c.epses, c.eps_out, vs, SharpScreening())
+end
+
+# the bare (unscreened) VolumeSource of a shape, at its representative placement
+function _gcq_shape_source0(dg, sh::GCQPairShape)
+    lb, dv = _grid_basis(dg)
+    return VolumeSource(_grid_positions(dg, sh.gidx), fill(dv, length(sh.tw)), sh.tw ./ dv; lattice_basis = lb)
 end
 
 # all targets (the union of the shifted supports, as grid points) and the envelope max_p |tw_p| on them
@@ -210,24 +198,32 @@ function _gcq_volume_gradient(sv, X; tol, c_pad, far)
     return g
 end
 
-# distinct keys of V_vol: keys[s] maps (s', D) to its index among the values of source shape s;
-# V_vol[a, b] = vals[ksrc[a, b]][kidx[a, b]]. Symmetric (one dielectric region): C(s_a, s_b, D) = C(s_b, s_a, -D), so a
-# key is kept with the larger shape index as the source.
-function _gcq_volume_keys(S, shape_of, delta)
+# distinct keys of V_vol[a, b] = <rho_a, N[rho_b / eps]>: keys[s] maps (s', D, k) to its index among the values of
+# source shape s, the bare potential of s at the points of s' shifted by D, summed with the weights tw (k = 0) or
+# tw .* classes[k].m (k > 0); V_vol[a, b] = vals[ksrc[a, b]][kidx[a, b]] * kfac[a, b].
+# - b inside one region: C(s_a, s_b, D) / eps_b, with C the bare overlap. C(s_a, s_b, D) = C(s_b, s_a, -D), so a key
+#   is kept with the larger shape index as the source.
+# - b cut: by the symmetry of N, int phi0_a rho_b / eps: the source is s_a, at b's points with b's cut-cell screening.
+function _gcq_volume_keys(S, shape_of, delta, cls, inveps)
     P = length(shape_of)
-    keys = [Dict{Tuple{Int, NTuple{3, Int}}, Int}() for _ in 1:S]
-    ksrc = Matrix{Int}(undef, P, P); kidx = Matrix{Int}(undef, P, P)
+    keys = [Dict{Tuple{Int, NTuple{3, Int}, Int}, Int}() for _ in 1:S]
+    ksrc = Matrix{Int}(undef, P, P); kidx = Matrix{Int}(undef, P, P); kfac = ones(P, P)
     for b in 1:P, a in 1:P
         sa, sb, D = shape_of[a], shape_of[b], delta[a] .- delta[b]
-        src, key = sa <= sb ? (sb, (sa, D)) : (sa, (sb, .-D))
+        if cls[b] == 0
+            src, key = sa <= sb ? (sb, (sa, D, 0)) : (sa, (sb, .-D, 0))
+            kfac[a, b] = inveps[b]
+        else
+            src, key = sa, (sb, .-D, cls[b])
+        end
         ksrc[a, b] = src; kidx[a, b] = get!(keys[src], key, length(keys[src]) + 1)
     end
-    return keys, ksrc, kidx
+    return keys, ksrc, kidx, kfac
 end
 
 # the values of the keys of the source shapes sbs (Dict sb => values): one volume solve per source shape at the grid
 # points its keys touch, then the dot products
-function _gcq_volume_values(c, dg, shapes, keys, sbs; tol, c_pad, far)
+function _gcq_volume_values(c, dg, shapes, keys, sbs, classes; tol, c_pad, far)
     blo = [ntuple(d -> minimum((g[d] for g in sh.gidx); init = 0), 3) for sh in shapes]
     bhi = [ntuple(d -> maximum((g[d] for g in sh.gidx); init = 0), 3) for sh in shapes]
     o, ea, eb, ec = _grid_frame(dg)
@@ -238,14 +234,14 @@ function _gcq_volume_values(c, dg, shapes, keys, sbs; tol, c_pad, far)
         kl = [kv for kv in keys[sb] if !isempty(shapes[kv[1][1]].gidx)]
         (isempty(kl) || isempty(shapes[sb].gidx)) && continue
         lo = fill(typemax(Int), 3); hi = fill(typemin(Int), 3)
-        for ((sa, D), _) in kl, d in 1:3
+        for ((sa, D, _), _) in kl, d in 1:3
             lo[d] = min(lo[d], blo[sa][d] + D[d]); hi[d] = max(hi[d], bhi[sa][d] + D[d])
         end
         dims = Tuple(hi .- lo .+ 1)
         lin(g) = (g[1] - lo[1] + 1) + dims[1] * ((g[2] - lo[2]) + dims[2] * (g[3] - lo[3]))
         need = zeros(Bool, prod(dims))
         Threads.@threads for q in eachindex(kl)
-            (sa, D), _ = kl[q]
+            (sa, D, _), _ = kl[q]
             @inbounds for h in shapes[sa].gidx
                 need[lin(h .+ D)] = true
             end
@@ -261,12 +257,19 @@ function _gcq_volume_values(c, dg, shapes, keys, sbs; tol, c_pad, far)
             end
         end
         Φ = zeros(prod(dims))
-        Φ[idx] .= _gcq_volume_potential(_gcq_shape_source(c, dg, shapes[sb]), X; tol, c_pad, far)
+        Φ[idx] .= _gcq_volume_potential(_gcq_shape_source0(dg, shapes[sb]), X; tol, c_pad, far)
         Threads.@threads for q in eachindex(kl)
-            (sa, D), id = kl[q]
+            (sa, D, k), id = kl[q]
             sh = shapes[sa]; acc = 0.0
-            @inbounds for (h, w) in zip(sh.gidx, sh.tw)
-                acc += w * Φ[lin(h .+ D)]
+            if k == 0
+                @inbounds for (h, w) in zip(sh.gidx, sh.tw)
+                    acc += w * Φ[lin(h .+ D)]
+                end
+            else
+                m = classes[k].m
+                @inbounds for (n, h) in enumerate(sh.gidx)
+                    acc += sh.tw[n] * m[n] * Φ[lin(h .+ D)]
+                end
             end
             vals[id] = acc
         end
@@ -317,6 +320,10 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
   evaluated accurately at the nodes (TKM near the density), the node rule of a smooth integrand that the RHS
   refinement resolves. On Sec. 5.3 both give the same V to 2.3e-6, without on a 43% smaller interface. A density cut
   by a face needs `false`.
+- Densities cut by a face: a pair density may cross one horizontal face (z = const, on a grid whose first two
+  lattice vectors are horizontal) that covers it, with the interface near it only on horizontal faces. Its volume part
+  and the far field of its RHS use cut-cell quadrature (`_cutcell_correction`), the RHS at the nodes near it the
+  half-space formula (`_gcq_halfspace_dz`); see `gcq_cut.jl`. Other cuts are an error.
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
@@ -346,11 +353,13 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         pids = pairs !== nothing ? collect(pairs) :
                c.pair_overrides !== nothing ? c.pair_overrides : enumerate_pairs(centers, c.neighbor_cutoff)
         shapes, shape_of, delta, dg = gcq_pair_shapes(c, centers, pids; support)
-        _gcq_uniform_box(c, dg, shapes, shape_of, delta)
+        cls, inveps, classes = _gcq_screening(c, dg, shapes, shape_of, delta)
+        refine_targets && !isempty(classes) &&
+            throw(ArgumentError("refine_targets = true needs every pair density inside one region (none cut by a face)"))
         X, env = _gcq_targets(shapes, shape_of, delta, dg)
     end
     P = length(pids); S = length(shapes)
-    st("$P pairs, $S shapes, $(size(X, 2)) targets", t)
+    st("$P pairs, $S shapes, $(size(X, 2)) targets, $(count(>(0), cls)) cut pairs in $(length(classes)) classes", t)
     skin = target_skin === nothing ? _gcq_default_skin(c, X, dg) : Float64(target_skin)
     # 2. interface and operator
     # one interface for every part: part 1 builds it (the refinement sums are not bit-reproducible across processes)
@@ -378,19 +387,32 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     t = @elapsed for s in myshapes
         ps = pos[s]
         isempty(shapes[s].gidx) && continue             # zero density: F = G = 0
-        sv = _gcq_shape_source(c, dg, shapes[s])
+        sv0 = _gcq_shape_source0(dg, shapes[s])                                    # the bare density
         T = reduce(hcat, [nodes .- _grid_shift(dg, delta[q]) for q in ps])        # the shape stays, the nodes move
-        # F: gradient of the screened shape; G: potential of the bare shape (the test density). Near the shape (nodes
-        # inside its padded box) by its TKM field, elsewhere by point charges: G' sigma = int sigma phi_a dA is then the
-        # node rule of a smooth integrand, with no condition on the distance from the density to the interface
-        g = _gcq_volume_gradient(sv, T; tol = fg_tol, c_pad, far = ff)
-        sv0 = with_density(sv, shapes[s].tw ./ sv.weights)                          # the bare density
+        # g, u: gradient and potential of the bare shape, near it (nodes inside its padded box) by its TKM field,
+        # elsewhere by point charges. G' sigma = int sigma phi_a dA is then the node rule of a smooth integrand, with no
+        # condition on the distance from the density to the interface. F = n . g / eps for a pair inside one region
+        g = _gcq_volume_gradient(sv0, T; tol = fg_tol, c_pad, far = ff)
         u = _gcq_volume_potential(sv0, T; tol = fg_tol, c_pad, far = ff)
         Threads.@threads for k in eachindex(ps)
-            ck = col[ps[k]]; off = (k - 1) * N
+            ck = col[ps[k]]; off = (k - 1) * N; a = inveps[ps[k]]
             @inbounds for j in 1:N
-                Floc[j, ck] = nrm[1, j] * g[1, off + j] + nrm[2, j] * g[2, off + j] + nrm[3, j] * g[3, off + j]
+                Floc[j, ck] = a * (nrm[1, j] * g[1, off + j] + nrm[2, j] * g[2, off + j] + nrm[3, j] * g[3, off + j])
                 Gloc[j, ck] = w[j] * u[off + j]
+            end
+        end
+        # pairs cut by a face, by class: F by the cut-cell screening far from the shape, the half-space formula near
+        ks = findall(k -> cls[ps[k]] > 0, eachindex(ps))
+        if !isempty(ks)
+            geom = near_field_geometry(sv0; c_pad)
+            near = zeros(Bool, size(T, 2))
+            Threads.@threads for i in axes(T, 2)
+                near[i] = in_near_region(geom, T, i)
+            end
+            for kc in unique(cls[ps[ks]])
+                blk = [k for k in ks if cls[ps[k]] == kc]
+                _gcq_cut_rhs!(Floc, [col[ps[k]] for k in blk], blk, classes[kc], dg, shapes[s], sv0, T, g, near, nrm, N;
+                              far = ff, tol = fg_tol)
             end
         end
     end
@@ -423,11 +445,11 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     end
     st("$(length(mycols)) GMRES solves", t)
     # 5. V_vol of this part's source shapes
-    keys, ksrc, kidx = _gcq_volume_keys(S, shape_of, delta)
-    vcost = [sum((length(shapes[sa].gidx) for ((sa, _), _) in keys[s]); init = 0) for s in 1:S]
+    keys, ksrc, kidx, kfac = _gcq_volume_keys(S, shape_of, delta, cls, inveps)
+    vcost = [sum((length(shapes[sa].gidx) for ((sa, _, _), _) in keys[s]); init = 0) for s in 1:S]
     local vals
-    t = @elapsed vals = _gcq_volume_values(c, dg, shapes, keys, _gcq_balance(vcost, nparts)[part]; tol = volume_tol,
-                                           c_pad, far = ff)
+    t = @elapsed vals = _gcq_volume_values(c, dg, shapes, keys, _gcq_balance(vcost, nparts)[part], classes;
+                                           tol = volume_tol, c_pad, far = ff)
     st("V_vol of $(length(vals)) source shapes", t)
     if part != 1
         _gcq_put(sync, part, "res-$part", (mycols, Yloc, vals))
@@ -439,14 +461,15 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         ck, Yk, vk = _gcq_take(sync, "res-$k"); Y[:, ck] .= Yk; merge!(vals, vk)
     end
     Vlay = _gcq_dense(() -> (G' * Y) * R)
-    Vvol = [vals[ksrc[a, b]][kidx[a, b]] for a in 1:P, b in 1:P]
+    Vvol = [vals[ksrc[a, b]][kidx[a, b]] * kfac[a, b] for a in 1:P, b in 1:P]
     V = Vvol .+ Vlay
     asym = maximum(abs, V - V') / maximum(abs, V)
     st("assembled V (max |V - V'| / max |V| = $(round(asym; sigdigits = 2)))", time() - T0)
     onsite_norm2 = Dict(pids[a][1] => sum(shapes[shape_of[a]].tw) for a in 1:P if pids[a][1] == pids[a][2])
     return (; pair_ids = pids, V = (V + V') / 2, V_vol = Vvol, V_layer = Vlay,
               stats = (; times = stats, total = time() - T0, rank = r, N, npanels = length(itf.panels), nshapes = S,
-                       ntargets = size(X, 2), target_skin = skin, near_pairs = nnear, asym, onsite_norm2))
+                       ntargets = size(X, 2), target_skin = skin, near_pairs = nnear, asym, onsite_norm2,
+                       cut_pairs = count(>(0), cls), cut_classes = length(classes)))
 end
 
 _gcq_dense(f) = (nb = BLAS.get_num_threads(); BLAS.set_num_threads(Threads.nthreads());
