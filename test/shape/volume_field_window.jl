@@ -104,3 +104,73 @@ import DielectricBIE as BI
     @test r2.pot === nothing && r2.hess === nothing && r2.grad == r.grad[:, 101:200]
     @test_throws ArgumentError PrecomputedVolumeField(sv; tol = 1e-10, window_derivatives = true, cache_fft = true)
 end
+
+@testset "PrecomputedVolumeField: prolate (PSWF) window option" begin
+    rel(a, b) = maximum(abs, a - b) / maximum(abs, b)
+    pr = ((1, 1), (2, 2), (3, 3), (1, 2), (1, 3), (2, 3))
+    # psi_0^c: the prolate ODE (1 - z²) psi'' - 2 z psi' + (chi - c² z²) psi = 0 to rounding
+    c = 1.15 * π * 15 * (1 - 1 / 3); w = BI._field_window_pswf(15, c; taper = 0)
+    f0, _, f2 = BI._legendre_eval3(w.a, 0.0); χ = -f2 / f0
+    @test maximum(z -> (v = BI._legendre_eval3(w.a, z); abs((1 - z^2) * v[3] - 2z * v[2] + (χ - c^2 * z^2) * v[1])), range(-0.99, 0.99; length = 101)) <
+          1e-12 * c^2
+    # analytic derivatives of the implemented window (tapered), against forward-mode AD of its value
+    wt = BI._field_window_pswf(15, c; taper = 1)
+    wv(t) = first(BI._field_window_eval(wt, t))
+    for t in (-7.2, -1.3, 0.0, 2.9, 7.4)
+        _, d1, d2 = BI._field_window_eval(wt, t)
+        @test d1 ≈ BI.ForwardDiff.derivative(wv, t) rtol = 1e-10 atol = 1e-14
+        @test d2 ≈ BI.ForwardDiff.derivative(s -> BI.ForwardDiff.derivative(wv, s), t) rtol = 1e-9 atol = 1e-14
+    end
+    @test abs(BI._field_window_eval(wt, 7.5 - 1e-12)[1]) < 1e-20 && BI._field_window_eval(wt, 7.5) == (0.0, 0.0, 0.0)
+    # gathering against exact Fourier sums: a decayed spectrum and single modes, random / wrap / transition targets
+    Random.seed!(13)
+    m = (24, 20, 28); ks = [collect(Float64, (-(m[d] ÷ 2)):((m[d] - 1) ÷ 2)) for d in 1:3]
+    function exact(coeff, X)
+        n = size(X, 2); P = zeros(n); G = zeros(3, n); H = zeros(6, n)
+        for I in findall(!iszero, coeff), t in 1:n
+            k = (ks[1][I[1]], ks[2][I[2]], ks[3][I[3]]); v = coeff[I] * cis(dot(collect(k), X[:, t]))
+            P[t] += real(v)
+            for d in 1:3; G[d, t] += real(im * k[d] * v); end
+            for (q, (a, b)) in enumerate(pr); H[q, t] += real(-k[a] * k[b] * v); end
+        end
+        return P, G, H
+    end
+    win = BI._field_window_choice(:pswf, 1e-14, 1.5)
+    @test win isa BI._PSWFWindow && win.ns == 15 && win.m == 1
+    function gather(coeff, X)
+        grid, ns, _, nf = BI._field_window_grid(coeff, win, 1.5)
+        n = size(X, 2); P = zeros(n); G = zeros(3, n); H = zeros(6, n)
+        BI._field_window_gather!(P, G, H, grid, X[1, :], X[2, :], X[3, :], ns, win, ntuple(d -> nf[d] / (2π), 3), 1.0)
+        return P, G, H, nf
+    end
+    _, _, _, nf = gather(zeros(ComplexF64, m...), zeros(3, 1))
+    X = hcat((rand(3, 100) .* 2 .- 1) .* π, π .* (1 .- 1e-12 .* rand(3, 10)) .* sign.(randn(3, 10)))
+    for j in (4, 13), δ in (0.0, 1e-13, -1e-13)
+        X = hcat(X, [2π * ((j + win.ns / 2) / nf[d] - 0.5) + δ for d in 1:3])
+    end
+    # a spectrum decayed at the edge of the mode box, as TKM fields are (the default width is tuned for that; an
+    # edge-heavy spectrum, ~1e-7 at the edge, gives Hessian errors ~1e-9 at this width)
+    cs = zeros(ComplexF64, m...)
+    for i in 1:m[1], j in 1:m[2], l in 1:m[3]
+        cs[i, j, l] = exp(-(ks[1][i]^2 + ks[2][j]^2 + ks[3][l]^2) / 5.0) * cis(2π * rand())   # ~3e-13 at the box edge
+    end
+    P0, G0, H0 = exact(cs, X); P, G, H = gather(cs, X)
+    @test rel(P, P0) < 1e-11 && rel(G, G0) < 1e-11 && rel(H, H0) < 1e-11
+    for k in ((1, 0, 0), (3, -2, 5))
+        c1 = zeros(ComplexF64, m...); c1[(k .+ m .÷ 2 .+ 1)...] = cis(0.7)
+        P0, G0, H0 = exact(c1, X); P, G, H = gather(c1, X)
+        @test maximum(abs, P - P0) < 1e-11 && maximum(abs, G - G0) < 1e-11 && maximum(abs, H - H0) < 1e-10
+    end
+    # through PrecomputedVolumeField: a physical Gaussian, as accurate as the spectral route
+    σg = 0.5; ρf(x) = exp(-(x[1]^2 + x[2]^2 + x[3]^2) / (2σg^2)) / (2π * σg^2)^1.5
+    h = 0.12; R = 6σg; n = ceil(Int, 2R / h) + 1
+    Xs = reduce(hcat, [[-R + (i - 0.63) * h, -R + (j - 0.79) * h, -R + (k - 0.57) * h] for i in 1:n, j in 1:n, k in 1:n])
+    sv = BI.VolumeSource(Xs, fill(h^3, size(Xs, 2)), [ρf(x) for x in eachcol(Xs)]; lattice_basis = ((h, 0.0, 0.0), (0.0, h, 0.0), (0.0, 0.0, h)))
+    Y = (rand(3, 300) .- 0.5) .* 4.0
+    fs = PrecomputedVolumeField(sv; tol = 1e-10, c_pad = 5.0)
+    fp = PrecomputedVolumeField(sv; tol = 1e-10, c_pad = 5.0, window_derivatives = true, window = :pswf)
+    @test fp.wd_hc isa BI._PSWFWindow && fp.wd_nspread == 15
+    r = volume_field_derivatives(fp, Y)
+    @test rel(r.grad, volume_field_gradient(fs, Y)) < 1e-9 && rel(r.hess, volume_field_hessian(fs, Y)) < 1e-9
+    @test_throws ArgumentError PrecomputedVolumeField(sv; tol = 1e-10, window_derivatives = true, window = :kb)
+end

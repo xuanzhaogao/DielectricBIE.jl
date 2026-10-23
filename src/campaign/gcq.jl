@@ -343,6 +343,8 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
   surface-correction nodes: `:spectral` (default; one type-2 NUFFT per component, the derivatives as ik and -k k
   multipliers) or `:window` (one scalar grid per shape, derivatives of the gathering window:
   `PrecomputedVolumeField(...; window_derivatives = true)`; one field serves every quantity and batch).
+  `field_window` (a NamedTuple) passes window options to it, e.g. `(; window = :pswf)` or
+  `(; window_shape = 1.1, window_ns = 16)`.
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
@@ -360,7 +362,8 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         quad_tol::Real = 1e-8, edge_tol::Real = 1e-8, tau::Real = 1e-3, fg_tol::Real = 1e-4,
                         target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global,
                         refine_targets::Bool = false, cut_rhs::Symbol = :auto, cut_order::Int = 8, cut_κ::Real = 0.25,
-                        cut_L0 = nothing, cut_tol::Real = 1e-10, field_derivs::Symbol = :spectral, verbose::Bool = true)
+                        cut_L0 = nothing, cut_tol::Real = 1e-10, field_derivs::Symbol = :spectral,
+                        field_window::NamedTuple = (;), verbose::Bool = true)
     cut_rhs in (:auto, :surface, :halfspace) || throw(ArgumentError("cut_rhs must be :auto, :surface or :halfspace"))
     field_derivs in (:spectral, :window) || throw(ArgumentError("field_derivs must be :spectral or :window"))
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
@@ -450,7 +453,7 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         # g, u: gradient and potential of the bare shape, near it (nodes inside its padded box) by its TKM field,
         # elsewhere by point charges. G' sigma = int sigma phi_a dA is then the node rule of a smooth integrand, with no
         # condition on the distance from the density to the interface. F = n . g / eps for a pair inside one region
-        fld = field_derivs === :window ? PrecomputedVolumeField(sv0; tol = fg_tol, c_pad, window_derivatives = true) : nothing
+        fld = field_derivs === :window ? PrecomputedVolumeField(sv0; tol = fg_tol, c_pad, window_derivatives = true, field_window...) : nothing
         if fld === nothing
             g = _gcq_volume_gradient(sv0, T; tol = fg_tol, c_pad, far = ff)
             u = _gcq_volume_potential(sv0, T; tol = fg_tol, c_pad, far = ff)
