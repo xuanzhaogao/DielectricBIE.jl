@@ -136,6 +136,10 @@ function PrecomputedVolumeField(
     window_derivatives::Bool = false,
     window_sigma::Real = 1.5,
     window_tol::Union{Nothing, Real} = nothing,
+    window::Symbol = :es,
+    window_ns::Union{Nothing, Integer} = nothing,
+    window_shape::Union{Nothing, Real} = nothing,
+    window_taper::Union{Nothing, Integer} = nothing,
     # min(...) so a small Slurm allocation (4-8 CPUs) doesn't oversubscribe:
     # unlike ltkm3dc's unconditional _ltkm_default_nthreads(), this also caps at
     # the machine's CPU count. Sys.CPU_THREADS reports the machine total and can
@@ -147,6 +151,7 @@ function PrecomputedVolumeField(
     (compute_pot || compute_grad) || throw(ArgumentError("at least one of compute_pot or compute_grad must be true"))
     window_derivatives && cache_fft && throw(ArgumentError("window_derivatives and cache_fft are exclusive"))
     window_sigma > 1 || throw(ArgumentError("window_sigma must be > 1"))
+    window in (:es, :pswf) || throw(ArgumentError("window must be :es or :pswf"))
     cache_fft_pad >= 1 || throw(ArgumentError("cache_fft_pad must be >= 1"))
     tolT = T(tol)
     tolT > zero(T) || throw(ArgumentError("tol must be positive"))
@@ -174,7 +179,9 @@ function PrecomputedVolumeField(
     if window_derivatives
         # one scalar grid: no derivative coefficients; the coefficients are dropped after the grid is built
         tw = window_tol === nothing ? tolT * T(1e-4) : T(window_tol)
-        grid, ns, hc, nfdim_w = _field_window_grid(coeff, tw, T(window_sigma))
+        win = _field_window_choice(window, tw, Float64(window_sigma); ns = window_ns, shape = window_shape,
+                                   taper = window_taper)
+        grid, ns, hc, nfdim_w = _field_window_grid(coeff, win, window_sigma)
         alpha = ntuple(d -> T(nfdim_w[d] * dks[d] / (2π)), 3)
         coeff = nothing
         return PrecomputedVolumeField{T}(
@@ -394,7 +401,7 @@ end
 
 # Fourier factors of the window on a fine grid of nf points (FINUFFT's onedim_fseries_kernel: Gauss-Legendre
 # quadrature of the window over its support, with the (-1)^k of the half-period fold)
-function _field_window_fseries(nf::Int, win::_FieldWindow)
+function _field_window_fseries(nf::Int, win)
     J2 = win.ns / 2.0
     q = 2 * floor(Int, 2 + 3.0 * J2)                                 # twice FINUFFT's: the window is not a polynomial
     z, w = TKM3D._ltkm3dd_spreadonly_gaussquad(2 * q)
@@ -420,8 +427,27 @@ end
 
 function _field_window_grid(coeff::Array{Complex{T}, 3}, tolw::T, sigma::T; nsmax::Int = 24,
                             taper::Int = 3) where {T <: AbstractFloat}
+    return _field_window_grid(coeff, _field_window_params(tolw, sigma; nsmax, taper), sigma)
+end
+
+# The window of the window-derivative mode. :es, the tapered ES (default): width from the window tolerance (at most
+# 24), β = shape * 0.97 π ns (1 - 1/2σ), shape 1 and taper 3 by default. :pswf, the prolate window: width 3 below the
+# :es rule (the measured requirement at the same accuracy, with one point of margin), c = shape * π ns (1 - 1/2σ)
+# (FINUFFT's c times shape, default 1.15), taper 1 by default (the untapered prolate's truncation jumps in w'' need a
+# wider window). `ns`, `shape`, `taper` override.
+function _field_window_choice(window::Symbol, tolw::Real, sigma::Real; ns = nothing, shape = nothing, taper = nothing)
+    es = _field_window_params(tolw, sigma)
+    if window === :es
+        n = ns === nothing ? es.ns : Int(ns)
+        return _FieldWindow(n, something(shape, 1.0) * 0.97π * n * (1 - 1 / (2sigma)), something(taper, 3))
+    end
+    n = ns === nothing ? max(es.ns - 3, 4) : Int(ns)
+    return _field_window_pswf(n, something(shape, 1.15) * π * n * (1 - 1 / (2sigma)); taper = something(taper, 1))
+end
+
+# the grid for a given window (any type with _field_window_eval and field ns)
+function _field_window_grid(coeff::Array{Complex{T}, 3}, win, sigma::Real) where {T <: AbstractFloat}
     nmodes = size(coeff)
-    win = _field_window_params(tolw, sigma; nsmax, taper)
     ns = win.ns
     nfdim = ntuple(d -> TKM3D._ltkm3dd_spreadonly_next235even(max(ceil(Int, Float64(sigma) * nmodes[d]), 2 * ns)), 3)
     phis = ntuple(d -> T.(_field_window_fseries(nfdim[d], win)), 3)
@@ -434,9 +460,76 @@ function _field_window_grid(coeff::Array{Complex{T}, 3}, tolw::T, sigma::T; nsma
     return grid, ns, win, nfdim
 end
 
+# The prolate (PSWF) window psi_0^c(z) / psi_0^c(0), z = t / (ns/2), zero outside |z| < 1, optionally tapered by
+# (1 - z²)^m. psi_0^c is its Legendre expansion: the eigenvector of the smallest eigenvalue of the prolate operator
+# -((1 - x²) psi')' + c² x² psi in the orthonormal even Legendre basis (a symmetric tridiagonal matrix), as in the
+# references (Xiao-Rokhlin-Yarvin; FINUFFT's and ESP's PSWF code). The value and its derivatives are those of this
+# polynomial (Legendre recurrences for P, P', P''), so w' and w'' are the derivatives of the implemented window.
+struct _PSWFWindow
+    ns::Int
+    c::Float64
+    a::Vector{Float64}      # coefficients of P_0, P_1, ... (odd ones zero), normalized to w(0) = 1
+    m::Int                  # taper exponent (0: none)
+end
+
+function _pswf_legendre(c::Real; nterms::Union{Nothing, Int} = nothing)
+    M = nterms === nothing ? ceil(Int, c / 2 + 40) : nterms          # even degrees 0, 2, .., 2(M-1)
+    d = zeros(M); e = zeros(M - 1)
+    for i in 1:M
+        k = 2 * (i - 1)
+        d[i] = k * (k + 1) + c^2 * (2k * (k + 1) - 1) / ((2k + 3) * (2k - 1))
+        i < M && (e[i] = c^2 * (k + 1) * (k + 2) / ((2k + 3) * sqrt((2k + 1) * (2k + 5))))
+    end
+    E = eigen(SymTridiagonal(d, e), 1:1)
+    v = E.vectors[:, 1]
+    a = zeros(2M - 1)
+    for i in 1:M
+        k = 2 * (i - 1); a[k + 1] = v[i] * sqrt((2k + 1) / 2)          # orthonormal -> standard Legendre
+    end
+    return a
+end
+
+# value and first two derivatives in z of sum_k a_k P_k(z)
+@inline function _legendre_eval3(a::Vector{Float64}, z::Real)
+    p0, p1 = one(z), z; d0, d1 = zero(z), one(z); s0, s1 = zero(z), zero(z)
+    f = a[1] * p0; f1 = zero(z); f2 = zero(z)
+    if length(a) >= 2
+        f += a[2] * p1; f1 += a[2] * d1
+    end
+    @inbounds for k in 1:length(a) - 2
+        p2 = ((2k + 1) * z * p1 - k * p0) / (k + 1)
+        d2 = d0 + (2k + 1) * p1                                      # P'_{k+1} = P'_{k-1} + (2k+1) P_k
+        s2 = s0 + (2k + 1) * d1                                      # P''_{k+1} = P''_{k-1} + (2k+1) P'_k
+        ak = a[k + 2]
+        f = muladd(ak, p2, f); f1 = muladd(ak, d2, f1); f2 = muladd(ak, s2, f2)
+        p0, p1 = p1, p2; d0, d1 = d1, d2; s0, s1 = s1, s2
+    end
+    return f, f1, f2
+end
+
+function _field_window_pswf(ns::Int, c::Real; taper::Int = 0, trim::Real = 1e-20)
+    a = _pswf_legendre(c)
+    a ./= first(_legendre_eval3(a, 0.0))
+    # drop the negligible tail of the series (changes w, w', w'' by ~1e-15 at trim = 1e-20)
+    a = a[1:findlast(x -> abs(x) > trim * maximum(abs, a), a)]
+    return _PSWFWindow(ns, Float64(c), a, taper)
+end
+
+@inline function _field_window_eval(win::_PSWFWindow, t::Real)
+    h = win.ns / 2; z = t / h
+    abs(z) >= 1 && return zero(t), zero(t), zero(t)
+    f, f1, f2 = _legendre_eval3(win.a, z)
+    if win.m > 0                                                     # times (1 - z²)^m
+        r = 1 - z * z; m = win.m
+        g = r^m; g1 = -2m * z * r^(m - 1); g2 = m >= 2 ? (-2m * r^(m - 1) + 4m * (m - 1) * z^2 * r^(m - 2)) : -2m * r^(m - 1)
+        f, f1, f2 = f * g, f1 * g + f * g1, f2 * g + 2 * f1 * g1 + f * g2
+    end
+    return f, f1 / h, f2 / h^2
+end
+
 # the window and its first two derivatives at the ns stencil points t_l = x1 + l (l = 0..ns-1) of a target
 @inline function _field_window_weights!(w0::AbstractVector{T}, w1::AbstractVector{T}, w2::AbstractVector{T},
-                                        x1::Float64, win::_FieldWindow, ns::Int, order::Int) where {T}
+                                        x1::Float64, win, ns::Int, order::Int) where {T}
     @inbounds for i in 1:ns
         a, b, c = _field_window_eval(win, x1 + (i - 1))
         w0[i] = T(a); w1[i] = T(b); w2[i] = T(c)
@@ -454,7 +547,7 @@ end
 # Fused gathering of the potential (pot), gradient (grad, 3 × n) and Hessian (hess, 6 × n: xx, yy, zz, xy, xz, yz)
 # at the scaled targets (x = Δk (y - c)) from the real grid; any of pot, grad, hess may be `nothing`. Physical
 # scaling: C (the prefactor) and α (d ξ / d y).
-function _field_window_gather!(pot, grad, hess, grid::Array{T, 3}, txn, tyn, tzn, ns::Int, hc::_FieldWindow,
+function _field_window_gather!(pot, grad, hess, grid::Array{T, 3}, txn, tyn, tzn, ns::Int, hc,
                                α::NTuple{3, T}, C::T) where {T <: AbstractFloat}
     order = hess !== nothing ? 2 : grad !== nothing ? 1 : 0
     nf1, nf2, nf3 = size(grid)
