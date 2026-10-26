@@ -307,6 +307,33 @@ near_corrections(::SCTLProxyNearQuad, interface) =
     error("SCTLProxyNearQuad needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """
+    SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9)
+
+SCTL's near and on-surface quadrature for `CurvedPanel` interfaces, GCQ edge panels included. Each panel is cut
+into proxy `QuadElemList` elements, one per pair of fine segments of its rules (a Gauss-Legendre rule is one
+segment), of order `order` (default: the smallest of 16, 20 at least the segments' node counts: the proxies carry
+the curved geometry too, which order 8 resolves only to ~1e-4 on a 45° sphere panel), in the
+panel's own frame (coordinates relative to its anchor); the density on each is interpolated from the panel's
+nodes (`tensor_rule_interp`, exact up to the rule's interpolation error). The segment of a GCQ rule that touches
+the edge, [0, 2^-K], carries s^pw and is summed directly with its Gauss-Jacobi weights.
+
+A target is near a panel when it lies within `η` times the panel's diameter of one of its nodes; near targets get
+SCTL's near-singular rule on every proxy element. On the panel itself SCTL's rule returns a one-sided limit, so a
+target on its own element gets the principal value from the two sides, x ± εn and x ± 2εn
+(ε = `ε_rel` × the element's diameter), Richardson-extrapolated. The correction is the accurate block minus the
+node rule ([`dt_node_rule_block`](@ref)); combines with any far field. Needs `using SCTL`.
+"""
+Base.@kwdef struct SCTLCurvedNearQuad <: NearQuadrature
+    tol::Float64 = 1e-10
+    order::Union{Nothing, Int} = nothing
+    η::Float64 = 1.5
+    ε_rel::Float64 = 1e-9
+end
+
+near_corrections(::SCTLCurvedNearQuad, interface) =
+    error("SCTLCurvedNearQuad needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
     sctl_near_list(interface; tol = 1e-10, radius = nothing, targets = nothing) -> SCTL.NearList
 
 SCTL's near classification of the panels of `interface`: target `t` is near panel `k` if it lies within the radius

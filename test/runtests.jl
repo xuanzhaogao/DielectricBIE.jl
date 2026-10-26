@@ -61,6 +61,7 @@ using Test
 
     # operator backends (far field x near quadrature); the SCTL ones when SCTL.jl is installed
     include("ext/sctl.jl")
+    include("ext/sctl_curved.jl")
 
     # campaign
     include("campaign/toml_input.jl")

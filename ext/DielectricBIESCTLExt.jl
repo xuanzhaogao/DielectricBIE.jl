@@ -221,6 +221,133 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, inte
     return sparse(I, J, V, n, n)
 end
 
+# ---- SCTL's near and on-surface quadrature for curved (GCQ) panels, through proxy elements per fine segment ----
+
+# the proxy elements interpolate the curved geometry as well as the density: below order 16 the geometry error of a
+# panel spanning ~45° of a sphere reaches 1e-4 (order 8), at 16 it is 1e-9
+const _CURVED_MIN_ORDER = 16
+
+# parameter rectangles (ua, ub, va, vb) of a panel's proxy elements: its u-segments but the GCQ segment touching the
+# edge (index k0, summed directly), times its v-segments
+function _curved_subelements(P)
+    ru, rv = P.ru, P.rv
+    DielectricBIE.is_gcq(rv) && throw(ArgumentError("SCTLCurvedNearQuad: GCQ rules in v are not supported"))
+    k0 = DielectricBIE.is_gcq(ru) ? findfirst(sg -> sg[1] == 0, ru.segs) : nothing
+    subs = [(ua, ub, va, vb) for (k, (ua, ub)) in enumerate(ru.segs) if k != k0 for (va, vb) in rv.segs]
+    return subs, k0
+end
+
+_curved_diam(P, ua, ub, va, vb) = (c = [collect(DielectricBIE.curved_lpoint(P, u, v)) for (u, v) in
+                                         ((ua, va), (ub, va), (ub, vb), (ua, vb))];
+                                   maximum(norm(c[i] - c[j]) for i in 1:4 for j in 1:4))
+
+# D^T from the edge strip [0, 2^-K] × [0, 1] of a GCQ panel to targets Xl (panel frame). In u the strip is far
+# narrower than any target's distance: the Gauss-Jacobi points and weights of the rule's first segment (the weight
+# s^pw included), v = σ / s^pw from the rule's interpolation matrix. In v it is as long as the panel, and a target
+# near the edge sees a peak of the width of its distance: adaptive quadrature against the Lagrange basis of the
+# v-nodes.
+function _curved_strip_block(P, k0, Xl, Nt; tol)
+    ru, rv = P.ru, P.rv
+    nz = length(ru.z0); nv = length(rv.x)
+    V = ru.P[(k0 - 1) * nz .+ (1:nz), :]
+    B = zeros(size(Xl, 2), num_points(P))
+    for i in 1:nz
+        u = ru.fx[i, k0]
+        for t in axes(Xl, 2)
+            x = (Xl[1, t], Xl[2, t], Xl[3, t]); n = (Nt[1, t], Nt[2, t], Nt[3, t])
+            f = v -> begin
+                y = DielectricBIE.curved_lpoint(P, u, v)
+                d = x .- y; r = sqrt(sum(abs2, d))
+                (DielectricBIE.curved_frame(P, u, v)[4] * sum(n .* d) / (4π * r^3)) .*
+                    DielectricBIE._tensor_lagrange_mat(rv.z0, rv.bw, [2v - 1])[:, 1]
+            end
+            Iv, _ = DielectricBIE.HCubature.hquadrature(f, 0.0, 1.0; rtol = tol, atol = 0.0, initdiv = nv)
+            for j in 1:nv, a in axes(V, 2)
+                B[t, (a - 1) * nv + j] += ru.fw[i, k0] * Iv[j] * V[i, a]
+            end
+        end
+    end
+    return B
+end
+
+function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, interface::DielectricInterface)
+    ps = interface.panels
+    all(p -> p isa DielectricBIE.CurvedPanel, ps) ||
+        throw(ArgumentError("SCTLCurvedNearQuad: the interface must consist of CurvedPanels"))
+    n = num_points(interface)
+    offs = cumsum([0; [num_points(P) for P in ps]])
+    owner = zeros(Int, n); loc = zeros(Int, n)
+    for (k, P) in enumerate(ps), i in 1:num_points(P)
+        owner[offs[k] + i] = k; loc[offs[k] + i] = i
+    end
+    X, Nrm = _interface_targets_normals(interface)
+    X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
+    tree = DielectricBIE.NearestNeighbors.KDTree(X)
+    # proxy elements in each panel's frame (built serially: they are SCTL objects)
+    prox = map(ps) do P
+        subs, k0 = _curved_subelements(P)
+        nmax = max(length(P.ru.z0), length(P.rv.z0), _CURVED_MIN_ORDER)
+        p = q.order === nothing ? _SCTL_ORDERS[findfirst(>=(nmax), _SCTL_ORDERS)] : q.order
+        q.order === nothing || p in _SCTL_ORDERS || throw(ArgumentError("SCTLCurvedNearQuad: order must be one of $(_SCTL_ORDERS)"))
+        xn = param_nodes(p)
+        el = QuadElemList(p, length(subs)) do e, u, v
+            ua, ub, va, vb = subs[e]
+            collect(DielectricBIE.curved_lpoint(P, ua + (ub - ua) * u, va + (vb - va) * v))
+        end
+        Is = [kron(DielectricBIE.tensor_rule_interp(P.ru, ua .+ (ub - ua) .* xn),
+                   DielectricBIE.tensor_rule_interp(P.rv, va .+ (vb - va) .* xn)) for (ua, ub, va, vb) in subs]
+        (el = el, subs = subs, k0 = k0, Is = Is, diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0))
+    end
+    quad = ElemQuadrature(Laplace3D_FxdU())
+    blocks = Vector{Tuple{Vector{Int}, Matrix{Float64}}}(undef, length(ps))
+    Threads.@threads :dynamic for k in eachindex(ps)
+        P = ps[k]; pr = prox[k]; nv = length(P.rv.x)
+        # near targets: within η × diameter of a node of the panel (and the panel's own nodes)
+        c = reduce(.+, P.points) ./ num_points(P)
+        rad = maximum(norm(collect(y .- c)) for y in P.points)
+        cand = DielectricBIE.NearestNeighbors.inrange(tree, collect(c), rad + q.η * pr.diam)
+        ts = sort(filter(t -> owner[t] == k ||
+                              minimum(norm(X[:, t] .- collect(y)) for y in P.points) <= q.η * pr.diam, cand))
+        # target positions in the panel's frame, from the targets' own frames
+        Xl = reduce(hcat, [collect((ps[owner[t]].anchor .- P.anchor) .+ ps[owner[t]].lpoints[loc[t]]) for t in ts])
+        Nt = Nrm[:, ts]
+        # the element of each of the panel's own nodes
+        selfe = Dict{Int, Vector{Int}}()                      # element -> rows of targets on it
+        for (r, t) in enumerate(ts)
+            owner[t] == k || continue
+            u = P.ru.x[(loc[t] - 1) ÷ nv + 1]; v = P.rv.x[(loc[t] - 1) % nv + 1]
+            e = findfirst(s -> s[1] <= u <= s[2] && s[3] <= v <= s[4], pr.subs)
+            e === nothing && error("SCTLCurvedNearQuad: node ($u, $v) of panel $k lies on no proxy element")
+            push!(get!(selfe, e, Int[]), r)
+        end
+        acc = zeros(length(ts), num_points(P))
+        for (e, (ua, ub, va, vb)) in enumerate(pr.subs)
+            M = near_matrix(quad, pr.el, e, Xl; normals = Nt, tol = q.tol)       # SCTL sign: -D^T
+            rows = get(selfe, e, Int[])
+            if !isempty(rows)
+                # principal value on the element: both sides at ε and 2ε, Richardson
+                ε = q.ε_rel * _curved_diam(P, ua, ub, va, vb)
+                Y = reduce(hcat, [Xl[:, r] .+ s * ε .* Nt[:, r] for r in rows for s in (1, -1, 2, -2)])
+                N4 = reduce(hcat, [Nt[:, r] for r in rows for _ in 1:4])
+                M4 = near_matrix(quad, pr.el, e, Y; normals = N4, tol = q.tol)
+                for (i, r) in enumerate(rows)
+                    b = 4 * (i - 1)
+                    M[r, :] .= M4[b + 1, :] .+ M4[b + 2, :] .- (M4[b + 3, :] .+ M4[b + 4, :]) ./ 2
+                end
+            end
+            acc .-= M * pr.Is[e]
+        end
+        pr.k0 === nothing || (acc .+= _curved_strip_block(P, pr.k0, Xl, Nt; tol = q.tol))
+        blocks[k] = (ts, acc .- DielectricBIE.dt_node_rule_block(interface, k, X[:, ts], Nt))
+    end
+    close(quad)
+    I = Int[]; J = Int[]; V = Float64[]
+    for (k, (ts, B)) in enumerate(blocks), j in axes(B, 2), (r, t) in enumerate(ts)
+        push!(I, t); push!(J, offs[k] + j); push!(V, B[r, j])
+    end
+    return sparse(I, J, V, n, n)
+end
+
 # ---- the surface corrections of cut densities: double and single layers of smooth densities, SCTL elements ----
 
 # Gauss-Legendre elements on the rectangles (normal +e_k: the parametrization's d/du x d/dv), the nodes, normals and
