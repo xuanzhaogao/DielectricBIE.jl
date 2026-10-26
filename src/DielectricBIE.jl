@@ -24,6 +24,7 @@ export rhs_approx
 export interface_approx
 export interface_uniform_samples
 export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
+export CurvedPanel, curved_lpoint
 export EdgeGCQRule, edge_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
@@ -117,6 +118,7 @@ export plot_campaign_geometry
 include("core/panels.jl")
 include("utils/edge_gcq.jl")       # needed by the tensor panels (EdgeGCQRule)
 include("core/tensor_panels.jl")
+include("core/curved_panels.jl")
 include("core/block_corrections.jl") # near corrections as per-panel dense blocks
 include("core/sources.jl")
 include("core/source_geometry.jl")
