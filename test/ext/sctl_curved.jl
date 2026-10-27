@@ -1,4 +1,5 @@
-# SCTL near and on-surface quadrature for curved GCQ panels (lens_gcq), and solves on curved bodies.
+# SCTL near and on-surface quadrature for curved GCQ panels, and solves on curved bodies (patches from
+# test/shape/lens_patches.jl).
 using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays
@@ -6,6 +7,7 @@ using Test
 
 const HAVE_SCTL_CURVED = Base.find_package("SCTL") !== nothing
 HAVE_SCTL_CURVED && @eval using SCTL
+include(joinpath(@__DIR__, "..", "shape", "lens_patches.jl"))
 
 if HAVE_SCTL_CURVED
     # Dᵀ alone: FMM far field plus the near correction
@@ -17,8 +19,9 @@ if HAVE_SCTL_CURVED
     nodes_of(itf) = reduce(vcat, [p.points for p in itf.panels])
 
     @testset "SCTLCurvedNearQuad: Dᵀ on the unit sphere" begin
-        # θ1 = θ2 = π/2, one ε: the unit sphere, with GCQ edge panels at the equator
-        m = lens_gcq(1.0, π / 2, π / 2, 4.0, 4.0, 1.0; nlev = 3, n_quad = 8, tol = 1e-8)
+        # θ1 = θ2 = π/2, one ε: the unit sphere; the equator graded, with GCQ edge panels
+        g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
+        m = curved_gcq_mesh(g; nlev = 3, n_quad = 8, tol = 1e-8, grade = c -> abs(c.midpoint[3]) < 1e-12)
         itf = m.interface
         X = nodes_of(itf); z = [x[3] for x in X]
         isedge = reduce(vcat, [fill(p.kind == :edge, BI.num_points(p)) for p in itf.panels])
@@ -34,4 +37,5 @@ if HAVE_SCTL_CURVED
         D0 = dt_operator(itf, SCTLCurvedNearQuad(tol = 1e-10, η = 0.0))
         @test maximum(abs, D0(z) .- z ./ 6) > 1e-5
     end
+
 end
