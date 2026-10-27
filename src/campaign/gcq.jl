@@ -216,16 +216,28 @@ function _gcq_volume_keys(S, shape_of, delta, cls, inveps)
     keys = [Dict{Tuple{Int, NTuple{3, Int}, Int}, Int}() for _ in 1:S]
     ksrc = Matrix{Int}(undef, P, P); kidx = Matrix{Int}(undef, P, P); kfac = ones(P, P)
     for b in 1:P, a in 1:P
-        sa, sb, D = shape_of[a], shape_of[b], delta[a] .- delta[b]
-        if cls[b] == 0
-            src, key = sa <= sb ? (sb, (sa, D, 0)) : (sa, (sb, .-D, 0))
-            kfac[a, b] = inveps[b]
-        else
-            src, key = sa, (sb, .-D, cls[b])
-        end
-        ksrc[a, b] = src; kidx[a, b] = get!(keys[src], key, length(keys[src]) + 1)
+        ksrc[a, b], kidx[a, b], kfac[a, b] = _gcq_volume_key!(keys, a, b, shape_of, delta, cls, inveps)
     end
     return keys, ksrc, kidx, kfac
+end
+# the same for the entries (a, b) of the list `ab` only (vectors over ab)
+function _gcq_volume_keys(S, shape_of, delta, cls, inveps, ab::AbstractVector{NTuple{2, Int}})
+    keys = [Dict{Tuple{Int, NTuple{3, Int}, Int}, Int}() for _ in 1:S]
+    n = length(ab); ksrc = Vector{Int}(undef, n); kidx = Vector{Int}(undef, n); kfac = ones(n)
+    for (i, (a, b)) in enumerate(ab)
+        ksrc[i], kidx[i], kfac[i] = _gcq_volume_key!(keys, a, b, shape_of, delta, cls, inveps)
+    end
+    return keys, ksrc, kidx, kfac
+end
+function _gcq_volume_key!(keys, a, b, shape_of, delta, cls, inveps)
+    sa, sb, D = shape_of[a], shape_of[b], delta[a] .- delta[b]
+    if cls[b] == 0
+        src, key = sa <= sb ? (sb, (sa, D, 0)) : (sa, (sb, .-D, 0))
+        fac = inveps[b]
+    else
+        src, key = sa, (sb, .-D, cls[b]); fac = 1.0
+    end
+    return src, get!(keys[src], key, length(keys[src]) + 1), fac
 end
 
 # the values of the keys of the source shapes sbs (Dict sb => values): one volume solve per source shape at the grid
@@ -348,6 +360,12 @@ The four-index matrix of campaign `c` on one GCQ interface (see the file header)
 - `target_skin`: the cell of the target reduction of the interface refinement (default 3 grid steps, at most 1/8 of
   the smallest target-to-face distance). The layer part needs every target far from every panel; part 1 counts the
   near pairs left on a sample and warns.
+- `gmres_block`: the solves go through block GMRES, this many right-hand sides at a time (one batched FMM per
+  iteration for the block; [`solve_dielectric_box3d_gcq_block`](@ref)); 1 solves them one by one.
+- `vform = :nearfar`: `V` as a [`GCQNearFarV`](@ref) (exact near entries, a moment far field) instead of a dense
+  P × P matrix; `tile`, `rnear` and `p_far` set its tiles, near test and moment degree (see `gcq_nearfar.jl`).
+  `layer = :translate` (with `vform = :nearfar`, `nparts = 1`) takes the induced response invariant under in-plane
+  translations: a number of solves independent of the lattice size, exact for a laterally infinite box.
 - `part`, `nparts`, `sync`: run as part `part` of `nparts` processes started together, exchanging data through files
   in the directory `sync` (`/dev/shm/...` on one node, a shared directory across nodes). Shapes and solves are split
   over the parts; part 1 assembles. With `nparts = 1`, `sync` is unused.
@@ -363,7 +381,12 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
                         target_skin = nothing, c_pad::Real = c.c_pad, support::Symbol = :global,
                         refine_targets::Bool = false, cut_rhs::Symbol = :auto, cut_order::Int = 8, cut_κ::Real = 0.25,
                         cut_L0 = nothing, cut_tol::Real = 1e-10, field_derivs::Symbol = :spectral,
-                        field_window::NamedTuple = (;), verbose::Bool = true)
+                        field_window::NamedTuple = (;), vform::Symbol = :dense, tile = nothing, rnear = nothing,
+                        p_far::Int = 8, layer::Symbol = :lowrank, gmres_block::Int = 32, verbose::Bool = true)
+    vform in (:dense, :nearfar) || throw(ArgumentError("vform must be :dense or :nearfar"))
+    layer in (:lowrank, :translate) || throw(ArgumentError("layer must be :lowrank or :translate"))
+    layer === :translate && vform !== :nearfar && throw(ArgumentError("layer = :translate needs vform = :nearfar"))
+    layer === :translate && nparts > 1 && throw(ArgumentError("layer = :translate runs in one process (nparts = 1)"))
     cut_rhs in (:auto, :surface, :halfspace) || throw(ArgumentError("cut_rhs must be :auto, :surface or :halfspace"))
     field_derivs in (:spectral, :window) || throw(ArgumentError("field_derivs must be :spectral or :window"))
     1 <= part <= nparts || throw(ArgumentError("part must be in 1:nparts"))
@@ -385,6 +408,17 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     end
     P = length(pids); S = length(shapes)
     st("$P pairs, $S shapes, $(size(X, 2)) targets, $(count(>(0), cls)) cut pairs in $(length(classes)) classes", t)
+    local tl; lt = nothing
+    if vform === :nearfar
+        t = @elapsed tl = _gcq_nearfar_tiles(dg, shapes, shape_of, delta; tile, rnear)
+        st("$(length(tl.tiles)) tiles of side $(round(tl.tile; sigdigits = 4)), proxy half-widths " *
+           "$(round.(tl.w; sigdigits = 4)), rnear $(round(tl.rnear; sigdigits = 4)): $(length(tl.ab)) near pairs, " *
+           "$(length(tl.faroffs)) far offsets", t)
+        if layer === :translate
+            lt = _gcq_translate_groups(dg, shapes, shape_of, delta, cls)
+            st("layer by translation: $(length(lt.ref)) groups of translates", 0.0)
+        end
+    end
     skin = target_skin === nothing ? _gcq_default_skin(c, X, dg) : Float64(target_skin)
     # 2. interface and operator
     # one interface for every part: part 1 builds it (the refinement sums are not bit-reproducible across processes)
@@ -407,7 +441,9 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     # 3. F, G of this part's shapes
     pos = [findall(==(s), shape_of) for s in 1:S]
     myshapes = _gcq_balance(length.(pos), nparts)[part]
-    mypairs = reduce(vcat, [pos[s] for s in myshapes]; init = Int[])
+    # the pairs whose F is needed: all (low rank), or the reference pair of each group of translates
+    fpos = lt === nothing ? pos : (refs = Set(lt.ref); [filter(in(refs), pos[s]) for s in 1:S])
+    mypairs = reduce(vcat, [fpos[s] for s in myshapes]; init = Int[])
     # cut pairs: the RHS method of each class near the density, and the surface corrections (their own source surface,
     # graded toward every cut density; corrections at all interface nodes)
     meth = Dict{Int, Symbol}(); surf = nothing; atr = nothing; snodes = nodes
@@ -446,8 +482,8 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         st("surface corrections: $(size(surf.X, 2)) source nodes, for $(count(==(:surface), values(meth))) classes", t)
     Floc = zeros(N, length(mypairs)); Gloc = zeros(N, length(mypairs)); col = Dict(p => k for (k, p) in enumerate(mypairs))
     t = @elapsed for s in myshapes
-        ps = pos[s]
-        isempty(shapes[s].gidx) && continue             # zero density: F = G = 0
+        ps = fpos[s]
+        (isempty(ps) || isempty(shapes[s].gidx)) && continue     # zero density: F = G = 0
         sv0 = _gcq_shape_source0(dg, shapes[s])                                    # the bare density
         T = reduce(hcat, [nodes .- _grid_shift(dg, delta[q]) for q in ps])        # the shape stays, the nodes move
         # g, u: gradient and potential of the bare shape, near it (nodes inside its padded box) by its TKM field,
@@ -502,9 +538,16 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         end
     end
     st("F, G of $(length(myshapes)) shapes", t)
-    # 4. range of W^{1/2} F (part 1), solves of this part's columns
-    local F, G, Q, R, r
-    if part == 1
+    # 4. range of W^{1/2} F (part 1), solves of this part's columns; or (layer = :translate) one solve per group
+    local F, G, Q, R, r; Σ = nothing
+    if lt !== nothing
+        r = length(lt.ref); G = nothing; R = nothing; mycols = Int[]; Yloc = zeros(N, 0)
+        t = @elapsed begin
+            Σ = first(solve_dielectric_box3d_gcq_block(A, Floc[:, [col[q] for q in lt.ref]], itf; rtol = gmres_rtol,
+                                                       itmax = 500, block = gmres_block))
+        end
+        st("$r GMRES solves (one per group of translates)", t)
+    elseif part == 1
         F = zeros(N, P); G = zeros(N, P); F[:, mypairs] .= Floc; G[:, mypairs] .= Gloc
         for k in 2:nparts
             pk, Fk, Gk = _gcq_take(sync, "fg-$k"); F[:, pk] .= Fk; G[:, pk] .= Gk
@@ -523,14 +566,16 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
         Q = _gcq_take(sync, "Q"); r = size(Q, 2)
     end
     Floc = Gloc = nothing
-    mycols = collect(part:nparts:r)
-    Yloc = zeros(N, length(mycols))
-    t = @elapsed for (k, j) in enumerate(mycols)
-        Yloc[:, k] .= first(solve_dielectric_box3d_gcq(A, Q[:, j] ./ d, itf; rtol = gmres_rtol, itmax = 500))
+    if lt === nothing
+        mycols = collect(part:nparts:r)
+        Yloc = zeros(N, length(mycols))
+        t = @elapsed (Yloc .= first(solve_dielectric_box3d_gcq_block(A, Q[:, mycols] ./ d, itf; rtol = gmres_rtol,
+                                                                    itmax = 500, block = gmres_block)))
+        st("$(length(mycols)) GMRES solves", t)
     end
-    st("$(length(mycols)) GMRES solves", t)
     # 5. V_vol of this part's source shapes
-    keys, ksrc, kidx, kfac = _gcq_volume_keys(S, shape_of, delta, cls, inveps)
+    keys, ksrc, kidx, kfac = vform === :nearfar ? _gcq_volume_keys(S, shape_of, delta, cls, inveps, tl.ab) :
+                                                  _gcq_volume_keys(S, shape_of, delta, cls, inveps)
     vcost = [sum((length(shapes[sa].gidx) for ((sa, _, _), _) in keys[s]); init = 0) for s in 1:S]
     local vals
     t = @elapsed vals = _gcq_volume_values(c, dg, shapes, keys, _gcq_balance(vcost, nparts)[part], classes;
@@ -545,6 +590,13 @@ function gcq_four_index(c::CampaignInput; part::Int = 1, nparts::Int = 1, sync =
     for k in 2:nparts
         ck, Yk, vk = _gcq_take(sync, "res-$k"); Y[:, ck] .= Yk; merge!(vals, vk)
     end
+    lay = lt === nothing ? nothing :
+          (; lt, Σ, itf, A, delta, gmres_rtol, gmres_block, tau, far = ff(fg_tol),
+             ev = GCQPotential(quad_tol = quad_tol, η_gcq = 2.0, gcq_far = :direction, far = ff(fg_tol)))
+    vform === :nearfar && return _gcq_assemble_nearfar(pids, dg, shapes, shape_of, tl, cls, inveps, classes, vals,
+                                                       ksrc, kidx, kfac, G, Y, R; p = p_far, stats, st, T0, r, N,
+                                                       npanels = length(itf.panels), ntargets = size(X, 2), skin, nnear,
+                                                       lay)
     Vlay = _gcq_dense(() -> (G' * Y) * R)
     Vvol = [vals[ksrc[a, b]][kidx[a, b]] * kfac[a, b] for a in 1:P, b in 1:P]
     V = Vvol .+ Vlay

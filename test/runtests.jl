@@ -68,6 +68,7 @@ using Test
     include("campaign/tasks.jl")
     include("campaign/gcq.jl")
     include("campaign/gcq_cut.jl")
+    include("campaign/gcq_nearfar.jl")
     if run_full
         include("campaign/pipeline.jl")
         include("campaign/distributed_ext.jl")

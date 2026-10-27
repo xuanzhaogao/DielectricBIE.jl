@@ -40,6 +40,9 @@ function lhs_dielectric_box3d_gcq_dense(interface::DielectricInterface{TensorPan
     return A
 end
 
+# shift of the rank-one charge constraint: moves the equilibrium eigenvalue τ + ½ to τ
+const _CHARGE_SHIFT = -0.5
+
 """
     solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500, constraints=nothing, precondition=true)
 
@@ -64,9 +67,6 @@ is solved instead. The rank-one terms move each body's near-zero eigenvalue τ +
 `box_charge_constraints` builds the constraints for box bodies, and
 `solve_dielectric_boxes_gcq` applies them by default.
 """
-# shift of the rank-one charge constraint: moves the equilibrium eigenvalue τ + ½ to τ
-const _CHARGE_SHIFT = -0.5
-
 function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricInterface;
                                     rtol::Real = 1e-12, itmax::Int = 500, constraints = nothing,
                                     precondition::Bool = true, memory::Int = min(itmax, 100))
@@ -93,4 +93,56 @@ function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricI
     As = LinearMap{Float64}(z -> d .* (Ad * (p .* (z ./ d))), n, n)
     z, stats = Krylov.gmres(As, d .* bd; rtol, atol = 0.0, itmax, memory)
     return p .* (z ./ d), stats
+end
+
+# the W^{1/2}-scaled, right-preconditioned operator of solve_dielectric_box3d_gcq on N × K blocks (one batched
+# matvec of A per block)
+struct _GCQScaledOp{TA}
+    A::TA
+    d::Vector{Float64}
+    s::Vector{Float64}      # p ./ d
+    n::Int
+end
+Base.size(op::_GCQScaledOp) = (op.n, op.n)
+Base.size(op::_GCQScaledOp, k::Integer) = k <= 2 ? op.n : 1
+Base.eltype(::_GCQScaledOp) = Float64
+function LinearAlgebra.mul!(Y::AbstractMatrix, op::_GCQScaledOp, X::AbstractMatrix)
+    Y .= op.A * (op.s .* X)
+    Y .*= op.d
+    return Y
+end
+LinearAlgebra.mul!(y::AbstractVector, op::_GCQScaledOp, x::AbstractVector) =
+    (mul!(reshape(y, op.n, 1), op, reshape(x, op.n, 1)); y)
+
+"""
+    solve_dielectric_box3d_gcq_block(A, B, interface; rtol=1e-12, itmax=500, precondition=true, block=32)
+
+[`solve_dielectric_box3d_gcq`](@ref) for the columns of `B` at once: block GMRES on the same W^{1/2}-scaled,
+right-preconditioned system, `block` columns at a time, so that every iteration applies `A` to an N × `block` block
+(one batched FMM) instead of one vector. `A` must accept `A * X` for a matrix `X` (as
+[`dielectric_operator`](@ref) does). The tolerance is set so that every column's residual is at most `rtol` relative to
+that column. Returns (Σ, iterations), the block iterations summed over the blocks.
+"""
+function solve_dielectric_box3d_gcq_block(A, B::AbstractMatrix, interface::DielectricInterface;
+                                          rtol::Real = 1e-12, itmax::Int = 500, precondition::Bool = true,
+                                          block::Int = 32)
+    w = all_weights(interface)
+    d = sqrt.(abs.(w))
+    n = size(B, 1)
+    p = precondition ? 1 ./ _tensor_tau(interface) : ones(n)
+    op = _GCQScaledOp(A, d, p ./ d, n)
+    Σ = zeros(n, size(B, 2)); iters = 0
+    for cols in Iterators.partition(axes(B, 2), max(block, 1))
+        Bd = d .* B[:, cols]
+        cn = [norm(c) for c in eachcol(Bd)]
+        keep = findall(>(0), cn)
+        isempty(keep) && continue
+        Bk = Bd[:, keep]
+        # block GMRES stops on ‖R‖_F ≤ rtol_b ‖Bd‖_F: rtol_b = rtol min_j ‖b_j‖ / ‖Bd‖_F bounds every column
+        Z, stats = Krylov.block_gmres(op, Bk; rtol = rtol * minimum(cn[keep]) / norm(Bk), atol = 0.0, itmax,
+                                      memory = 20)
+        Σ[:, collect(cols)[keep]] .= p .* (Z ./ d)
+        iters += stats.niter
+    end
+    return Σ, iters
 end
