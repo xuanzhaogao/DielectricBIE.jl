@@ -38,6 +38,23 @@ if HAVE_SCTL_CURVED
         @test maximum(abs, D0(z) .- z ./ 6) > 1e-5
     end
 
+    @testset "SCTLCurvedNearQuad: Gauss identity on the lens (singular edge rules)" begin
+        # D1 = 1/2 on a closed surface, so wᵀ Dᵀ σ = ½ wᵀ σ for every σ; with σ ~ s^p₁ at the rim (s the distance to
+        # it) this exercises the weighted GCQ edge panels (pw ≠ 0): strip, Gauss-Jacobi weights, s^pw interpolation
+        g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
+        m = curved_gcq_mesh(g; nlev = 3, n_quad = 8, tol = 1e-8)
+        itf = m.interface; w = BI.all_weights(itf)
+        p1 = m.powers[findfirst(c -> !c.smooth, g.curves)][1]
+        @test all(p -> p.kind != :edge || p.ru.pw ≈ p1, itf.panels) && p1 < -0.1
+        s = [hypot(hypot(x[1], x[2]) - 1, x[3]) for x in nodes_of(itf)]
+        gauss(Dt, σ) = abs(dot(w, Dt(σ)) - dot(w, σ) / 2) / dot(abs.(w), abs.(σ))
+        Dt = dt_operator(itf, SCTLCurvedNearQuad(tol = 1e-12))
+        @test gauss(Dt, s .^ p1) < 1e-9                                 # 9e-11 measured
+        @test gauss(Dt, s .^ (p1 + 1)) < 1e-8                           # 3e-9 (1e-10 at n_quad = 12)
+        # without the panel-level near criterion it fails badly
+        @test gauss(dt_operator(itf, SCTLCurvedNearQuad(tol = 1e-12, η = 0.0)), s .^ p1) > 1e-2
+    end
+
     # induced potential u(x) = Σ w σ / (4π |x - y|), by direct summation (targets well away from the surface)
     function u_ind(itf, σ, T)
         X = nodes_of(itf); w = BI.all_weights(itf)

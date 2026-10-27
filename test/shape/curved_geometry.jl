@@ -87,3 +87,42 @@ nonsmooth(g) = [c for c in g.curves if !c.smooth]
     @test length(cube.curves) == 12 && all(c -> sort(c.angles) ≈ [π / 2, 3π / 2], cube.curves)
     @test_throws ArgumentError curved_gcq_mesh(cube; nlev = 2, n_quad = 6)
 end
+
+# every panel's normal is its patch's normal at the panel's parameters, whichever side the edge is on: the split
+# sphere with its charts re-parametrized so that the rim lies on side 1, 2, 3 or 4 meshes to the same nodes with
+# the same normals and the same junctions
+@testset "curved mesh: edge on every patch side" begin
+    function onside(P, s)
+        f = P.map
+        s == 1 && return P
+        s == 2 && return SurfacePatch((U, V) -> f(1 - U, V); eps_in = P.eps_in, eps_out = P.eps_out, flip = !P.flip)
+        s == 3 && return SurfacePatch((U, V) -> f(V, U); eps_in = P.eps_in, eps_out = P.eps_out, flip = !P.flip)
+        return SurfacePatch((U, V) -> f(1 - V, U); eps_in = P.eps_in, eps_out = P.eps_out, flip = P.flip)
+    end
+    ps = lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0)
+    rs = [onside(P, mod1(k, 4)) for (k, P) in enumerate(ps)]
+    g0 = CurvedGeometry(ps); g1 = CurvedGeometry(rs)
+    @test sort([sort(c.angles) for c in g1.curves if !c.smooth]) ≈ sort([sort(c.angles) for c in g0.curves if !c.smooth])
+    m0 = curved_gcq_mesh(g0; nlev = 3, n_quad = 6, tol = 1e-8)
+    m1 = curved_gcq_mesh(g1; nlev = 3, n_quad = 6, tol = 1e-8)
+    # the patch side each edge panel's u = 0 lies on: all four occur
+    side(U, V) = U == 0 ? 1 : U == 1 ? 2 : V == 0 ? 3 : V == 1 ? 4 : 0
+    @test Set(side(m1.panel_param[k](0.0, 0.5)...) for k in eachindex(m1.panel_param) if m1.interface.panels[k].kind == :edge) == Set(1:4)
+    @test count(p -> p.kind == :edge, m1.interface.panels) == count(p -> p.kind == :edge, m0.interface.panels)
+    # each panel normal is the patch normal at (U, V) = panel_param(u, v)
+    for (k, p) in enumerate(m1.interface.panels)
+        P = g1.patches[m1.panel_patch[k]]
+        for (i, (u, v)) in enumerate((u, v) for u in p.ru.x for v in p.rv.x)
+            @test all(isapprox.(p.normals[i], patch_frame(P, m1.panel_param[k](u, v)...)[3]; atol = 1e-12))
+        end
+    end
+    # the same nodes, normals and weights as the mesh with every rim on side 1
+    pts(m) = reduce(vcat, [p.points for p in m.interface.panels]); nrm(m) = reduce(vcat, [p.normals for p in m.interface.panels])
+    X0 = pts(m0); X1 = pts(m1); N0 = nrm(m0); N1 = nrm(m1); w0 = BI.all_weights(m0.interface); w1 = BI.all_weights(m1.interface)
+    @test length(X0) == length(X1)
+    tree = BI.NearestNeighbors.KDTree(reduce(hcat, collect.(X0)))
+    idx, d = BI.NearestNeighbors.nn(tree, reduce(hcat, collect.(X1)))
+    @test maximum(d) < 1e-12 && sort(idx) == 1:length(X0)
+    @test maximum(norm(collect(N1[i] .- N0[idx[i]])) for i in eachindex(X1)) < 1e-12
+    @test maximum(abs.(w1 .- w0[idx]) ./ w0[idx]) < 1e-10
+end
