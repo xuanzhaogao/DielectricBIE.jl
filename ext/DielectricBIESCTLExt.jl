@@ -250,6 +250,9 @@ function _curved_strip_block(P, k0, Xl, Nt; tol)
     ru, rv = P.ru, P.rv
     nz = length(ru.z0); nv = length(rv.x)
     V = ru.P[(k0 - 1) * nz .+ (1:nz), :]
+    # the strip's share of a row is Σ_i fw_i Iv_i V_i, so absolute errors atol in Iv give at most tol in the row
+    # (with a relative tolerance on Iv alone, the error estimate stalls at ~1e-6 for the panel's own nodes)
+    atol = tol / (sum(abs, view(ru.fw, :, k0)) * max(maximum(abs, V), 1.0))
     B = zeros(size(Xl, 2), num_points(P))
     for i in 1:nz
         u = ru.fx[i, k0]
@@ -261,7 +264,7 @@ function _curved_strip_block(P, k0, Xl, Nt; tol)
                 (DielectricBIE.curved_frame(P, u, v)[4] * sum(n .* d) / (4π * r^3)) .*
                     DielectricBIE._tensor_lagrange_mat(rv.z0, rv.bw, [2v - 1])[:, 1]
             end
-            Iv, _ = DielectricBIE.HCubature.hquadrature(f, 0.0, 1.0; rtol = tol, atol = 0.0, initdiv = nv)
+            Iv, _ = DielectricBIE.HCubature.hquadrature(f, 0.0, 1.0; rtol = tol, atol, initdiv = nv)
             for j in 1:nv, a in axes(V, 2)
                 B[t, (a - 1) * nv + j] += ru.fw[i, k0] * Iv[j] * V[i, a]
             end
