@@ -14,7 +14,7 @@ using SparseArrays
 
 import DielectricBIE: far_field_operator, apply_far!, _dt_parts
 using DielectricBIE: DielectricInterface, FlatPanel, SCTLFarField, SCTLNearQuad, num_points, all_weights,
-                     _interface_targets_normals
+                     _interface_targets_normals, _close_nodes, _close_direct!
 
 # PVFMM's gradients (Laplace3D_FxdU) lose about 1.5 digits relative to the requested accuracy: ask for 2 more
 const _EXTRA_DIGITS = 2
@@ -24,19 +24,21 @@ _digits(tol::Real) = clamp(ceil(Int, -log10(tol)) + _EXTRA_DIGITS, 1, 15)
 
 struct SCTLDTFar
     fmm::ParticleFMM{Laplace3D_FxdU}
+    sources::Matrix{Float64}
     weights::Vector{Float64}
     norms::Matrix{Float64}
+    close::Vector{Int}   # nodes summed directly instead of by PVFMM (SCTLFarField's `close`)
     F::Matrix{Float64}   # 1 × N density buffer
     G::Matrix{Float64}   # 3 × N gradient buffer
 end
 
 function far_field_operator(far::SCTLFarField, interface::DielectricInterface)
     X, Nrm = _interface_targets_normals(interface)
-    n = size(X, 2)
+    X = Matrix{Float64}(X); n = size(X, 2)
     fmm = ParticleFMM(Laplace3D_FxdU(); digits = _digits(far.tol))
     set_sources!(fmm, X)
     set_targets!(fmm, X)
-    return SCTLDTFar(fmm, Vector{Float64}(all_weights(interface)), Matrix{Float64}(Nrm),
+    return SCTLDTFar(fmm, X, Vector{Float64}(all_weights(interface)), Matrix{Float64}(Nrm), _close_nodes(X, far.close),
                      Matrix{Float64}(undef, 1, n), Matrix{Float64}(undef, 3, n))
 end
 
@@ -47,13 +49,14 @@ function apply_far!(Y::AbstractMatrix, f::SCTLDTFar, X::AbstractMatrix)
         @inbounds for i in 1:n
             f.F[1, i] = f.weights[i] * X[i, k]
         end
+        f.F[1, f.close] .= 0
         set_density!(f.fmm, f.F)
         fmm_evaluate!(f.G, f.fmm)
         Threads.@threads for i in 1:n
             @inbounds Y[i, k] = -(f.norms[1, i] * f.G[1, i] + f.norms[2, i] * f.G[2, i] + f.norms[3, i] * f.G[3, i])
         end
     end
-    return Y
+    return _close_direct!(Y, X, f.sources, f.norms, f.weights, f.close)
 end
 
 # ---- whole operator: BoundaryIntegralOp on QuadElemLists ----

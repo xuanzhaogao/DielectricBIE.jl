@@ -38,17 +38,25 @@ end
 FMM3DFarField(tol::Real; close::Real = 0.0) = FMM3DFarField(Float64(tol), Float64(close))
 
 """
-    SCTLFarField(; tol = 1e-10)
+    SCTLFarField(; tol = 1e-10, close = nothing)
 
 Far field by SCTL.jl's `ParticleFMM` (PVFMM, OpenMP, no MPI) at relative accuracy `tol`, keeping the octree across
 applications; with fewer than 40000 nodes it is an exact direct sum. PVFMM's gradients lose about 1.5 digits, so it
 runs with `-log10(tol) + 2` digits (at most 15; PVFMM reaches about 1e-11 at best). Needs `using SCTL` (the
 `DielectricBIESCTLExt` extension). A block of `K` densities is `K` evaluations on the same tree.
+
+Like FMM3D (see [`FMM3DFarField`](@ref)), PVFMM's sum between two points a distance r apart is off by ~1e-16/r
+relative (3e-5 at r = 1e-11), so the nodes with a neighbour closer than `close` are summed directly instead, with
+the arithmetic of the node-rule term the near corrections subtract. `close = nothing` (default): 1e-4 times the
+diameter of the node set; `close = 0`: everything through PVFMM.
 """
 struct SCTLFarField <: FarField
     tol::Float64
+    close::Union{Nothing, Float64}
 end
-SCTLFarField(; tol::Real = 1e-10) = SCTLFarField(Float64(tol))
+SCTLFarField(; tol::Real = 1e-10, close::Union{Nothing, Real} = nothing) =
+    SCTLFarField(Float64(tol), close === nothing ? nothing : Float64(close))
+SCTLFarField(tol::Real) = SCTLFarField(; tol)
 
 """
     point_charge_field(far::FarField, sources, charges, targets; grad = false, hess = false)
@@ -121,12 +129,38 @@ end
 function far_field_operator(far::FMM3DFarField, interface::DielectricInterface)
     sources, norms = _interface_targets_normals(interface)
     S = Matrix{Float64}(sources)
-    close = Int[]
-    if far.close > 0
-        tree = KDTree(S)
-        close = [i for (i, nb) in enumerate(inrange(tree, S, far.close)) if length(nb) > 1]
+    return FMM3DDTFar(S, Vector{Float64}(all_weights(interface)), Matrix{Float64}(norms), far.tol,
+                      _close_nodes(S, far.close))
+end
+
+# the nodes (columns of X) with another node closer than `close` (none for close <= 0); `nothing`: 1e-4 times the
+# diameter of the node set
+function _close_nodes(X::AbstractMatrix, close)
+    c = close === nothing ? 1e-4 * norm(vec(maximum(X, dims = 2) .- minimum(X, dims = 2))) : close
+    c > 0 || return Int[]
+    return [i for (i, nb) in enumerate(inrange(KDTree(X), X, c)) if length(nb) > 1]
+end
+
+# Y += the node-rule D^T of the `close` nodes as sources, at every node (the arithmetic of dt_node_rule_block)
+function _close_direct!(Y::AbstractMatrix, X::AbstractMatrix, sources::AbstractMatrix, norms::AbstractMatrix,
+                        weights::AbstractVector, close::AbstractVector{Int})
+    isempty(close) && return Y
+    Threads.@threads for i in axes(sources, 2)
+        @inbounds begin
+            x1 = sources[1, i]; x2 = sources[2, i]; x3 = sources[3, i]
+            n1 = norms[1, i]; n2 = norms[2, i]; n3 = norms[3, i]
+            for j in close
+                d1, d2, d3 = x1 - sources[1, j], x2 - sources[2, j], x3 - sources[3, j]
+                r2 = d1^2 + d2^2 + d3^2
+                r2 == 0 && continue
+                b = weights[j] * (n1 * d1 + n2 * d2 + n3 * d3) / (4π * r2 * sqrt(r2))
+                for k in axes(X, 2)
+                    Y[i, k] += b * X[j, k]
+                end
+            end
+        end
     end
-    return FMM3DDTFar(S, Vector{Float64}(all_weights(interface)), Matrix{Float64}(norms), far.tol, close)
+    return Y
 end
 
 function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
@@ -148,24 +182,7 @@ function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
             end
         end
     end
-    isempty(F.close) && return Y
-    # the close nodes as sources, summed directly (the arithmetic of dt_node_rule_block)
-    Threads.@threads for i in 1:n
-        @inbounds begin
-            x1 = F.sources[1, i]; x2 = F.sources[2, i]; x3 = F.sources[3, i]
-            n1 = F.norms[1, i]; n2 = F.norms[2, i]; n3 = F.norms[3, i]
-            for j in F.close
-                d1, d2, d3 = x1 - F.sources[1, j], x2 - F.sources[2, j], x3 - F.sources[3, j]
-                r2 = d1^2 + d2^2 + d3^2
-                r2 == 0 && continue
-                b = F.weights[j] * (n1 * d1 + n2 * d2 + n3 * d3) / (4π * r2 * sqrt(r2))
-                for k in 1:K
-                    Y[i, k] += b * X[j, k]
-                end
-            end
-        end
-    end
-    return Y
+    return _close_direct!(Y, X, F.sources, F.norms, F.weights, F.close)
 end
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -452,6 +469,15 @@ _near_quadrature(f::Function) = FunctionNearQuad(f)
 default_near_quadrature(::DielectricInterface{<:FlatPanel}) = UpsampledNearQuad()
 default_near_quadrature(::DielectricInterface{<:TensorPanel}) = GCQNearQuad()
 
+"""
+    default_far_field() -> FarField
+
+`SCTLFarField()` (PVFMM, tol 1e-10, close node pairs summed directly) when SCTL is loaded (`using SCTL`), else
+`FMM3DFarField(1e-9)`.
+"""
+default_far_field() =
+    Base.get_extension(@__MODULE__, :DielectricBIESCTLExt) === nothing ? FMM3DFarField(1e-9) : SCTLFarField()
+
 # The two operator parts (far-field evaluator, correction or `nothing`); a backend that computes the whole D^T
 # (SCTL's operator for SCTLNearQuad) overrides this for its (far, near) pair.
 _dt_parts(far::FarField, near::NearQuadrature, interface) =
@@ -475,21 +501,21 @@ struct DielectricOperator{F}
 end
 
 """
-    dielectric_operator(interface; far = FMM3DFarField(1e-9), near = default_near_quadrature(interface))
+    dielectric_operator(interface; far = default_far_field(), near = default_near_quadrature(interface))
 
 The dielectric BIE operator `τ I + D^T` of `interface` from a far-field backend ([`FarField`](@ref)) and a near
 quadrature ([`NearQuadrature`](@ref), or a sparse correction matrix, or a function `interface -> C`). Examples:
 
 ```julia
-A = dielectric_operator(interface)                                     # FMM3D + DielectricBIE's quadrature
-A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-10))    # SCTL's FMM (using SCTL)
+A = dielectric_operator(interface)                                     # default far field + DielectricBIE's quadrature
+A = dielectric_operator(interface; far = FMM3DFarField(1e-12; close = 1e-4))    # FMM3D
 A = dielectric_operator(interface; far = SCTLFarField(), near = SCTLNearQuad())  # all SCTL (FlatPanel)
 A = dielectric_operator(gcq_interface; far = SCTLFarField(), near = GCQNearQuad(quad_tol = 1e-12))
 A = dielectric_operator(gcq_interface; near = MyQuad(...))             # a self-defined quadrature
 ```
 """
 function dielectric_operator(interface::DielectricInterface;
-                             far::FarField = FMM3DFarField(1e-9), near = default_near_quadrature(interface))
+                             far::FarField = default_far_field(), near = default_near_quadrature(interface))
     F, C = _dt_parts(far, _near_quadrature(near), interface)
     C === nothing || (C = BlockCorrection(C, interface))
     diag = reduce(vcat, [fill(dielectric_tau(interface.eps_in[i], interface.eps_out[i]), num_points(p))

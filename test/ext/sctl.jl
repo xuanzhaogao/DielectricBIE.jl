@@ -51,7 +51,8 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
     @test relerr(dielectric_operator(itf; far = FMM3DFarField(1e-12), near = C) * X, A * X) < 1e-14
     @test relerr(dielectric_operator(itf; far = FMM3DFarField(1e-12), near = i -> C) * X, A * X) < 1e-14
     @test_throws DimensionMismatch dielectric_operator(itf; near = spzeros(3, 3))
-    @test_throws ErrorException dielectric_operator(itf; near = SCTLNearQuad())
+    @test_throws ErrorException dielectric_operator(itf; far = FMM3DFarField(1e-12), near = SCTLNearQuad())
+    @test default_far_field() isa SCTLFarField              # with SCTL loaded: the default pairs with SCTLNearQuad
 
     # GCQ interface: same operator as lhs_dielectric_box3d_gcq_fmm3d
     ε = 10.0

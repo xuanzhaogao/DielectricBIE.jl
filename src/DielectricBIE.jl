@@ -80,7 +80,7 @@ export solve_dielectric_box3d_block, dielectric_diagonal_scaling
 # operator backends (far field x near quadrature)
 export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!, point_charge_field, layer_field
 export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
-export default_near_quadrature, DielectricOperator, dielectric_operator
+export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block
 export SCTLProxyNearQuad, default_polynomial_panel, SCTLCurvedNearQuad
