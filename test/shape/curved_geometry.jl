@@ -184,3 +184,30 @@ end
     X = reduce(vcat, [p.points for p in mg.interface.panels]); nr = reduce(vcat, [p.normals for p in mg.interface.panels])
     @test sum(BI.all_weights(mg.interface) .* [dot(collect(x), collect(n)) for (x, n) in zip(X, nr)]) / 3 ≈ V rtol = 1e-8
 end
+
+@testset "FMM far field: close node pairs summed directly" begin
+    g = CurvedGeometry(cylinders_patches(1.0, 0.0, 0.8, 4.0, 1.0); varying = true)
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 4, m = 1, edge_rule = universal_gcq_rule(-0.21; qmax = 12.0, tol = 1e-12))
+    itf = m.interface; N = BI.num_points(itf)
+    X, Nr = BI._interface_targets_normals(itf); w = BI.all_weights(itf)
+    # the closest pair: a node next to the edge and its mirror on the other face
+    tree = BI.KDTree(X); idx, d = BI.knn(tree, X, 2, true)
+    i = argmin([d[k][2] for k in 1:N]); j = idx[i][2]
+    @test d[i][2] < 1e-9
+    dk = X[:, i] .- X[:, j]
+    exact = w[j] * dot(Nr[:, i], dk) / (4π * norm(dk)^3)
+    e = zeros(N, 1); e[j] = 1.0
+    for (close, rtol) in ((0.0, Inf), (1e-4, 1e-13))
+        F = BI.far_field_operator(FMM3DFarField(1e-12; close), itf)
+        Y = zeros(N, 1); BI.apply_far!(Y, F, e)
+        close > 0 && @test i in F.close && j in F.close && length(F.close) < N ÷ 4
+        rtol < Inf && @test Y[i] ≈ exact rtol = rtol
+        close == 0 && @test abs(Y[i] / exact - 1) > 1e-8      # FMM3D's own direct sum is far off for this pair
+    end
+    # with every node close the far field is the plain direct sum; it agrees with the FMM on a generic density
+    x = randn(N, 2)
+    Y0 = zeros(N, 2); BI.apply_far!(Y0, BI.far_field_operator(FMM3DFarField(1e-12), itf), x)
+    Y1 = zeros(N, 2); BI.apply_far!(Y1, BI.far_field_operator(FMM3DFarField(1e-12; close = 10.0), itf), x)
+    far = [k for k in 1:N if minimum(norm(X[:, k] .- X[:, l]) for l in 1:N if l != k) > 1e-3]
+    @test maximum(abs.(Y0[far, :] .- Y1[far, :])) <= 1e-9 * maximum(abs.(Y1[far, :]))
+end

@@ -22,13 +22,20 @@ implements `far_field_operator(far, interface)`, returning an object `F` with
 abstract type FarField end
 
 """
-    FMM3DFarField(tol)
+    FMM3DFarField(tol; close = 0.0)
 
 Far field by FMM3D's `lfmm3d` at tolerance `tol`; a block of `K` densities is one vectorized FMM (`nd = K`).
+FMM3D's direct sum between two points a distance r apart carries a relative error ~1e-17/r (its tree shifts and
+scales the coordinates), far above rounding for the node pairs a GCQ rule puts on both sides of an edge (r ~ 1e-13:
+1e-4), where the near correction must cancel that term to many digits. With `close` > 0 the nodes that have another
+node closer than `close` are no FMM sources: their contributions are summed directly, with the same arithmetic as the
+node-rule term the near corrections subtract (`dt_node_rule_block`), so the cancellation is exact up to rounding.
 """
 struct FMM3DFarField <: FarField
     tol::Float64
+    close::Float64
 end
+FMM3DFarField(tol::Real; close::Real = 0.0) = FMM3DFarField(Float64(tol), Float64(close))
 
 """
     SCTLFarField(; tol = 1e-10)
@@ -108,12 +115,18 @@ struct FMM3DDTFar
     weights::Vector{Float64}
     norms::Matrix{Float64}
     tol::Float64
+    close::Vector{Int}          # nodes summed directly instead of by the FMM (FMM3DFarField's `close`)
 end
 
 function far_field_operator(far::FMM3DFarField, interface::DielectricInterface)
     sources, norms = _interface_targets_normals(interface)
-    return FMM3DDTFar(Matrix{Float64}(sources), Vector{Float64}(all_weights(interface)),
-                      Matrix{Float64}(norms), far.tol)
+    S = Matrix{Float64}(sources)
+    close = Int[]
+    if far.close > 0
+        tree = KDTree(S)
+        close = [i for (i, nb) in enumerate(inrange(tree, S, far.close)) if length(nb) > 1]
+    end
+    return FMM3DDTFar(S, Vector{Float64}(all_weights(interface)), Matrix{Float64}(norms), far.tol, close)
 end
 
 function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
@@ -124,6 +137,7 @@ function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
             charges[k, i] = F.weights[i] * X[i, k]
         end
     end
+    charges[:, F.close] .= 0
     vals = lfmm3d(F.tol, F.sources, charges = charges, pg = 2, nd = K)
     grad = reshape(vals.grad, K, 3, n)    # (K, 3, n); also for nd == 1
     Threads.@threads for i in 1:n
@@ -131,6 +145,23 @@ function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
             n1 = F.norms[1, i]; n2 = F.norms[2, i]; n3 = F.norms[3, i]
             for k in 1:K
                 Y[i, k] = -(n1 * grad[k, 1, i] + n2 * grad[k, 2, i] + n3 * grad[k, 3, i]) / (4π)
+            end
+        end
+    end
+    isempty(F.close) && return Y
+    # the close nodes as sources, summed directly (the arithmetic of dt_node_rule_block)
+    Threads.@threads for i in 1:n
+        @inbounds begin
+            x1 = F.sources[1, i]; x2 = F.sources[2, i]; x3 = F.sources[3, i]
+            n1 = F.norms[1, i]; n2 = F.norms[2, i]; n3 = F.norms[3, i]
+            for j in F.close
+                d1, d2, d3 = x1 - F.sources[1, j], x2 - F.sources[2, j], x3 - F.sources[3, j]
+                r2 = d1^2 + d2^2 + d3^2
+                r2 == 0 && continue
+                b = F.weights[j] * (n1 * d1 + n2 * d2 + n3 * d3) / (4π * r2 * sqrt(r2))
+                for k in 1:K
+                    Y[i, k] += b * X[j, k]
+                end
             end
         end
     end

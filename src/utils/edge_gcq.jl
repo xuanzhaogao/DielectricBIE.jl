@@ -130,10 +130,11 @@ Fine grid (`grid`):
   floating-point range) is refused.
 - `:adaptive`: adaptive Gauss-Kronrod on s^p1 · family (fails for p1 ≲ -0.95).
 In both, the interpolation matrix `P` gives v at the 14-point Gauss-Legendre
-nodes of every fine segment (`segs`, `z0`).
+nodes of every fine segment (`segs`, `z0`). With `floor` > 0 the nodes are chosen
+among the fine points s ≥ floor only (the fine grid still resolves the family below).
 """
 function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 20,
-                       qmax::Union{Nothing, Real} = nothing, grid::Symbol = :graded)
+                       qmax::Union{Nothing, Real} = nothing, grid::Symbol = :graded, floor::Real = 0.0)
     p1 = minimum(dpows)
     p1 > -1 || throw(ArgumentError("density power $p1 is not integrable"))
     qmax === nothing || (nsmooth = ceil(Int, qmax - p1))
@@ -177,6 +178,7 @@ function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 
     # edge, which the near-field and FMM machinery resolves poorly); the smooth factor
     # varies negligibly on [0, 2^-K], so nodes above it carry that mass as well
     cand = grid == :graded ? collect(ngj+1:length(xq)) : collect(eachindex(xq))
+    cand = filter(i -> xq[i] >= floor, cand)
     nodeinds = sort(cand[qr(U[cand, :]', ColumnNorm()).p[1:r]])
     x = xq[nodeinds]
     Is = vec(sum(sqrt.(ωq) .* U, dims = 1))
@@ -193,20 +195,22 @@ edge_gcq_rule(eps_in::Real, eps_out::Real; angle::Real = pi / 2, kw...) =
     edge_gcq_rule(edge_density_powers(eps_in, eps_out; angle); kw...)
 
 """
-    universal_gcq_rule(pmin; qmax = 20.0, h = 0.01, tol = 1e-10)
+    universal_gcq_rule(pmin; qmax = 20.0, h = 0.01, tol = 1e-10, floor = 1e-10)
 
 Universal weighted GCQ rule: one rule for every density power in [pmin, qmax], for edges whose powers vary
 along the curve (sector angles changing) or are not known. The family is {s^q : q ∈ pmin:h:qmax} ∪ {s^n},
 refined to the step h/10 on [pmin, pmin + 10h] (the step h alone leaves ~1e-11 at exponents just above pmin),
 built by `edge_gcq_rule` with the weight s^pmin. A continuous band of exponents also spans s^q log^k s, the
-terms a varying power generates. The nodes reach much closer to s = 0 than a dedicated rule's (~1e-17 of the
-panel at tol 1e-12, pmin = -0.3): resolving s^pmin against s^(pmin + h/10) needs them.
+terms a varying power generates. Left free, the nodes reach much closer to s = 0 than a dedicated rule's (~1e-17 of
+the panel at tol 1e-12, pmin = -0.3), below the rounding of absolute positions; `floor` keeps them at s ≥ floor. For
+pmin ≳ -0.5 the default 1e-10 costs nothing (tol 1e-12: exponents in [pmin, 10] to ~1e-13, s^q log s to ~2e-12);
+as pmin → -1 a floor costs accuracy.
 """
-function universal_gcq_rule(pmin::Real; qmax::Real = 20.0, h::Real = 0.01, tol::Real = 1e-10)
+function universal_gcq_rule(pmin::Real; qmax::Real = 20.0, h::Real = 0.01, tol::Real = 1e-10, floor::Real = 1e-10)
     pmin > -1 || throw(ArgumentError("density power $pmin is not integrable"))
     0 < h < 1 || throw(ArgumentError("the step h must be in (0, 1)"))
     dpows = pmin .+ unique(vcat(collect(0:h:1-h/2), collect(0:h/10:10h)))
-    return edge_gcq_rule(dpows; tol, qmax)
+    return edge_gcq_rule(dpows; tol, qmax, floor)
 end
 
 "Largest relative error of the rule over its own family (∫₀¹ x^p = 1/(p+1))."

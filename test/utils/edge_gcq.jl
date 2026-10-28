@@ -75,5 +75,7 @@ end
         @test sum(ru.w .* ru.x .^ q .* log.(ru.x)) * (q + 1)^2 ≈ -1 atol = 1e-9
         @test sum(ru.w .* ru.x .^ q .* log.(ru.x) .^ 2) * (q + 1)^3 / 2 ≈ 1 atol = 1e-8
     end
+    @test minimum(ru.x) >= 1e-10                       # the default node floor
+    @test minimum(universal_gcq_rule(pmin; qmax = 12.0, tol = 1e-12, floor = 0.0).x) < 1e-15
     @test_throws ArgumentError universal_gcq_rule(-1.0)
 end
