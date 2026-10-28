@@ -309,19 +309,22 @@ near_corrections(::SCTLProxyNearQuad, interface) =
 """
     SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9)
 
-SCTL's near and on-surface quadrature for `CurvedPanel` interfaces, GCQ edge panels included. Each panel is cut
-into proxy `QuadElemList` elements, one per pair of fine segments of its rules (a Gauss-Legendre rule is one
-segment), of order `order` (default: the smallest of 16, 20 at least the segments' node counts: the proxies carry
-the curved geometry too, which order 8 resolves only to ~1e-4 on a 45° sphere panel), in the
-panel's own frame (coordinates relative to its anchor); the density on each is interpolated from the panel's
-nodes (`tensor_rule_interp`, exact up to the rule's interpolation error). The segment of a GCQ rule that touches
-the edge, [0, 2^-K], carries s^pw and is summed directly with its Gauss-Jacobi weights.
+SCTL's near and on-surface quadrature for `CurvedPanel` interfaces, GCQ edge panels included. A panel's u-segments
+(one for Gauss-Legendre, the fine segments of a GCQ rule) of aspect ratio (v-length / width) up to 4 are proxy
+`QuadElemList` elements of order `order` (default: the smallest of 16, 20 at least the segments' node counts: the
+proxies carry the curved geometry too, which order 8 resolves only to ~1e-4 on a 45° sphere panel), in the panel's
+own frame, the density on each interpolated from the panel's nodes (`tensor_rule_interp`). Thinner segments (next to
+an edge: GCQ fine segments down to 2^-K of the panel, deeply graded panels), on which SCTL's rule is inaccurate, are
+integrated row by row: by their fine Gauss nodes in u (the weight s^pw included; the segments below half the target's
+distance from the edge merged into one 20-point rule) and adaptive quadrature in v when the target is at least a
+segment width away, and by square SCTL elements in a small window about the target in v otherwise. For a panel's
+own nodes x - y is formed from tangent integrals, never by subtracting positions (near an edge n·(x - y) is below
+their rounding); other targets are measured from their nearest node of the panel.
 
-A target is near a panel when it lies within `η` times the panel's diameter of one of its nodes; near targets get
-SCTL's near-singular rule on every proxy element. On the panel itself SCTL's rule returns a one-sided limit, so a
-target on its own element gets the principal value from the two sides, x ± εn and x ± 2εn
-(ε = `ε_rel` × the element's diameter), Richardson-extrapolated. The correction is the accurate block minus the
-node rule ([`dt_node_rule_block`](@ref)); combines with any far field. Needs `using SCTL`.
+A target is near a panel when it lies within `η` times the panel's diameter of one of its nodes. On the panel itself
+SCTL's rule returns a one-sided limit, so a target on its own element gets the principal value from the two sides,
+x ± εn and x ± 2εn (ε = `ε_rel` × the element's diameter), Richardson-extrapolated. The correction is the accurate
+block minus the node rule ([`dt_node_rule_block`](@ref)); combines with any far field. Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLCurvedNearQuad <: NearQuadrature
     tol::Float64 = 1e-10

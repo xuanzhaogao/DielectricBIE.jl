@@ -55,6 +55,66 @@ if HAVE_SCTL_CURVED
         @test gauss(dt_operator(itf, SCTLCurvedNearQuad(tol = 1e-12, η = 0.0)), s .^ p1) > 1e-2
     end
 
+    # ∫ over the parameter triangle (c, p, q), Duffy-mapped so that a 1/r singularity at c cancels: f(z, s, dz) is the
+    # integrand at z = c + s dz (dz = p - c + t (q - p)), which for s small should take r from the tangents at c (two
+    # positions that close round to the same point)
+    function duffy_tri(f, c, p, q)
+        J = abs((p[1] - c[1]) * (q[2] - p[2]) - (p[2] - c[2]) * (q[1] - p[1]))
+        g = st -> (dz = (p .- c) .+ st[2] .* (q .- p); st[1] * J * f(c .+ st[1] .* dz, st[1], dz))
+        return BI.HCubature.hcubature(g, [0.0, 0.0], [1.0, 1.0]; rtol = 1e-13, atol = 1e-19, maxevals = 2_000_000)[1]
+    end
+    # ∫ over the unit parameter square of f, singular at c when c is given
+    square_int(f, c) = c === nothing ?
+        BI.HCubature.hcubature(uv -> f((uv[1], uv[2]), nothing, nothing), [0.0, 0.0], [1.0, 1.0]; rtol = 1e-13,
+                               atol = 1e-19, maxevals = 10_000_000)[1] :
+        sum(duffy_tri(f, c, (o[1], c[2]), o) + duffy_tri(f, c, o, (c[1], o[2])) for o in ((0, 0), (1, 0), (0, 1), (1, 1)))
+
+    @testset "SCTLCurvedNearQuad: rows on thin panels at the edge (exact sphere integrals)" begin
+        # On the unit sphere n_x·(x - y) = ±|x - y|²/2, so the Dᵀ row of a source panel P for σ = 1 is ±∫_P dS/(8π r),
+        # computed independently (Duffy on P itself). Deep grading and a tight rule make P's elements next to the
+        # equator very thin (u-widths down to 1e-14 against a v-length ~0.4) and put nodes within 2e-8 of it
+        g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+        m = curved_gcq_mesh(g; nlev = 6, n_quad = 12, tol = 1e-12)
+        ps = m.interface.panels
+        mid(p, u, v) = p.anchor .+ BI.curved_lpoint(p, u, v)
+        kP = findfirst(k -> m.panel_patch[k] <= 5 && ps[k].kind == :edge, eachindex(ps))                 # upper cap
+        P = ps[kP]
+        kQ = argmin(k -> m.panel_patch[k] in 6:10 && ps[k].kind == :edge ?                               # lower cap,
+                         norm(collect(mid(ps[k], 0.0, 0.5) .- mid(P, 0.0, 0.5))) : Inf, eachindex(ps))  # across the edge
+        kG = argmin(k -> m.panel_patch[k] == m.panel_patch[kP] && ps[k].kind == :gl ?                    # P's graded
+                         norm(collect(mid(ps[k], 0.5, 0.5) .- mid(P, 1.0, 0.5))) : Inf, eachindex(ps))  # neighbour
+        sub = [kP, kQ, kG]
+        itf = DielectricInterface(ps[sub], m.interface.eps_in[sub], m.interface.eps_out[sub])
+        C = Matrix(near_corrections(SCTLCurvedNearQuad(tol = 1e-12), itf))
+        offs = cumsum([0; [BI.num_points(p) for p in itf.panels]])
+        X, N = BI._interface_targets_normals(itf)
+        worst = zeros(2)                                                  # same surface, across the edge
+        for (s, S) in enumerate(itf.panels[[1, 3]])                       # sources: the GCQ panel P and the thin GL G
+            js = offs[2s - 1] .+ (1:BI.num_points(S))
+            A = C[:, js] .+ BI.dt_node_rule_block(itf, 2s - 1, X, N)
+            for (t, T) in enumerate(itf.panels), a in unique([1, 2, 3, length(T.ru.x) ÷ 2, length(T.ru.x)]),
+                b in (1, length(T.rv.x) ÷ 2, length(T.rv.x))
+                r = offs[t] + (a - 1) * length(T.rv.x) + b
+                x = T.anchor .- S.anchor .+ T.lpoints[r - offs[t]]
+                c = T === S ? (T.ru.x[a], T.rv.x[b]) : nothing
+                f = (z, s, dz) -> begin
+                    ρ = s !== nothing && s < 1e-6 ?
+                        (fr = BI.curved_frame(S, c...); s * norm(collect(fr[1] .* dz[1] .+ fr[2] .* dz[2]))) :
+                        norm(collect(x .- BI.curved_lpoint(S, z...)))
+                    BI.curved_frame(S, z...)[4] / (8π * ρ)
+                end
+                ref = sign(dot(N[:, r], X[:, r])) * square_int(f, c)
+                k = t == 2 ? 2 : 1
+                worst[k] = max(worst[k], abs(sum(A[r, :]) - ref) / abs(ref))
+            end
+        end
+        @test worst[1] < 3e-10                                            # 5e-11 measured
+        # across the edge the target's offset from P is formed from two patch maps (two anchors, ~2e-16 each) that meet
+        # at the equator only to rounding: for Q's nodes 1.6e-8 from it that limits the geometry, and so the row (and
+        # the identity behind the reference)
+        @test worst[2] < 1e-8                                             # 1.5e-9 measured
+    end
+
     # induced potential u(x) = Σ w σ / (4π |x - y|), by direct summation (targets well away from the surface)
     function u_ind(itf, σ, T)
         X = nodes_of(itf); w = BI.all_weights(itf)
