@@ -11,6 +11,8 @@ makedocs(;
         canonical="https://xuanzhaogao.github.io/DielectricBIE.jl",
         edit_link="main",
         assets=String[],
+        size_threshold=400 * 2^10,        # the single API page (every docstring) is past the 200 KiB default
+        size_threshold_warn=250 * 2^10,
     ),
     pages=[
         "Home" => "index.md",

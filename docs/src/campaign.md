@@ -200,6 +200,35 @@ For the Sec. 5.3 campaign (198 graphene orbitals, 2623 pairs, Si|SiO₂ substrat
 
 The results agree with the batch pipeline to 1e-6 for the same pair densities.
 
+The solves go through block GMRES, `gmres_block` right-hand sides at a time (default 32; one batched FMM per
+iteration, [`solve_dielectric_box3d_gcq_block`](@ref)). On a 3 × 3 blob lattice this takes 21 solves from 42.6 s to
+14.6 s with V unchanged to 2e-11; `gmres_block = 1` solves one at a time.
+
+`tau` sets the number of solves. Every pair density with a significant charge needs about one: on n × n lattices of
+asymmetric blobs the exact layer part has numerical rank n² (the number of orbitals) at 1e-6 of ‖V‖, and the
+low-rank mode reaches V to 1.7e-5 at `tau = 1e-3` (100 solves, 10 × 10) and to 1.2e-6 at `tau = 1e-4` (194 solves).
+
+### Near/far form of V
+
+`vform = :nearfar` returns `V` as a [`GCQNearFarV`](@ref) instead of a dense P × P matrix, with the linear-cost
+compression of PDMK-ISDF (see `src/campaign/gcq_nearfar.jl`). The pairs are grouped into cubic tiles (side `tile`).
+The entries between near tiles (proxy boxes closer than `rnear`) are exact and stored sparse. The volume part between
+far tiles is `M_a' C_k Mε_b`: Cartesian moments of degree ≤ `p_far` of each pair about its tile centre (computed once
+per shape and shifted), and one core per tile offset k from equivalent charges on Chebyshev proxies. Storage and
+assembly are O(P). `V[a, b]` gives one entry, `Matrix(V)` the dense matrix for checks.
+
+On a 10 × 10 lattice (890 pairs) the near entries agree with the dense V to 5e-13 and the far entries to 2e-6, 4e-5
+and 5e-4 of max |V| at `p_far` = 8, 6 and 4.
+
+The layer part of the far entries comes from the low-rank factors (`layer = :lowrank`, the default), or
+from translation (`layer = :translate`, one process). That mode treats the induced response as invariant under
+in-plane translations: one solve per group of translated pairs (shape, cut class, vertical step) at a reference
+placement near the middle, and n_mom solves per tile level for the far cores. The number of solves does not grow
+with the lattice. This is exact only for a laterally infinite box: the side faces make the error decay like a
+power of the distance to the box edge. Against the exact layer part, on a 6 × 6 lattice, the error is 1.4e-2, 5.8e-3,
+9.5e-4 and 1.6e-4 (relative Frobenius) for margins of 3, 6, 12 and 24 Å. Where no translation happens (one pair per
+group) it agrees to 1.3e-7 on near entries and 1.6e-5 to 4.9e-6 on far entries at `p_far` = 4 to 8.
+
 ### Several processes
 
 The work splits over `nparts` processes started together, which exchange data through files in `sync`. Shapes,
