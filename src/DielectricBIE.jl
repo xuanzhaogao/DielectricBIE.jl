@@ -25,7 +25,7 @@ export interface_approx
 export interface_uniform_samples
 export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
 export CurvedPanel, curved_lpoint
-export EdgeGCQRule, edge_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
+export EdgeGCQRule, edge_gcq_rule, universal_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
 export PrecomputedVolumeField, volume_field_potential, volume_field_gradient, volume_field_hessian, volume_field_derivatives,
@@ -55,7 +55,7 @@ export single_dielectric_box3d, multi_dielectric_box3d
 export single_dielectric_box3d_rhs_adaptive, multi_dielectric_box3d_rhs_adaptive
 export single_dielectric_box3d_rhs_adaptive_varquad
 export single_dielectric_box3d_gcq, multi_dielectric_box3d_gcq, MultiBoxGCQ
-export SurfacePatch, CurvedGeometry, CurveJunction, patch_frame, curved_gcq_mesh, CurvedMesh
+export SurfacePatch, CurvedGeometry, CurveJunction, junction_angles, patch_frame, curved_gcq_mesh, CurvedMesh
 
 # solvers
 export lhs_dielectric_box2d, lhs_dielectric_box2d_fmm2d, rhs_dielectric_box2d

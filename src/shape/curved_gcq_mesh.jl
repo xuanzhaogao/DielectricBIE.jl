@@ -66,7 +66,7 @@ num_points(m::CurvedMesh) = num_points(m.interface)
 
 """
     curved_gcq_mesh(geometry; nlev = 4, n_quad = 10, m = 2, across = 1, tol = 1e-10, qmax = nothing, gmax = 20.0,
-                    edge = :gcq, grade = c -> !c.smooth) -> CurvedMesh
+                    edge = :gcq, edge_rule = nothing, grade = c -> !c.smooth) -> CurvedMesh
 
 Mesh the patches of a `CurvedGeometry`. A curve `c` (a `CurveJunction`) is graded when `grade(c)`: the
 patch sides on it get `nlev` dyadic levels, and the panels touching it the weighted GCQ rule of its junction
@@ -74,21 +74,24 @@ across it (`edge_gcq_rule(powers; tol, qmax)`, powers up to `gmax` from the sect
 permittivities) and `n_quad`-point Gauss-Legendre along it; `edge = :gl` puts Gauss-Legendre there too (an
 h-graded reference). Directions without a graded side get `m` equal panels; across a graded curve the patch is
 first split into `across` equal panels, the `nlev` levels then grade the one at the curve (`nlev = 0`, `across = a`:
-uniform panels of width 1/a, the GCQ rule on the one at the curve, for h-refinement studies). Vertices, where graded curves
-meet, are not supported yet: graded curves on two adjacent sides of a patch throw an `ArgumentError`.
+uniform panels of width 1/a, the GCQ rule on the one at the curve, for h-refinement studies). `edge_rule` replaces the
+junction's own rule on every graded curve: an `EdgeGCQRule`, or a function of the curve's `CurveJunction` returning one
+(needed for edges of varying angle, e.g. `universal_gcq_rule(pmin)` with pmin the smallest power along the edge). Vertices,
+where graded curves meet, are not supported yet: graded curves on two adjacent sides of a patch throw an `ArgumentError`.
 """
 function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::Int = 2, across::Int = 1, tol::Real = 1e-10,
                          qmax::Union{Nothing, Real} = nothing, gmax::Real = 20.0, edge::Symbol = :gcq,
-                         grade = c -> !c.smooth)
+                         edge_rule = nothing, grade = c -> !c.smooth)
     edge in (:gcq, :gl) || throw(ArgumentError("edge must be :gcq or :gl"))
     across >= 1 || throw(ArgumentError("across must be at least 1"))
     graded = Bool[grade(c) for c in g.curves]
     powers = [graded[i] ? _junction_density_powers(c.angles, c.eps; gmax) : Float64[] for (i, c) in enumerate(g.curves)]
     rgl = gl_tensor_rule(n_quad)
     rules = Dict{Int, TensorRule1D}()
+    given = edge_rule isa EdgeGCQRule ? gcq_tensor_rule(edge_rule) : nothing
     rule(i) = get!(rules, i) do
-        edge == :gl ? rgl : gcq_tensor_rule(qmax === nothing ? edge_gcq_rule(powers[i]; tol) :
-                                                               edge_gcq_rule(powers[i]; tol, qmax))
+        edge == :gl ? rgl : given !== nothing ? given : edge_rule !== nothing ? gcq_tensor_rule(edge_rule(g.curves[i])) :
+            gcq_tensor_rule(qmax === nothing ? edge_gcq_rule(powers[i]; tol) : edge_gcq_rule(powers[i]; tol, qmax))
     end
     panels = CurvedPanel[]; ein = Float64[]; eout = Float64[]; ranges = UnitRange{Int}[]
     ppatch = Int[]; pparam = Any[]

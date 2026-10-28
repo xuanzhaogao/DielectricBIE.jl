@@ -63,3 +63,17 @@ using Test
     ra2 = edge_gcq_rule(d2; tol = 1e-12, qmax = 10.3, grid = :adaptive)
     @test length(ra2.x) == length(ra.x) && edge_gcq_family_error(ra2) < 1e-11
 end
+
+@testset "universal GCQ rule" begin
+    pmin = -0.3
+    ru = universal_gcq_rule(pmin; qmax = 12.0, tol = 1e-12)
+    @test ru.pw == pmin && sum(abs, ru.w) < 1.01      # a few small negative weights, no cancellation
+    # exponents off the family's grid, anywhere in [pmin, 10], and the log terms of a varying power
+    qs = range(pmin + 0.00037, 10 - 0.0037, length = 97)
+    @test maximum(abs(sum(ru.w .* ru.x .^ q) * (q + 1) - 1) for q in qs) < 1e-10
+    for q in (pmin, pmin + 0.123, 0.4567)       # ∫₀¹ s^q log s = -1/(q+1)², ∫₀¹ s^q log² s = 2/(q+1)³
+        @test sum(ru.w .* ru.x .^ q .* log.(ru.x)) * (q + 1)^2 ≈ -1 atol = 1e-9
+        @test sum(ru.w .* ru.x .^ q .* log.(ru.x) .^ 2) * (q + 1)^3 / 2 ≈ 1 atol = 1e-8
+    end
+    @test_throws ArgumentError universal_gcq_rule(-1.0)
+end

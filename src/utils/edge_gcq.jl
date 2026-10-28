@@ -192,6 +192,23 @@ end
 edge_gcq_rule(eps_in::Real, eps_out::Real; angle::Real = pi / 2, kw...) =
     edge_gcq_rule(edge_density_powers(eps_in, eps_out; angle); kw...)
 
+"""
+    universal_gcq_rule(pmin; qmax = 20.0, h = 0.01, tol = 1e-10)
+
+Universal weighted GCQ rule: one rule for every density power in [pmin, qmax], for edges whose powers vary
+along the curve (sector angles changing) or are not known. The family is {s^q : q ∈ pmin:h:qmax} ∪ {s^n},
+refined to the step h/10 on [pmin, pmin + 10h] (the step h alone leaves ~1e-11 at exponents just above pmin),
+built by `edge_gcq_rule` with the weight s^pmin. A continuous band of exponents also spans s^q log^k s, the
+terms a varying power generates. The nodes reach much closer to s = 0 than a dedicated rule's (~1e-17 of the
+panel at tol 1e-12, pmin = -0.3): resolving s^pmin against s^(pmin + h/10) needs them.
+"""
+function universal_gcq_rule(pmin::Real; qmax::Real = 20.0, h::Real = 0.01, tol::Real = 1e-10)
+    pmin > -1 || throw(ArgumentError("density power $pmin is not integrable"))
+    0 < h < 1 || throw(ArgumentError("the step h must be in (0, 1)"))
+    dpows = pmin .+ unique(vcat(collect(0:h:1-h/2), collect(0:h/10:10h)))
+    return edge_gcq_rule(dpows; tol, qmax)
+end
+
 "Largest relative error of the rule over its own family (∫₀¹ x^p = 1/(p+1))."
 edge_gcq_family_error(r::EdgeGCQRule) =
     maximum(abs(sum(r.w .* r.x .^ p) * (p + 1) - 1) for p in r.pows)

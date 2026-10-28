@@ -4,6 +4,7 @@ using LinearAlgebra
 using Test
 
 include(joinpath(@__DIR__, "lens_patches.jl"))
+include(joinpath(@__DIR__, "cylinders_patches.jl"))
 
 capR(a, θ) = a / sin(θ)
 patch_area(msh, k) = sum(BI.all_weights(msh.interface)[msh.ranges[k]])
@@ -149,4 +150,37 @@ end
             @test all(j -> abs(width(j) - 1 / a) < 1e-12, ks)
         end
     end
+end
+
+@testset "curved geometry: edge of varying angle (two cylinders)" begin
+    r, z1, z2 = 1.0, 0.0, 0.8
+    ps = cylinders_patches(r, z1, z2, 4.0, 1.0)
+    @test_throws ArgumentError CurvedGeometry(ps)                 # the angle varies: refused by default
+    g = CurvedGeometry(ps; varying = true)
+    edges = [i for (i, c) in enumerate(g.curves) if !c.smooth]
+    @test length(g.curves) == 20 && length(edges) == 4
+    # interior angle π - acos((z - z1)(z - z2)/r²) along every edge curve; the body (ε = 4) is the smaller sector
+    for i in edges, t in (0.0, 0.3, 0.5, 1.0)
+        ang, eps = junction_angles(g, i, t)
+        k, s = g.curves[i].sides[1]
+        z = BI._side_point(g.patches[k], s, t)[3]
+        α = π - acos((z - z1) * (z - z2) / r^2)
+        @test eps[argmin(ang)] == 4.0 && eps[argmax(ang)] == 1.0
+        @test minimum(ang) ≈ α atol = 1e-12
+    end
+    @test junction_angles(g, edges[1], 0.5)[1] ≈ g.curves[edges[1]].angles
+    # one universal rule on every edge panel; the GL-only mesh integrates area and volume of the body
+    ru = universal_gcq_rule(-0.21; qmax = 8.0, tol = 1e-8)
+    m = curved_gcq_mesh(g; nlev = 1, n_quad = 6, m = 2, edge_rule = ru)
+    eps_panels = [p for p in m.interface.panels if p.kind == :edge]
+    @test length(eps_panels) == 8 * 2 && all(p -> p.ru.x ≈ BI.gcq_tensor_rule(ru).x, eps_panels)
+    @test curved_gcq_mesh(g; nlev = 1, n_quad = 6, m = 2, edge_rule = c -> ru).interface.panels[1].ru.x ≈ eps_panels[1].ru.x
+    a(z) = sqrt(max(0.0, r^2 - (z - z2)^2)); b(z) = sqrt(max(0.0, r^2 - (z - z1)^2))
+    t, w = BI.gausslegendre(200)                                  # V = ∫ 4ab dz, ab ~ sqrt at both ends: z = mid + half sin(πτ/2)
+    zl, zh = z2 - r, z1 + r
+    V = sum(w[j] * 4a(zm) * b(zm) * (zh - zl) / 2 * π / 2 * cos(π * t[j] / 2)
+            for j in eachindex(t) for zm in ((zl + zh) / 2 + (zh - zl) / 2 * sin(π * t[j] / 2),))
+    mg = curved_gcq_mesh(g; nlev = 0, across = 2, m = 2, n_quad = 12, edge = :gl)
+    X = reduce(vcat, [p.points for p in mg.interface.panels]); nr = reduce(vcat, [p.normals for p in mg.interface.panels])
+    @test sum(BI.all_weights(mg.interface) .* [dot(collect(x), collect(n)) for (x, n) in zip(X, nr)]) / 3 ≈ V rtol = 1e-8
 end

@@ -74,13 +74,16 @@ struct CurveJunction
 end
 
 """
-    CurvedGeometry(patches; tol = 1e-9)
+    CurvedGeometry(patches; tol = 1e-9, varying = false)
 
 The patches, the curves they share (`curves::Vector{CurveJunction}`) and the curve of every patch side
 (`side_curve[s, k]`). Two sides are one curve when their end points coincide and each passes through the
 other's middle point, to `tol` times the size of the geometry. Every side must be shared, the
 permittivities around a curve must agree, and the sector angles must be the same along it (checked at
-three points); otherwise an `ArgumentError` is thrown.
+three points); otherwise an `ArgumentError` is thrown. With `varying = true` the sector angles may change
+along a curve: the junction then records them at the curve's middle point, `junction_angles` gives them
+anywhere, and the mesh needs a rule valid for all of them (`curved_gcq_mesh(...; edge_rule)`, e.g.
+`universal_gcq_rule`).
 """
 struct CurvedGeometry
     patches::Vector{SurfacePatch}
@@ -88,7 +91,7 @@ struct CurvedGeometry
     side_curve::Matrix{Int}
 end
 
-function CurvedGeometry(patches::AbstractVector{<:SurfacePatch}; tol::Real = 1e-9)
+function CurvedGeometry(patches::AbstractVector{<:SurfacePatch}; tol::Real = 1e-9, varying::Bool = false)
     ps = Vector{SurfacePatch}(patches)
     np = length(ps)
     ends = [(_side_point(p, s, 0.0), _side_point(p, s, 0.5), _side_point(p, s, 1.0)) for s in 1:4, p in ps]
@@ -115,7 +118,7 @@ function CurvedGeometry(patches::AbstractVector{<:SurfacePatch}; tol::Real = 1e-
             side_curve[ss, kk] = length(groups)
         end
     end
-    curves = [_curve_junction(ps, grp) for grp in groups]
+    curves = [_curve_junction(ps, grp, varying) for grp in groups]
     return CurvedGeometry(ps, curves, side_curve)
 end
 
@@ -152,14 +155,30 @@ function _junction_at(ps, grp, t0)
     return grp[o], angles, eps, x0
 end
 
-function _curve_junction(ps, grp)
+function _curve_junction(ps, grp, varying::Bool = false)
     sides, angles, eps, x0 = _junction_at(ps, grp, 0.5)
+    straight(a) = length(a) == 2 && all(θ -> abs(θ - π) <= 1e-9, a)
+    smooth = straight(angles)
     for t in (0.2, 0.8)
         _, a, _, x = _junction_at(ps, grp, t)
-        maximum(abs.(sort(a) .- sort(angles))) <= 1e-8 ||
+        smooth &= straight(a)
+        varying || maximum(abs.(sort(a) .- sort(angles))) <= 1e-8 ||
             throw(ArgumentError("the sector angles vary along the curve through $x0 (at $x: $(sort(a)) vs " *
-                                "$(sort(angles))); edges of varying angle are not supported"))
+                                "$(sort(angles))); pass varying = true for edges of varying angle"))
     end
-    smooth = length(sides) == 2 && all(a -> abs(a - π) <= 1e-9, angles)
     return CurveJunction(sides, angles, eps, smooth, x0)
+end
+
+"""
+    junction_angles(g::CurvedGeometry, i, t) -> (angles, eps)
+
+Sector angles and permittivities of curve `i` at the point t ∈ [0, 1] of its first side (`g.curves[i].sides[1]`),
+in the angular order of the junction (the sector counterclockwise of that side first), for the curves whose
+angles vary (`CurvedGeometry(...; varying = true)`).
+"""
+function junction_angles(g::CurvedGeometry, i::Integer, t::Real)
+    grp = g.curves[i].sides
+    sides, angles, eps, _ = _junction_at(g.patches, grp, Float64(t))
+    k = findfirst(==(grp[1]), sides)            # the order starts at side 1 of the group the junction stored
+    return circshift(angles, 1 - k), circshift(eps, 1 - k)
 end
