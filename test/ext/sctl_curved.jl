@@ -115,6 +115,15 @@ if HAVE_SCTL_CURVED
         @test worst[2] < 1e-8                                             # 1.5e-9 measured
     end
 
+    @testset "SCTLCurvedNearQuad: a chart's pole inside a panel" begin
+        # one panel per patch: the caps' polar charts have their pole at the centre of a panel, where the tangents
+        # vanish (panel scales and closest points must not be taken there)
+        g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+        m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 4, tol = 1e-8)
+        C = near_corrections(SCTLCurvedNearQuad(tol = 1e-10), m.interface)
+        @test all(isfinite, nonzeros(C))
+    end
+
     # induced potential u(x) = Σ w σ / (4π |x - y|), by direct summation (targets well away from the surface)
     function u_ind(itf, σ, T)
         X = nodes_of(itf); w = BI.all_weights(itf)

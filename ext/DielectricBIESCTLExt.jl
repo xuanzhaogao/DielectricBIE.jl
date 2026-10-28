@@ -289,10 +289,12 @@ function _curved_window(v0, Δ)
     return b
 end
 
-# the scales of panel P (physical length per unit u and v, at its centre) and which of its u-segments are thin
+# the scales of panel P (physical length per unit u and v: mean chords across it, so a singular point of the map,
+# e.g. a polar chart's pole, does not matter) and which of its u-segments are thin
 function _curved_split(P)
-    yu, yv = _tangents(P, 0.5, 0.5)
-    su, sv = norm(collect(yu)), norm(collect(yv))
+    y(u, v) = collect(DielectricBIE.curved_lpoint(P, u, v))
+    su = sum(norm(y(1.0, v) .- y(0.0, v)) for v in (0.25, 0.5, 0.75)) / 3
+    sv = sum(norm(y(u, 1.0) .- y(u, 0.0)) for u in (0.25, 0.5, 0.75)) / 3
     return [(sb - sa) * su * _CURVED_ASPECT < sv for (sa, sb) in P.ru.segs], su, sv
 end
 
@@ -367,6 +369,7 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
     end
     yu, yv = _tangents(P, clamp(u0, 1e-8, 1 - 1e-8), clamp(v0, 1e-8, 1 - 1e-8))   # (a corner may be singular)
     su, sv = norm(collect(yu)), norm(collect(yv))
+    (isfinite(su) && su > 0 && isfinite(sv) && sv > 0) || ((su, sv) = (su0, sv0))   # at a singular point: the panel scales
     # thin segments: far ones by Gauss in u × adaptive v everywhere, near ones outside their windows
     seg = Vector{Tuple{Int, Float64, Float64}}()                # (segment, window lo, window hi); empty window = far
     rects = NTuple{4, Float64}[]                                # the square SCTL elements of all windows
