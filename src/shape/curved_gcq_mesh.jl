@@ -25,12 +25,20 @@ function _segment_offset(f, a, b)
     return acc
 end
 
-# breakpoints of [0, 1]: dyadic toward a graded end (the edge interval [0, 2^-nlev]), uniform without one
-function _graded_breaks(lo::Bool, hi::Bool, nlev::Int, m::Int)
-    lo && hi && return vcat(0.0, [2.0^-k for k in nlev:-1:2], 0.5, [1 - 2.0^-k for k in 2:nlev], 1.0)
-    lo && return vcat(0.0, [2.0^-k for k in nlev:-1:1], 1.0)
-    hi && return 1 .- reverse(_graded_breaks(true, false, nlev, m))
-    return collect(range(0.0, 1.0, length = m + 1))
+# breakpoints of [0, 1]: dyadic toward a graded end (the edge interval [0, 2^-nlev]), uniform without one. With
+# across = a > 1 a graded direction is first split into a equal panels and the end ones graded (nlev = 0: uniform)
+function _graded_breaks(lo::Bool, hi::Bool, nlev::Int, m::Int, across::Int = 1)
+    (lo || hi) || return collect(range(0.0, 1.0, length = m + 1))
+    if across == 1
+        lo && hi && return vcat(0.0, [2.0^-k for k in nlev:-1:2], 0.5, [1 - 2.0^-k for k in 2:nlev], 1.0)
+        lo && return vcat(0.0, [2.0^-k for k in nlev:-1:1], 1.0)
+        return 1 .- reverse(_graded_breaks(true, false, nlev, m))
+    end
+    h = 1 / across
+    b = collect(range(0.0, 1.0, length = across + 1))
+    lo && (b = vcat(b, [h * 2.0^-k for k in 1:nlev]))
+    hi && (b = vcat(b, [1 - h * 2.0^-k for k in 1:nlev]))
+    return sort(unique(b))
 end
 
 """
@@ -57,20 +65,23 @@ Base.show(io::IO, m::CurvedMesh) =
 num_points(m::CurvedMesh) = num_points(m.interface)
 
 """
-    curved_gcq_mesh(geometry; nlev = 4, n_quad = 10, m = 2, tol = 1e-10, qmax = nothing, gmax = 20.0,
+    curved_gcq_mesh(geometry; nlev = 4, n_quad = 10, m = 2, across = 1, tol = 1e-10, qmax = nothing, gmax = 20.0,
                     edge = :gcq, grade = c -> !c.smooth) -> CurvedMesh
 
 Mesh the patches of a `CurvedGeometry`. A curve `c` (a `CurveJunction`) is graded when `grade(c)`: the
 patch sides on it get `nlev` dyadic levels, and the panels touching it the weighted GCQ rule of its junction
 across it (`edge_gcq_rule(powers; tol, qmax)`, powers up to `gmax` from the sector angles and
 permittivities) and `n_quad`-point Gauss-Legendre along it; `edge = :gl` puts Gauss-Legendre there too (an
-h-graded reference). Directions without a graded side get `m` equal panels. Vertices, where graded curves
+h-graded reference). Directions without a graded side get `m` equal panels; across a graded curve the patch is
+first split into `across` equal panels, the `nlev` levels then grade the one at the curve (`nlev = 0`, `across = a`:
+uniform panels of width 1/a, the GCQ rule on the one at the curve, for h-refinement studies). Vertices, where graded curves
 meet, are not supported yet: graded curves on two adjacent sides of a patch throw an `ArgumentError`.
 """
-function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::Int = 2, tol::Real = 1e-10,
+function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::Int = 2, across::Int = 1, tol::Real = 1e-10,
                          qmax::Union{Nothing, Real} = nothing, gmax::Real = 20.0, edge::Symbol = :gcq,
                          grade = c -> !c.smooth)
     edge in (:gcq, :gl) || throw(ArgumentError("edge must be :gcq or :gl"))
+    across >= 1 || throw(ArgumentError("across must be at least 1"))
     graded = Bool[grade(c) for c in g.curves]
     powers = [graded[i] ? _junction_density_powers(c.angles, c.eps; gmax) : Float64[] for (i, c) in enumerate(g.curves)]
     rgl = gl_tensor_rule(n_quad)
@@ -86,7 +97,7 @@ function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::
         gs = [graded[g.side_curve[s, k]] for s in 1:4]
         (gs[1] || gs[2]) && (gs[3] || gs[4]) &&
             throw(ArgumentError("patch $k has graded curves on adjacent sides (a vertex): not supported yet"))
-        Ub = _graded_breaks(gs[1], gs[2], nlev, m); Vb = _graded_breaks(gs[3], gs[4], nlev, m)
+        Ub = _graded_breaks(gs[1], gs[2], nlev, m, across); Vb = _graded_breaks(gs[3], gs[4], nlev, m, across)
         f = P.map
         for (U0, U1) in zip(Ub[1:end-1], Ub[2:end]), (V0, V1) in zip(Vb[1:end-1], Vb[2:end])
             dU = U1 - U0; dV = V1 - V0

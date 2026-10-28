@@ -126,3 +126,27 @@ end
     @test maximum(norm(collect(N1[i] .- N0[idx[i]])) for i in eachindex(X1)) < 1e-12
     @test maximum(abs.(w1 .- w0[idx]) ./ w0[idx]) < 1e-10
 end
+
+@testset "curved mesh: uniform panels across a graded curve" begin
+    # across = a splits a graded direction into a equal panels before the nlev dyadic levels toward the curve: nlev = 0
+    # is uniform h-refinement with the GCQ rule on the panel of width 1/a at the curve
+    g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+    m0 = curved_gcq_mesh(g; nlev = 2, n_quad = 6, tol = 1e-6)
+    m1 = curved_gcq_mesh(g; nlev = 2, n_quad = 6, tol = 1e-6, across = 1)
+    @test BI.num_points(m1) == BI.num_points(m0)                           # across = 1: the default mesh
+    @test BI._graded_breaks(true, false, 0, 2, 3) ≈ [0, 1/3, 2/3, 1]
+    @test BI._graded_breaks(true, false, 2, 2, 2) ≈ [0, 1/8, 1/4, 1/2, 1]
+    @test BI._graded_breaks(false, true, 1, 2, 2) ≈ [0, 1/2, 3/4, 1]
+    @test BI._graded_breaks(true, true, 1, 2, 3) ≈ [0, 1/6, 1/3, 2/3, 5/6, 1]
+    for a in (1, 3)
+        m = curved_gcq_mesh(g; nlev = 0, n_quad = 6, tol = 1e-6, across = a)
+        # every patch with a graded side: a panels across it, the one at the curve with the GCQ rule
+        for k in 1:4                                                    # the upper cap's side charts
+            ks = findall(==(k), m.panel_patch)
+            edges = [j for j in ks if m.interface.panels[j].kind == :edge]
+            width(j) = norm(collect(m.panel_param[j](1.0, 0.5) .- m.panel_param[j](0.0, 0.5)))
+            @test length(ks) == 2a && length(edges) == 2                      # a across × m = 2 along
+            @test all(j -> abs(width(j) - 1 / a) < 1e-12, ks)
+        end
+    end
+end
