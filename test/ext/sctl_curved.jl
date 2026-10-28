@@ -115,13 +115,19 @@ if HAVE_SCTL_CURVED
         @test worst[2] < 1e-8                                             # 1.5e-9 measured
     end
 
-    @testset "SCTLCurvedNearQuad: a chart's pole inside a panel" begin
-        # one panel per patch: the caps' polar charts have their pole at the centre of a panel, where the tangents
-        # vanish (panel scales and closest points must not be taken there)
+    @testset "SCTLCurvedNearQuad: one panel per patch" begin
+        # the caps' top charts have their pole at the centre of a panel, where the tangents vanish (panel scales and
+        # closest points must not be taken there)
         g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
         m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 4, tol = 1e-8)
         C = near_corrections(SCTLCurvedNearQuad(tol = 1e-10), m.interface)
         @test all(isfinite, nonzeros(C))
+        # panels spanning ~90° of the unit sphere: an order-16 proxy element resolves that geometry only to ~1e-5, so
+        # x ± εn of the principal value fell on one side of it (Dᵀ1 off by 1/2) until proxies were split to resolve it
+        g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
+        m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 6, tol = 1e-10, grade = c -> abs(c.midpoint[3]) < 1e-12)
+        Dt = dt_operator(m.interface, SCTLCurvedNearQuad(tol = 1e-10))
+        @test maximum(abs, Dt(ones(BI.num_points(m.interface))) .- 0.5) < 1e-9     # 7e-12 measured
     end
 
     # induced potential u(x) = Σ w σ / (4π |x - y|), by direct summation (targets well away from the surface)

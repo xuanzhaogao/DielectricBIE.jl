@@ -299,15 +299,49 @@ function _curved_split(P)
 end
 
 # the parameter rectangles of the proxy elements of the segments that are not thin
-function _curved_proxies(P, thin, su, sv)
+# (split in 2 × 2 until the element's interpolated geometry is within _CURVED_GEOM_TOL of its size: the principal
+# value takes x ± εn with ε = ε_rel × size, which must lie on the two sides of the element)
+function _curved_proxies(P, thin, su, sv, xn)
     rects = NTuple{4, Float64}[]
     for (k, (sa, sb)) in enumerate(P.ru.segs)
         thin[k] && continue
         nus = max(1, ceil(Int, (sb - sa) * su / (_CURVED_ASPECT * sv)))
         ub = range(sa, sb, nus + 1)
-        append!(rects, [(ub[i], ub[i+1], 0.0, 1.0) for i in 1:nus])
+        for i in 1:nus
+            _curved_refine!(rects, P, (ub[i], ub[i+1], 0.0, 1.0), xn, 0)
+        end
     end
     return rects
+end
+
+const _CURVED_GEOM_TOL = 1e-12
+function _curved_refine!(rects, P, r, xn, depth)
+    if depth >= 8 || _curved_geom_error(P, r, xn) <= _CURVED_GEOM_TOL
+        push!(rects, r)
+    else
+        ua, ub, va, vb = r; um = (ua + ub) / 2; vm = (va + vb) / 2
+        for q in ((ua, um, va, vm), (um, ub, va, vm), (ua, um, vm, vb), (um, ub, vm, vb))
+            _curved_refine!(rects, P, q, xn, depth + 1)
+        end
+    end
+    return rects
+end
+
+# the largest distance between the order-p interpolant of the geometry on the parameter rectangle r (through the
+# element's nodes) and the map, at points between the nodes, relative to the rectangle's diameter
+function _curved_geom_error(P, r, xn)
+    ua, ub, va, vb = r; p = length(xn)
+    y(s, t) = collect(DielectricBIE.curved_lpoint(P, ua + (ub - ua) * s, va + (vb - va) * t))
+    Y = [y(xn[i], xn[j]) for i in 1:p, j in 1:p]
+    bw = [1 / prod(xn[j] - xn[k] for k in 1:p if k != j) for j in 1:p]
+    ts = [(xn[i] + xn[i+1]) / 2 for i in 1:3:p-1]
+    L = DielectricBIE._tensor_lagrange_mat(xn, bw, ts)
+    err = 0.0
+    for (a, s) in enumerate(ts), (b, t) in enumerate(ts)
+        yi = sum(L[i, a] * L[j, b] .* Y[i, j] for i in 1:p, j in 1:p)
+        err = max(err, norm(yi .- y(s, t)))
+    end
+    return err / _curved_diam(P, ua, ub, va, vb)
 end
 
 # the accurate D^T block of P's proxy elements (panel frame) for targets Xl with normals Nt; `own[r]` = (u, v) when
@@ -574,7 +608,7 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
         xs = [(ps[owner[t]].anchor .- P.anchor) .+ ps[owner[t]].lpoints[loc[t]] for t in ts]
         own = [owner[t] == k ? (P.ru.x[(loc[t] - 1) ÷ nv + 1], P.rv.x[(loc[t] - 1) % nv + 1]) : nothing for t in ts]
         thin, su, sv = _curved_split(P)
-        rects = _curved_proxies(P, thin, su, sv)
+        rects = _curved_proxies(P, thin, su, sv, xn)
         acc = isempty(rects) ? zeros(length(ts), num_points(P)) :
               _curved_proxy_block(P, rects, reduce(hcat, [collect(x) for x in xs]), Nrm[:, ts], own, p, xn, quad, lk;
                                   tol = q.tol, ε_rel = q.ε_rel)
