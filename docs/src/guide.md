@@ -469,6 +469,42 @@ drops the others.
 The GCQ solvers take the same keywords:
 `solve_dielectric_boxes_gcq(parts, sources; far = SCTLFarField(tol = 1e-12), near = MyGCQ(1e-12))`.
 
+## Flat-faced polyhedra
+
+A closed triangle mesh, for example from an OBJ file, is meshed with `CurvedPanel`s. Each
+triangle is split into three quadrilaterals, one per vertex. `CurvedGeometry` finds the junction
+of every edge (its sector angles and permittivities) and so the edge's density powers. Each
+quadrilateral is then graded `nlev` times toward its vertex, like a face quadrant of
+`single_dielectric_box3d_gcq`:
+- the panels along an edge get the edge's GCQ rule across it and Gauss–Legendre along it;
+- with `corner = :gcq`, the panel at the vertex gets the GCQ rule in both directions.
+
+```julia
+V, F = read_obj("model.obj"; snap = [(1 + sqrt(5)) / 2])    # snap six-digit coordinates to exact values
+F, vol = orient_outward(V, F)                                 # closed and consistently oriented, outward
+patches, quads = polyhedron_patches(V, F; eps_in = 2.0)
+itf, rules, powers = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 2, n_quad = 8, tol = 1e-8,
+                                     corner = :gcq)
+A = dielectric_operator(itf; far = FMM3DFarField(1e-12), near = PlanarProductNearQuad())
+σ, st = solve_dielectric_box3d_gcq(A, rhs_dielectric_box3d(itf, PointSource((0.1, 0.2, 0.15), 1.0), 2.0), itf)
+u = planar_slp_potential(itf, σ, T)                           # Sσ at the targets T (3 × m), near the surface too
+```
+
+**Near quadrature.** `PlanarProductNearQuad` computes the near corrections of flat panels by
+product integration, so it also handles GCQ in both directions.
+- Dᵀ vanishes for targets in a panel's plane, so on-surface rows need no singular quadrature.
+- A target off the plane gets the exact row of the panel's interpolation space, over leaves
+  split until the target is far enough away.
+- Rows are computed once per congruent panel class and relative target position, so a symmetric
+  polyhedron costs about one symmetry orbit.
+
+`planar_slp_potential` evaluates the single-layer potential with the same product rows near the
+panels. Its node sum is exact (direct summation by default): FMM3D's ~1e-8 relative error on
+terms ~wσ/δ would spoil targets at distance δ ≪ the node spacing.
+
+On the small stellated dodecahedron (ε = 2, all 90 edges at 116.57°/243.43°), GCQ × GCQ corners
+take ∫σ to a relative error of 2e-11 at N = 417k. GL × GL corners stall near 1e-5.
+
 ## Potentials off the surface
 
 Potentials at points off the interface are needed for `evaluate_batch_potential`, `four_index_matrix` and a

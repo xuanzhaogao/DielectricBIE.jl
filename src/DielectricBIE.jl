@@ -52,6 +52,7 @@ export single_dielectric_box3d_rhs_adaptive, multi_dielectric_box3d_rhs_adaptive
 export single_dielectric_box3d_rhs_adaptive_varquad
 export single_dielectric_box3d_gcq, multi_dielectric_box3d_gcq, MultiBoxGCQ
 export SurfacePatch, CurvedGeometry, CurveJunction, junction_angles, patch_frame, curved_gcq_mesh, CurvedMesh
+export read_obj, orient_outward, polyhedron_patches, polyhedron_quad_rects, polyhedron_mesh
 
 # solvers
 export lhs_dielectric_box2d, lhs_dielectric_box2d_fmm2d, rhs_dielectric_box2d
@@ -81,6 +82,7 @@ export NearQuadrature, near_corrections, GCQNearQuad, SCTLNearQuad, CorrectionMa
 export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block, sctl_gl_corrections, sctl_gl_potential_corrections
+export PlanarProductNearQuad, planar_slp_potential
 export PotentialEvaluator, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
 
@@ -148,6 +150,7 @@ include("shape/box3d_gcq.jl") # single box with GCQ edge panels
 include("shape/box3d_multi_gcq.jl") # several boxes with GCQ edge panels, shared faces meshed once
 include("shape/curved_geometry.jl")  # parametric patches, shared curves, junctions
 include("shape/curved_gcq_mesh.jl")  # CurvedPanel meshes graded toward edges
+include("shape/polyhedron_mesh.jl")  # flat-faced polyhedra from OBJ triangles, graded toward vertices
 
 # # utilities
 include("utils/linear_algebra.jl")
@@ -161,6 +164,7 @@ include("utils/xsf_reader.jl")
 
 # # solvers
 include("solver/backends.jl") # operator backends: far field x near quadrature
+include("solver/planar_near.jl") # product-integration near quadrature for flat CurvedPanels
 include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
 include("solver/dielectric_box3d_gcq.jl")
