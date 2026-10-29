@@ -141,6 +141,30 @@ face, not constant over the cluster. A cluster can also have further near-null m
 high-contrast boxes joined through a low-contrast one carry a +q/−q mode, which the cluster's
 total charge does not fix. Treat high-contrast face-sharing clusters with care.
 
+**Capacitance of a box.** `box_capacitance_gcq` computes C / (4πε₀) of a conducting box. It
+solves for the equilibrium density with total charge 1, using the conductor equation with the
+total-charge constraint and the exact conductor edge powers. The density and the mesh share the
+box's symmetry group: 48 elements for a cube, 16 for a square prism, 8 otherwise. So the system
+is reduced to one unknown per node orbit, using `box_node_orbits` and
+`symmetric_dense_operator`. It is assembled without FMM (direct node sums plus the near
+corrections) and solved by LU. For the unit cube with N = 150k nodes that is 3.2k unknowns.
+
+```julia
+c = box_capacitance_gcq(1.0, 1.0, 1.0)       # nlev = 8, n_quad = 12, tol = 1e-14: ~40 s on 32 threads
+c.C          # 0.660678154099568: the Thomson energy Q² / (4π ∫σ Sσ)
+c.C_point    # Q / (4π U) at interior points (`targets`), less accurate
+```
+
+Two estimates of C are returned:
+- `C` comes from the Thomson energy. The energy is stationary at the equilibrium density, so its
+  error is second order in the error of σ. It converges by `nlev = 8` for `n_quad ≥ 12`, and
+  agrees to about 2e-15 with Helsing & Perfekt's 0.66067815409957 (2013, stated error 1e-13).
+- `C_point` divides by the potential at interior points. Its error is first order and levels off
+  between 3e-15 and 3e-14.
+
+With `n_quad = 10` the energy estimate stalls about 3.5e-14 too high: the limit there is the GL
+order along the edges.
+
 ## Volume sources and precomputed fields
 
 A `VolumeSource` is a volume charge density sampled on a quadrature grid: positions
