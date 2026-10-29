@@ -149,6 +149,7 @@ include("shape/curved_gcq_mesh.jl")  # CurvedPanel meshes graded toward edges
 # # utilities
 include("utils/linear_algebra.jl")
 include("utils/corner_singularity.jl")
+include("utils/fftw_threads.jl")    # a non-yielding FFTW threads callback (FFTW.jl's can crash)
 include("utils/barycentric.jl")
 include("utils/bernstein.jl")
 include("utils/quad_order.jl")
@@ -181,5 +182,7 @@ include("visualization/viz_2d.jl")
 include("visualization/viz_3d.jl")
 
 include("precompile.jl")
+
+__init__() = _install_fftw_spawnloop()
 
 end

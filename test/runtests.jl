@@ -16,6 +16,7 @@ using Test
     include("utils/quad_order.jl")
     include("utils/best_grid.jl")
     include("utils/edge_gcq.jl")
+    include("utils/fftw_threads.jl")
     # visualization helpers
     include("visualization/extensions.jl")
 
