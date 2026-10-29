@@ -52,6 +52,12 @@ using Test
         @test γ[1] ≈ 1 - q rtol = 1e-6
         @test length(γ) == length(classes(1 - q, 5.9)) && maximum(abs.(γ .- classes(1 - q, 5.9))) < 1e-9
     end
+    # a repeated junction comes from the cache (one solve is ~0.5 s), as the caller's own copy
+    jp() = junction_powers([π, π / 2, π / 2], [1.0, 2.0, 7.0]; gmax = 6.0)
+    ja = jp(); t = @elapsed jb = jp()
+    @test jb == ja && jb !== ja && t < 0.05
+    jb[1] = 0.0
+    @test jp()[1] == ja[1]
     γn = filter(<=(5.9), junction_powers([π, π / 2, π / 2], [1.0, 10.0, 10.001]; gmax = 6.0))
     @test 1 - 1e-4 < γn[1] < 1
     @test length(γn) == length(classes(γn[1], 5.9)) && maximum(abs.(γn .- classes(γn[1], 5.9))) < 1e-9

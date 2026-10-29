@@ -25,6 +25,16 @@ function junction_powers(angles::AbstractVector, eps::AbstractVector;
                          gmax::Real = 20.0, ngrid::Int = 200_000)
     length(angles) == length(eps) || throw(ArgumentError("angles and eps must have equal length"))
     abs(sum(angles) - 2pi) < 1e-12 || throw(ArgumentError("angles must sum to 2π"))
+    # cached (one junction is ~0.5 s of determinant evaluations, and every mesh call asks for its junctions again)
+    key = (Float64.(angles), Float64.(eps), Float64(gmax), ngrid)
+    return copy(lock(() -> get!(() -> _junction_powers(angles, eps, gmax, ngrid), JUNCTION_POWERS_CACHE, key),
+                     JUNCTION_POWERS_LOCK))
+end
+
+const JUNCTION_POWERS_CACHE = Dict{Tuple{Vector{Float64}, Vector{Float64}, Float64, Int}, Vector{Float64}}()
+const JUNCTION_POWERS_LOCK = ReentrantLock()
+
+function _junction_powers(angles, eps, gmax, ngrid)
     f = g -> theta_ODE_det(angles[1:end-1], eps, g)
     gs = collect(range(1e-3, gmax, length = ngrid))
     fs = f.(gs)
