@@ -46,6 +46,7 @@ using Test
     # single box with GCQ edge panels (tensor panels, FMM + near corrections)
     include("solver/dielectric_box3d_gcq.jl")
     include("solver/dielectric_boxes_gcq.jl")
+    include("solver/box_capacitance_gcq.jl")
     include("solver/gcq_batched_potential.jl")
     include("solver/gcq_target_refine.jl")
     include("kernel/laplace3d_tensor_near_row.jl")
