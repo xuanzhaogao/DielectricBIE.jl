@@ -28,8 +28,9 @@ using Test
         4, 2.0, boxes, epses, [vs1, vs2], 1e-2; eps_out = eps_out)
     Np = DielectricBIE.num_points(interface)
 
+    F = rhs_dielectric_box3d_fmm3d(interface, [vs1, vs2], 1e-6)   # shared by both testsets
+
     @testset "vector RHS == per-column single-source" begin
-        F = rhs_dielectric_box3d_fmm3d(interface, [vs1, vs2], 1e-6)
         @test size(F) == (Np, 2)
         @test maximum(abs.(F[:, 1] .- rhs_dielectric_box3d_fmm3d(interface, vs1, 1e-6))) < 1e-10
         @test maximum(abs.(F[:, 2] .- rhs_dielectric_box3d_fmm3d(interface, vs2, 1e-6))) < 1e-10
@@ -37,7 +38,6 @@ using Test
 
     @testset "block solve == per-column gmres" begin
         op = batched_lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 8)
-        F = rhs_dielectric_box3d_fmm3d(interface, [vs1, vs2], 1e-6)
         Σ, _ = solve_dielectric_box3d_block(interface, [vs1, vs2];
             fmm_tol = 1e-6, up_tol = 1e-6, max_order = 8, rtol = 1e-8, itmax = 300)
         @test size(Σ) == (Np, 2)

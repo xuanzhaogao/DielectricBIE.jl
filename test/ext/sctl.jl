@@ -32,7 +32,7 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
 
 @testset "operator backends" begin
     rng = MersenneTwister(7)
-    itf = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 8, 0.2, 4.0, 1.0, Float64)
+    itf = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 8, 0.4, 4.0, 1.0, Float64)          # 40 panels, 2560 nodes
     n = BI.num_points(itf)
     X = randn(rng, n, 3)
 
@@ -240,8 +240,8 @@ end
     rng = MersenneTwister(21)
     S = rand(rng, 3, 50000); q = randn(rng, 50000); T = rand(rng, 3, 45000) .+ [1.5, 0.0, 0.0]   # 95k points: the FMM
     if HAVE_SCTL
+        u0 = point_charge_field(FMM3DFarField(1e-14), S, q, T); g0 = point_charge_field(FMM3DFarField(1e-14), S, q, T; grad = true)
         for tol in (1e-6, 1e-10)
-            u0 = point_charge_field(FMM3DFarField(1e-14), S, q, T); g0 = point_charge_field(FMM3DFarField(1e-14), S, q, T; grad = true)
             u = point_charge_field(SCTLFarField(tol = tol), S, q, T); g = point_charge_field(SCTLFarField(tol = tol), S, q, T; grad = true)
             @test size(u) == size(u0) && size(g) == size(g0)
             @test maximum(abs, u - u0) < tol * maximum(abs, u0)
@@ -265,12 +265,12 @@ end
         two = "[[orbital]]\ntype = 1\nx = 5.4\ny = 1.8\nz = 1.8\n"
         write(toml, replace(txt, two => "[[orbital]]\ntype = 1\nx = 3.6\ny = 1.8\nz = 1.8\n\n" * two))
         c = load_campaign(toml)
-        kw = (; nlev = 1, n_quad = 4, rhs_tol = 1e-4, lhs_tol = 1e-9, gmres_rtol = 1e-10, volume_tol = 1e-8,
-                quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-10, fg_tol = 1e-9, verbose = false)
+        kw = (; nlev = 1, n_quad = 4, rhs_tol = 1e-4, lhs_tol = 1e-8, gmres_rtol = 1e-8, volume_tol = 1e-8,
+                quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-8, fg_tol = 1e-9, verbose = false)
         rf = gcq_four_index(c; kw..., far = :fmm3d)
         rs = gcq_four_index(c; kw..., far = :sctl)
         @test rs.stats.N == rf.stats.N
-        @test maximum(abs, rs.V - rf.V) < 1e-6 * maximum(abs, rf.V)
+        @test maximum(abs, rs.V - rf.V) < 1e-10 * maximum(abs, rf.V)                # 7.8e-13 measured
     else
         @test_throws ErrorException point_charge_field(SCTLFarField(), zeros(3, 1), [1.0], ones(3, 1))
     end

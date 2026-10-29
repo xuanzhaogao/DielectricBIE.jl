@@ -30,10 +30,28 @@ end
     i1 = findfirst("[[orbital]]", txt).start; i2 = findfirst("[pairing]", txt).start
     write(toml, txt[1:i1-1] * orbs * "\n" * txt[i2:end])
     c = load_campaign(toml)
-    kw = (; far = :fmm3d, nlev = 1, n_quad = 4, rhs_tol = 1e-4, lhs_tol = 1e-9, gmres_rtol = 1e-10, volume_tol = 1e-8,
-            quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-10, fg_tol = 1e-10, verbose = false)
+    # (solver tolerances: the checks below hold to the same margins as at gmres_rtol = 1e-10, lhs_tol = 1e-9,
+    # tau = fg_tol = 1e-10, which they were first written for)
+    kw = (; far = :fmm3d, nlev = 1, n_quad = 4, rhs_tol = 1e-4, lhs_tol = 1e-8, gmres_rtol = 1e-8, volume_tol = 1e-8,
+            quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-8, fg_tol = 1e-9, verbose = false)
+
+    # two cooperating parts, part 2 in a separate process (started first: its start-up overlaps part 1's)
+    sync = mktempdir()
+    code = "using DielectricBIE; gcq_four_index(load_campaign(\"$toml\"); far = :fmm3d, nlev = 1, n_quad = 4, " *
+           "rhs_tol = 1e-4, lhs_tol = 1e-8, gmres_rtol = 1e-8, volume_tol = 1e-8, quad_tol = 1e-6, edge_tol = 1e-6, " *
+           "tau = 1e-8, fg_tol = 1e-9, verbose = false, part = 2, nparts = 2, sync = \"$sync\")"
+    cmd = addenv(`$(Base.julia_cmd()) --project=$(Base.active_project()) --startup-file=no -e $code`,
+                 "JULIA_NUM_THREADS" => string(Threads.nthreads()))
+    p2 = run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
+    r1 = gcq_four_index(c; kw..., part = 1, nparts = 2, sync)
+    wait(p2)
+    @test success(p2)
+    @test_throws ArgumentError gcq_four_index(c; kw..., part = 1, nparts = 2)          # no sync directory
+
     out = joinpath(dir, "gcq_out")
     res = run_gcq_campaign(c; kw..., dir = out)
+    # the two parts give the same V as one
+    @test maximum(abs, r1.V - res.V) / maximum(abs, res.V) < 1e-12
     # the batch pipeline's output files
     @test all(isfile(joinpath(out, f)) for f in ("V_full.tsv", "V_full_eV.jls", "V_full_eV.tsv", "report.txt"))
     r = deserialize(joinpath(out, "V_full_eV.jls"))
@@ -63,16 +81,20 @@ end
     ev = GCQPotential(quad_tol = 1e-6, η_gcq = 2.0, gcq_far = :direction, far = FMM3DFarField(1e-12))
     pts = [BI._grid_positions(dg, [g .+ delta[p] for g in shapes[shape_of[p]].gidx]) for p in 1:P]
     tws = [shapes[shape_of[p]].tw for p in 1:P]
+    # every pair's points in one target set (one field evaluation per source pair)
+    rng = [sum(size.(pts[1:a-1], 2); init = 0) .+ (1:size(pts[a], 2)) for a in 1:P]
+    Xall = reduce(hcat, pts); Sall = potential_operator(ev, itf, Xall)
     Vvol = zeros(P, P); Vlay = zeros(P, P)
     for b in 1:P
         isempty(tws[b]) && continue                      # the empty pair: zero row and column
         svb = BI._gcq_shape_source(c, dg, shapes[shape_of[b]], delta[b])
         F = rhs_dielectric_box3d(itf, svb, 1.0, FMM3DFarField(1e-12))
-        σ, _ = solve_dielectric_box3d_gcq(A, F, itf; rtol = 1e-10)
+        σ, _ = solve_dielectric_box3d_gcq(A, F, itf; rtol = 1e-9)
+        φvol = BI._gcq_volume_potential(svb, Xall; tol = 1e-8, c_pad = c.c_pad, far = ff); φlay = Sall * σ
         for a in 1:P
             isempty(tws[a]) && continue
-            Vvol[a, b] = dot(tws[a], BI._gcq_volume_potential(svb, pts[a]; tol = 1e-8, c_pad = c.c_pad, far = ff))
-            Vlay[a, b] = dot(tws[a], potential_operator(ev, itf, pts[a]) * σ)
+            Vvol[a, b] = dot(tws[a], φvol[rng[a]])
+            Vlay[a, b] = dot(tws[a], φlay[rng[a]])
         end
     end
     sc = maximum(abs, Vvol)
@@ -82,19 +104,5 @@ end
     @test maximum(abs, res.V_vol - [shape_of[a] <= shape_of[b] ? Vvol[a, b] : Vvol[b, a] for a in 1:P, b in 1:P]) < 1e-8 * sc
     @test maximum(abs, res.V_vol - Vvol) < 1e-3 * sc
     @test maximum(abs, res.V_layer) > 1e-3 * sc                        # the interface matters in this check
-
-    # two cooperating parts, part 2 in a separate process, give the same V
-    sync = mktempdir()
-    code = "using DielectricBIE; gcq_four_index(load_campaign(\"$toml\"); far = :fmm3d, nlev = 1, n_quad = 4, " *
-           "rhs_tol = 1e-4, lhs_tol = 1e-9, gmres_rtol = 1e-10, volume_tol = 1e-8, quad_tol = 1e-6, edge_tol = 1e-6, " *
-           "tau = 1e-10, fg_tol = 1e-10, verbose = false, part = 2, nparts = 2, sync = \"$sync\")"
-    cmd = addenv(`$(Base.julia_cmd()) --project=$(Base.active_project()) --startup-file=no -e $code`,
-                 "JULIA_NUM_THREADS" => string(Threads.nthreads()))
-    p2 = run(pipeline(cmd; stdout = devnull, stderr = devnull); wait = false)
-    r1 = gcq_four_index(c; kw..., part = 1, nparts = 2, sync)
-    wait(p2)
-    @test success(p2)
-    @test maximum(abs, r1.V - res.V) / maximum(abs, res.V) < 1e-12
-    @test_throws ArgumentError gcq_four_index(c; kw..., part = 1, nparts = 2)          # no sync directory
 
 end

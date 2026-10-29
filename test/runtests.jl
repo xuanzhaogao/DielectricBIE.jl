@@ -1,3 +1,7 @@
+# FMM3D, FMM2D and FINUFFT are OpenMP codes: unset, every call starts one OpenMP thread per core on top of Julia's
+# threads, and an FMM of a few hundred points takes a second instead of milliseconds. Set before the libraries load.
+haskey(ENV, "OMP_NUM_THREADS") || (ENV["OMP_NUM_THREADS"] = string(Threads.nthreads()))
+
 using DielectricBIE
 using LinearAlgebra
 using Test

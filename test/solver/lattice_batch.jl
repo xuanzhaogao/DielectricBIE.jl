@@ -59,6 +59,26 @@ using LinearAlgebra
     b_e = assemble_lattice_batch([dg_e], insts_e, [(1, 1), (1, 2)]; support_rtol = 1e-6)
     res_e = solve_dielectric_lattice_batch(c_e.boxes, c_e.epses, c_e.eps_out, b_e;
         n_quad = 4, rhs_atol = 1e-2, l_ec = 2.0, fmm_tol = 1e-6, gmres_rtol = 1e-8)
+    # Φ on the batch grid, evaluated once and checked by two testsets below
+    # ("near-branch wiring" and "V via evaluate_batch_potential == four_index_matrix").
+    Φ_e = evaluate_batch_potential(res_e.interface, res_e.sigma, res_e.sources, b_e.positions;
+        lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
+
+    # Well-resolved source shared by the "near/far split consistency" testset and the
+    # c_pad GATE: 24^3 grid over the same 3.0 cell, sigma = 0.4 blob, ~3.2 points per sigma.
+    nres = 24
+    h = 3.0 / nres
+    pts = Matrix{Float64}(undef, 3, nres^3)
+    den = Vector{Float64}(undef, nres^3)
+    let m = 0
+        for k in 1:nres, j in 1:nres, i in 1:nres
+            x = (i - 0.5) * h; y = (j - 0.5) * h; z = (k - 0.5) * h
+            m += 1
+            pts[1, m] = x; pts[2, m] = y; pts[3, m] = z
+            den[m] = exp(-((x - 1.5)^2 + (y - 1.5)^2 + (z - 1.5)^2) / (2 * 0.4^2))
+        end
+    end
+    vs_res = VolumeSource(pts, fill(h^3, nres^3), den)
 
     @testset "evaluate_batch_potential near-branch wiring" begin
         # NOT a TKM/physics-agreement check (see the name change from the original
@@ -75,8 +95,7 @@ using LinearAlgebra
         # testset below.
         targets = b_e.positions
 
-        Φ = evaluate_batch_potential(res_e.interface, res_e.sigma, res_e.sources, targets;
-            lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
+        Φ = Φ_e
         @test size(Φ) == (size(targets, 2), 2)
 
         # reference: PrecomputedVolumeField at near targets + the same layer map, NOT
@@ -102,39 +121,13 @@ using LinearAlgebra
     end
 
     @testset "near/far split consistency (well-resolved source)" begin
-        # 24^3 grid over the same 3.0 cell, sigma = 0.4 blob: ~3.2 points per sigma.
-        nres = 24
-        h = 3.0 / nres
-        pts = Matrix{Float64}(undef, 3, nres^3)
-        den = Vector{Float64}(undef, nres^3)
-        m = 0
-        for k in 1:nres, j in 1:nres, i in 1:nres
-            x = (i - 0.5) * h; y = (j - 0.5) * h; z = (k - 0.5) * h
-            m += 1
-            pts[1, m] = x; pts[2, m] = y; pts[3, m] = z
-            den[m] = exp(-((x - 1.5)^2 + (y - 1.5)^2 + (z - 1.5)^2) / (2 * 0.4^2))
-        end
-        vs_res = VolumeSource(pts, fill(h^3, nres^3), den)
-
+        # vs_res: 24^3 grid over the same 3.0 cell, sigma = 0.4 blob (built above).
         far = hcat(([8.0 * cos(t) + 1.5, 8.0 * sin(t) + 1.5, 1.5] for t in range(0, 2π; length = 17)[1:16])...)
         targets = hcat(pts[:, 1:97:end], far)          # subsample of near points + far ring
 
-        Σ0 = zeros(DielectricBIE.num_points(res_e.interface), 1)   # layer part off: pure u_inc test
-        Φ = evaluate_batch_potential(res_e.interface, Σ0, [vs_res], targets;
-            lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
-
-        sa = DielectricBIE.screened_volume_source(res_e.interface, vs_res,
-            DielectricBIE.SharpScreening())
-        vals = DielectricBIE.TKM3D.ltkm3dc(1e-8, sa.positions;
-            charges = sa.weights .* sa.density, targets = targets, pgt = 1,
-            kmax = DielectricBIE._estimate_tkm3dc_kmax(sa))
-        @test vals.ier == 0
-        Φ_ref = real.(vals.pottarg)
-        scale = maximum(abs.(Φ_ref))
-        max_rel_diff = maximum(abs.(Φ[:, 1] .- Φ_ref)) / scale
-        @info "near/far split consistency: max_rel_diff = $max_rel_diff"
-        @test max_rel_diff < 1e-5
-
+        # (A separate K = 1 evaluation vs ltkm3dc used to precede this; it is exactly
+        # column 1 of the K = 2 evaluation below, checked against the same ltkm3dc
+        # reference, and the nd = 1 far path is still exercised by the c_pad GATE.)
         # K = 2 with a genuine near/far split (nd = 2 far reshape path)
         den2 = den .* (pts[1, :] .- 1.5).^2                    # second, distinct density
         vs_res2 = VolumeSource(copy(pts), fill(h^3, nres^3), den2)
@@ -185,9 +178,8 @@ using LinearAlgebra
         # difference.
         V_ref = four_index_matrix(res_e.interface, res_e.sources, res_e.sigma;
                                   lhs_tol = 1e-6, volume_tol = 1e-8)
-        targets = b_e.positions                        # the group grid = what four_index uses
-        Φ = evaluate_batch_potential(res_e.interface, res_e.sigma, res_e.sources, targets;
-            lhs_tol = 1e-6, volume_tol = 1e-8, c_pad = 5.0)
+        # Φ_e is evaluate_batch_potential on b_e.positions = the group grid = what four_index uses
+        Φ = Φ_e
         K = 2
         V = [LinearAlgebra.dot(b_e.weights .* b_e.densities[:, a], Φ[:, bb]) for a in 1:K, bb in 1:K]
         @test maximum(abs.(V .- V_ref)) < 1e-6 * maximum(abs.(V_ref))
@@ -247,18 +239,7 @@ using LinearAlgebra
         # grid over a 12.24 A cell, graphene Wannier orbitals ~1-2 A wide) is
         # better resolved than this (~9-12 points per orbital width vs ~3.2 points
         # per sigma here), so this is a conservative upper bound on the real effect.
-        nres_g = 24
-        hg = 3.0 / nres_g
-        pts_g = Matrix{Float64}(undef, 3, nres_g^3)
-        den_g = Vector{Float64}(undef, nres_g^3)
-        mg = 0
-        for k in 1:nres_g, j in 1:nres_g, i in 1:nres_g
-            x = (i - 0.5) * hg; y = (j - 0.5) * hg; z = (k - 0.5) * hg
-            mg += 1
-            pts_g[1, mg] = x; pts_g[2, mg] = y; pts_g[3, mg] = z
-            den_g[mg] = exp(-((x - 1.5)^2 + (y - 1.5)^2 + (z - 1.5)^2) / (2 * 0.4^2))
-        end
-        vs_g = VolumeSource(pts_g, fill(hg^3, nres_g^3), den_g)
+        nres_g, pts_g, vs_g = nres, pts, vs_res     # the shared 24^3 source built above
         sa_g = DielectricBIE.screened_volume_source(res_e.interface, vs_g,
             DielectricBIE.SharpScreening())
         g2_g = DielectricBIE.near_field_geometry(sa_g; c_pad = 2.0)

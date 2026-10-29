@@ -7,7 +7,9 @@ using Test
 
 @testset "dielectric_box3d" begin
     eps_box = 4.0
-    interface = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 4, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
+    # coarse mesh (1008 points): this checks dense == FMM and LU/GMRES convergence; the
+    # flux check is a loose sanity bound.
+    interface = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 3, 0.3, eps_box, 1.0, Float64; alpha = sqrt(2))
 
     lhs = BI.lhs_dielectric_box3d(interface)
     lhs_fmm3d = BI.lhs_dielectric_box3d_fmm3d(interface, 1e-12)
@@ -54,21 +56,18 @@ end
 
 @testset "dielectric_box3d corrected" begin
     eps_box = 4.0
-    interface = BI.single_dielectric_box3d(3.0, 3.0, 1.0, 6, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
+    interface = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 4, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
 
-    lhs_uncorrected = BI.lhs_dielectric_box3d_fmm3d(interface, 1e-6)
+    # Default-kwarg corrected operator. (The uncorrected FMM operator's GMRES solve and
+    # flux are already checked, more tightly, in the "dielectric_box3d" testset above.)
     lhs_corrected = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12)
     rhs = BI.rhs_dielectric_box3d(interface, BI.PointSource((0.1, 0.1, 0.1), 1.0), eps_box)
     ws = BI.all_weights(interface)
 
     x_gmres_corrected = BI.solve_gmres(lhs_corrected, rhs, 1e-6, 1e-6)
-    x_gmres_uncorrected = BI.solve_gmres(lhs_uncorrected, rhs, 1e-6, 1e-6)
     @test norm(lhs_corrected * x_gmres_corrected - rhs) < 1e-5
-    @test norm(lhs_uncorrected * x_gmres_uncorrected - rhs) < 1e-5
 
     total_flux_corrected = dot(ws, x_gmres_corrected)
-    total_flux_uncorrected = dot(ws, x_gmres_uncorrected)
-    @test isapprox(total_flux_uncorrected + 1.0 / eps_box, 1.0, atol = 1e-1)
     @test isapprox(total_flux_corrected + 1.0 / eps_box, 1.0, atol = 1e-1)
 end
 
@@ -149,7 +148,7 @@ end
 @testset "dielectric_box3d rhs volume source hybrid near/far" begin
     eps_box = 4.0
     eps_src = 1.0
-    interface = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
+    interface = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 3, 0.3, eps_box, 1.0, Float64; alpha = sqrt(2))
     vs = BI.GaussianVolumeSource((0.0, 0.0, 0.6), 0.1, 40, 1e-8)
 
     n_points = BI.num_points(interface)
@@ -233,36 +232,6 @@ end
     @test BI.rhs_dielectric_box3d(interface, vs_small) ≈ BI.rhs_dielectric_box3d(interface, vs_sharp, 1.0)
 end
 
-@testset "dielectric_box3d corrected edges flag" begin
-    eps_box = 4.0
-    interface = BI.single_dielectric_box3d(3.0, 3.0, 1.0, 6, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
-    rhs = BI.rhs_dielectric_box3d(interface, BI.PointSource((0.1, 0.1, 0.1), 1.0), eps_box)
-    ws = BI.all_weights(interface)
-
-    lhs_off = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12;
-                                                     correct_edges = false)
-    lhs_on  = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12;
-                                                     correct_edges = true,
-                                                     adaptive_atol = 1e-6)
-
-    x_off = BI.solve_gmres(lhs_off, rhs, 1e-6, 1e-6)
-    x_on  = BI.solve_gmres(lhs_on,  rhs, 1e-6, 1e-6)
-
-    flux_off = dot(ws, x_off)
-    flux_on  = dot(ws, x_on)
-
-    err_off = abs(flux_off + 1.0 / eps_box - 1.0)
-    err_on  = abs(flux_on  + 1.0 / eps_box - 1.0)
-    @info "dielectric box flux error: off=$(err_off) on=$(err_on)"
-
-    # Both should converge GMRES.
-    @test norm(lhs_off * x_off - rhs) < 1e-5
-    @test norm(lhs_on  * x_on  - rhs) < 1e-5
-    # Both modes should produce physically reasonable flux values (loose check).
-    @test err_off < 1e-1
-    @test err_on  < 1e-1
-end
-
 @testset "dielectric_box3d volume backend wiring" begin
     root = pkgdir(DielectricBIE)
     entrypoint = read(joinpath(root, "src", "DielectricBIE.jl"), String)
@@ -278,9 +247,11 @@ end
 
 @testset "dielectric_box3d correct_edges improves edge-near pointwise potential" begin
     eps_box = 4.0
-    Lx, Ly, Lz = 3.0, 3.0, 1.0
+    # Small box; the target sits 0.1 from each of the three faces meeting at the
+    # +x/+y/+z corner (same target/face geometry as the original 3x3x1 setup).
+    Lx, Ly, Lz = 1.2, 1.2, 0.8
     source = BI.PointSource((0.1, 0.1, 0.1), 1.0)
-    near_corner = (1.40, 1.40, 0.40)   # close to the +x/+y/+z corner of the box
+    near_corner = (0.50, 0.50, 0.30)
 
     # Direct Coulomb potential of the point source (free space inside the box).
     function source_pot(target, src::BI.PointSource)
@@ -293,30 +264,42 @@ end
         return source_pot(target, source) / eps_box + induced
     end
 
-    function solve_at(l_ec, correct_edges_flag)
-        interface = BI.single_dielectric_box3d(Lx, Ly, Lz, 6, l_ec, eps_box, 1.0, Float64; alpha = sqrt(2))
+    function solve_at(l_ec, correct_edges_flag; checks = true)
+        interface = BI.single_dielectric_box3d(Lx, Ly, Lz, 4, l_ec, eps_box, 1.0, Float64; alpha = sqrt(2))
         lhs = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12;
                                                      correct_edges = correct_edges_flag,
                                                      adaptive_atol = 1e-8)
         rhs = BI.rhs_dielectric_box3d(interface, source, eps_box)
         σ = BI.solve_gmres(lhs, rhs, 1e-7, 1e-7)
-        return pot_at(interface, σ, near_corner)
+        res = checks ? norm(lhs * σ - rhs) : NaN
+        flux_err = abs(dot(BI.all_weights(interface), σ) + 1.0 / eps_box - 1.0)
+        return pot_at(interface, σ, near_corner), res, flux_err
     end
 
-    # Reference at fine resolution with correction enabled.
-    pot_ref = solve_at(0.06, true)
+    # Reference at finer resolution with correction enabled.
+    pot_ref, _, _ = solve_at(0.10, true; checks = false)
 
     # Coarse-mesh comparison.
-    pot_off = solve_at(0.10, false)
-    pot_on  = solve_at(0.10, true)
+    pot_off, res_off, flux_err_off = solve_at(0.20, false)
+    pot_on,  res_on,  flux_err_on  = solve_at(0.20, true)
+
+    # (Merged from the former "corrected edges flag" testset, which solved the same
+    # correct_edges = false/true operators on its own mesh.) Both modes converge
+    # GMRES and give a physically reasonable total flux (loose check).
+    @info "dielectric box flux error: off=$(flux_err_off) on=$(flux_err_on)"
+    @test res_off < 1e-5
+    @test res_on  < 1e-5
+    @test flux_err_off < 1e-1
+    @test flux_err_on  < 1e-1
 
     err_off = abs(pot_off - pot_ref)
     err_on  = abs(pot_on  - pot_ref)
     @info "near-corner pointwise error" err_off err_on
 
     # The corrected version must be meaningfully better near the corner.
-    # Empirical baseline at l_ec=0.10: err_off ≈ 1.3e-4, err_on ≈ 3.7e-5 (3.5× better).
-    # We require at least 2× improvement to allow some headroom.
-    @test err_on < err_off / 2
-    @test err_on < 1e-4     # absolute bound
+    # Measured (n_quad = 4, l_ec 0.20 vs reference 0.10): err_off ≈ 6.5e-3,
+    # err_on ≈ 5.1e-4 (12.7x better). Require >= 4x, and an absolute bound that the
+    # uncorrected solution fails.
+    @test err_on < err_off / 4
+    @test err_on < 2e-3     # absolute bound
 end

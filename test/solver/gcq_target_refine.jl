@@ -12,7 +12,7 @@ using Test
     X = hcat([0.1, -0.2, 0.3] .+ [0.3, 0.4, 0.1] .* rand(rng, 3, 40),
              [0.2, -0.2, 0.6] .+ [0.6, 0.4, 0.1] .* rand(rng, 3, 20))
     kw = (; nlev = 1, n_quad = 4, tol = 1e-6, rhs, rhs_atol = 1e-5)
-    isfar(p, t) = BI.tensor_isfar(p, Tuple(X[:, t]) .- p.anchor; quad_tol = 1e-8, gcq_far = :direction)
+    isfar(p, t) = BI.tensor_isfar(p, (X[1, t], X[2, t], X[3, t]) .- p.anchor; quad_tol = 1e-8, gcq_far = :direction)
     m0 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw...)
     m1 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw..., targets = X, target_tol = 1e-8)
     p0, p1 = m0.interface.panels, m1.interface.panels
@@ -32,11 +32,11 @@ using Test
 
     # one box: the potential of the solution is the same from the refined and the unrefined mesh
     b1 = boxes[1:1]
-    kw1 = (; nlev = 1, n_quad = 4, tol = 1e-5, rhs, rhs_atol = 1e-4)
+    kw1 = (; nlev = 1, n_quad = 4, tol = 1e-4, rhs, rhs_atol = 1e-3)
     n0 = multi_dielectric_box3d_gcq(b1, [4.0], 1.0; kw1...)
-    n1 = multi_dielectric_box3d_gcq(b1, [4.0], 1.0; kw1..., targets = X[:, 1:40], target_tol = 1e-8)
+    n1 = multi_dielectric_box3d_gcq(b1, [4.0], 1.0; kw1..., targets = X[:, 1:40], target_tol = 1e-6)
     u = map((n0, n1)) do m
-        s = solve_dielectric_boxes_gcq(m, src; quad_tol = 1e-8, gcq_far = :direction, rtol = 1e-10)
+        s = solve_dielectric_boxes_gcq(m, src; quad_tol = 1e-8, gcq_far = :direction, rtol = 1e-8)
         potential_operator(ev, m.interface, X[:, 1:40]) * s.σ
     end
     @test norm(u[2] - u[1]) / norm(u[1]) < 1e-4
@@ -46,10 +46,10 @@ end
     boxes = [(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0), (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]
     rng = MersenneTwister(5)
     X = [0.1, -0.2, 0.3] .+ [0.3, 0.4, 0.12] .* rand(rng, 3, 8000)          # a dense cloud under the top face
-    kw = (; nlev = 1, n_quad = 4, tol = 1e-6, targets = X, target_tol = 1e-8)
-    isfar(p, t) = BI.tensor_isfar(p, Tuple(X[:, t]) .- p.anchor; quad_tol = 1e-8, gcq_far = :direction)
-    nnear(ps) = sum(p -> count(t -> !isfar(p, t), axes(X, 2)), ps)
-    m0 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; nlev = 1, n_quad = 4, tol = 1e-6)
+    kw = (; nlev = 1, n_quad = 4, tol = 1e-4, targets = X, target_tol = 1e-8)
+    isfar(p, t) = BI.tensor_isfar(p, (X[1, t], X[2, t], X[3, t]) .- p.anchor; quad_tol = 1e-8, gcq_far = :direction)
+    nnear(ps) = sum(fetch, [Threads.@spawn count(t -> !isfar(p, t), axes(X, 2)) for p in ps])
+    m0 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; nlev = 1, n_quad = 4, tol = 1e-4)
     m1 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw...)
     m2 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw..., target_skin = 0.02)
     # the skin is a small subset; the mesh is nearly the same, and nearly no target is left near

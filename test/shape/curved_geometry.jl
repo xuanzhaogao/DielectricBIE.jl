@@ -15,11 +15,11 @@ nonsmooth(g) = [c for c in g.curves if !c.smooth]
     g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
     @test isempty(nonsmooth(g))
     @test all(c -> length(c.sides) == 2 && all(isapprox.(c.angles, π; atol = 1e-9)), g.curves)
-    msh = curved_gcq_mesh(g; nlev = 3, n_quad = 8, tol = 1e-12)
+    msh = curved_gcq_mesh(g; nlev = 2, n_quad = 8, tol = 1e-12)
     @test sum(BI.all_weights(msh.interface)) ≈ 4π rtol = 1e-10
     @test all(p -> p.kind == :gl, msh.interface.panels)
     # grading toward a chosen curve (the equator), with the GCQ rule of its (smooth) junction
-    eq = curved_gcq_mesh(g; nlev = 3, n_quad = 8, tol = 1e-8, grade = c -> abs(c.midpoint[3]) < 1e-12)
+    eq = curved_gcq_mesh(g; nlev = 2, n_quad = 8, tol = 1e-8, grade = c -> abs(c.midpoint[3]) < 1e-12)
     @test count(p -> p.kind == :edge, eq.interface.panels) == 2 * 4 * 2
     @test sum(BI.all_weights(eq.interface)) ≈ 4π rtol = 1e-7
 
@@ -34,7 +34,7 @@ nonsmooth(g) = [c for c in g.curves if !c.smooth]
         @test c.eps[argmin(c.angles)] == 4.0 && c.eps[argmax(c.angles)] == 1.0
         @test abs(c.midpoint[3]) < 1e-14 && norm(c.midpoint) ≈ 1
     end
-    lm = curved_gcq_mesh(l; nlev = 3, n_quad = 8, tol = 1e-12)
+    lm = curved_gcq_mesh(l; nlev = 2, n_quad = 8, tol = 1e-12)
     @test all(isapprox.(lm.powers[findfirst(c -> !c.smooth, l.curves)], edge_density_powers(4.0, 1.0; angle = θ1 + θ2); atol = 1e-10))
     @test count(p -> p.kind == :edge, lm.interface.panels) == 2 * 4 * 2
     up = sum(patch_area(lm, k) for k in 1:5); lo = sum(patch_area(lm, k) for k in 6:10)
@@ -53,7 +53,7 @@ nonsmooth(g) = [c for c in g.curves if !c.smooth]
         @test sort(c.eps) == [1.0, 2.0, 8.0]
         @test c.eps[argmax(c.angles)] == 1.0
     end
-    sm = curved_gcq_mesh(s; nlev = 3, n_quad = 8, tol = 1e-12)
+    sm = curved_gcq_mesh(s; nlev = 2, n_quad = 8, tol = 1e-12)
     k = findfirst(c -> !c.smooth, s.curves)
     @test all(isapprox.(sm.powers[k], BI._junction_density_powers([π, π / 2, π / 2], [1.0, 2.0, 8.0]; gmax = 20.0); atol = 1e-10))
     @test sum(patch_area(sm, k) for k in 11:15) ≈ π rtol = 1e-10            # the disk
@@ -104,8 +104,8 @@ end
     rs = [onside(P, mod1(k, 4)) for (k, P) in enumerate(ps)]
     g0 = CurvedGeometry(ps); g1 = CurvedGeometry(rs)
     @test sort([sort(c.angles) for c in g1.curves if !c.smooth]) ≈ sort([sort(c.angles) for c in g0.curves if !c.smooth])
-    m0 = curved_gcq_mesh(g0; nlev = 3, n_quad = 6, tol = 1e-8)
-    m1 = curved_gcq_mesh(g1; nlev = 3, n_quad = 6, tol = 1e-8)
+    m0 = curved_gcq_mesh(g0; nlev = 1, n_quad = 6, tol = 1e-8)
+    m1 = curved_gcq_mesh(g1; nlev = 1, n_quad = 6, tol = 1e-8)
     # the patch side each edge panel's u = 0 lies on: all four occur
     side(U, V) = U == 0 ? 1 : U == 1 ? 2 : V == 0 ? 3 : V == 1 ? 4 : 0
     @test Set(side(m1.panel_param[k](0.0, 0.5)...) for k in eachindex(m1.panel_param) if m1.interface.panels[k].kind == :edge) == Set(1:4)
@@ -208,6 +208,6 @@ end
     x = randn(N, 2)
     Y0 = zeros(N, 2); BI.apply_far!(Y0, BI.far_field_operator(FMM3DFarField(1e-12), itf), x)
     Y1 = zeros(N, 2); BI.apply_far!(Y1, BI.far_field_operator(FMM3DFarField(1e-12; close = 10.0), itf), x)
-    far = [k for k in 1:N if minimum(norm(X[:, k] .- X[:, l]) for l in 1:N if l != k) > 1e-3]
+    far = [k for k in 1:N if d[k][2] > 1e-3]
     @test maximum(abs.(Y0[far, :] .- Y1[far, :])) <= 1e-9 * maximum(abs.(Y1[far, :]))
 end

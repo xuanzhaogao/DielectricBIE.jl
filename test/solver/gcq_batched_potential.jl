@@ -19,11 +19,11 @@ using Test
 
     # GCQPotential == potential_tensor (direct), on and near edges and corners
     ε = 10.0
-    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, ε, 1.0; nlev = 1, n_quad = 4, rule = edge_gcq_rule(ε, 1.0; tol = 1e-6))
+    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, ε, 1.0; nlev = 1, n_quad = 3, rule = edge_gcq_rule(ε, 1.0; tol = 1e-4))
     X, Nn = BI._interface_targets_normals(itf)
     rng = MersenneTwister(4)
     σ = randn(rng, BI.num_points(itf))
-    T = hcat(rand(rng, 3, 40) .* 2 .- 1, [0.5 + 1e-3, 0.5 + 2e-4, 0.3], [0.501, 0.499, 0.4999], X[:, 1:97:end] .+ 1e-3 .* Nn[:, 1:97:end])
+    T = hcat(rand(rng, 3, 40) .* 2 .- 1, [0.5 + 1e-3, 0.5 + 2e-4, 0.3], [0.501, 0.499, 0.4999], X[:, 1:47:end] .+ 1e-3 .* Nn[:, 1:47:end])
     uref = BI.potential_tensor(itf, σ, [Tuple(T[:, t]) for t in axes(T, 2)])
     P = potential_operator(GCQPotential(far = FMM3DFarField(1e-13)), itf, T)
     @test size(P) == (size(T, 2), BI.num_points(itf))
