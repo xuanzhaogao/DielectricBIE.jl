@@ -180,4 +180,6 @@ include("campaign/gcq_surface.jl")  # GCQ campaign mode: the surface corrections
 include("visualization/viz_2d.jl")
 include("visualization/viz_3d.jl")
 
+include("precompile.jl")
+
 end

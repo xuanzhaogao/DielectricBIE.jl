@@ -616,12 +616,19 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
               _curved_proxy_block(P, rects, reduce(hcat, [collect(x) for x in xs]), Nrm[:, ts], own, p, xn, quad, lk;
                                   tol = q.tol, ε_rel = q.ε_rel)
         if any(thin)
-            cache = (groups = Dict{Int, Tuple{Vector{Float64}, Matrix{Float64}}}(),       # merged-segment rules,
-                     vgeom = Dict{Float64, Matrix{Float64}}(),                           # geometry along u-lines,
-                     adiff = Dict{NTuple{3, Float64}, NTuple{3, Float64}}())              # differences across them
-            for (r, t) in enumerate(ts)
-                acc[r, :] .+= _curved_thin_row(P, xs[r], (Nrm[1, t], Nrm[2, t], Nrm[3, t]), own[r], thin, su, sv, p, xn,
-                                               quad, lk, cache; tol = q.tol, ε_rel = q.ε_rel)
+            # the rows in chunks run as tasks, each with its own cache: an edge panel has a large share of all
+            # targets near it, and its rows would otherwise keep one thread busy while the others idle
+            @sync for ch in Iterators.partition(eachindex(ts), cld(length(ts), Threads.nthreads()))
+                Threads.@spawn begin
+                    cache = (groups = Dict{Int, Tuple{Vector{Float64}, Matrix{Float64}}}(),   # merged-segment rules,
+                             vgeom = Dict{Float64, Matrix{Float64}}(),                       # geometry along u-lines,
+                             adiff = Dict{NTuple{3, Float64}, NTuple{3, Float64}}())          # differences across them
+                    for r in ch
+                        t = ts[r]
+                        acc[r, :] .+= _curved_thin_row(P, xs[r], (Nrm[1, t], Nrm[2, t], Nrm[3, t]), own[r], thin, su, sv,
+                                                       p, xn, quad, lk, cache; tol = q.tol, ε_rel = q.ε_rel)
+                    end
+                end
             end
         end
         blocks[k] = (ts, acc .- DielectricBIE.dt_node_rule_block(interface, k, X[:, ts], Nrm[:, ts]))
@@ -788,6 +795,36 @@ function apply_far!(Y::AbstractMatrix, f::SCTLDTOp, X::AbstractMatrix)
         end
     end
     return Y
+end
+
+# ---- precompile workload (see src/precompile.jl): the SCTL backends on small problems ----
+# libsctljl needs AVX-512 (Illegal instruction otherwise): on other CPUs nothing is run at precompile time
+using PrecompileTools: @setup_workload, @compile_workload
+_avx512() = Sys.islinux() && occursin("avx512f", read("/proc/cpuinfo", String))
+@setup_workload begin
+    if _avx512()
+        @compile_workload begin
+            src = PointSource((0.1, 0.15, 0.2), 1.0)
+            # FlatPanel box: the whole D^T by SCTL
+            itf = DielectricBIE.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
+            dielectric_operator(itf; far = SCTLFarField(tol = 1e-6), near = SCTLNearQuad()) *
+                rhs_dielectric_box3d(itf, src, 4.0)
+            # GCQ box: SCTL's far field (the default with SCTL loaded) and the point-charge field
+            gi = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 0, n_quad = 3,
+                                             rule = edge_gcq_rule(10.0, 1.0; tol = 1e-3))
+            solve_dielectric_box3d_gcq(dielectric_operator(gi), rhs_dielectric_box3d(gi, src, 10.0), gi; rtol = 1e-6)
+            point_charge_field(SCTLFarField(), rand(3, 20), rand(20), rand(3, 5))
+            # curved sphere with GCQ edge panels: SCTLCurvedNearQuad
+            m = DielectricBIE._precompile_sphere_mesh()
+            solve_dielectric_box3d_gcq(dielectric_operator(m.interface; near = SCTLCurvedNearQuad(tol = 1e-6)),
+                                       rhs_dielectric_box3d(m.interface, PointSource((0.0, 0.0, 2.0), 1.0), 1.0),
+                                       m.interface; rtol = 1e-6)
+            # the campaign with SCTL's far field
+            mktempdir() do dir
+                DielectricBIE._precompile_four_index(DielectricBIE._precompile_campaign(dir), :sctl)
+            end
+        end
+    end
 end
 
 end # module
