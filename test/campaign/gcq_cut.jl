@@ -1,5 +1,7 @@
 using DielectricBIE, Test, LinearAlgebra, HCubature, SpecialFunctions
 import DielectricBIE as BI
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 include(joinpath(@__DIR__, "fixture_cut.jl"))
 
 @testset "GCQ campaign mode: densities cut by a face" begin

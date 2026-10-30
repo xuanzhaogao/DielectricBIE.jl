@@ -86,7 +86,7 @@ export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNea
 export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block, sctl_gl_corrections, sctl_gl_potential_corrections
-export SCTLProxyNearQuad, default_polynomial_panel, SCTLCurvedNearQuad
+export SCTLCurvedNearQuad
 export PotentialEvaluator, HCubaturePotential, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
 

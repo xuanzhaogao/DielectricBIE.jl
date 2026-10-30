@@ -2,6 +2,8 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays, Random
 using Test
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 
 @testset "tensor_near_row: clustered quadtree == fine-grid product integration" begin
     # edge and corner panels with the GCQ rule (dyadic segments), GL panels; targets near and far, near edges and

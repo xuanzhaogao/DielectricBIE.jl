@@ -254,8 +254,12 @@ The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
     octree across GMRES iterations.
 - **`near`, a [`NearQuadrature`](@ref)**, returns the sparse correction `C` (accurate minus node rule) for
   nearby panel pairs:
-  - [`UpsampledNearQuad`](@ref) is the default for `FlatPanel` interfaces;
-  - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` interfaces;
+  - [`SCTLNearCorrection`](@ref) is the default for `FlatPanel` interfaces: SCTL's near and singular quadrature
+    of every panel ([`sctl_gl_corrections`](@ref)), with either far field;
+  - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` interfaces: the GCQ rules for the edge and corner
+    panels, SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones;
+  - [`SCTLCurvedNearQuad`](@ref) is the default for `CurvedPanel` interfaces;
+  - [`UpsampledNearQuad`](@ref) is DielectricBIE's upsampling quadrature for `FlatPanel` interfaces;
   - [`SCTLNearQuad`](@ref) is SCTL's singular quadrature, for `FlatPanel` interfaces with `n_quad` in 4, 8, 12,
     16 or 20, combined with `SCTLFarField`;
   - your own quadrature works too, as described below.
@@ -397,34 +401,25 @@ On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-9. T
 tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, give the radii:
 `sctl_near_list(interface; radius = r)`, with one radius per node or one for all.
 
-### SCTL's quadrature on your own panels
+### SCTL's quadrature for Gauss–Legendre panels
 
-[`SCTLProxyNearQuad`](@ref) applies SCTL's near quadrature to panels that are not SCTL elements, as long as their
-density is a polynomial through the nodes. For each such panel it does the following:
-1. Builds a proxy `QuadElemList` element with the panel's geometry.
-2. Uses SCTL's classification and near-singular rule on the proxy.
-3. Maps the rows back to the panel's nodes through the interpolation from the panel's nodes to the proxy's. That
-   interpolation is exact for a polynomial density.
+In the default near quadratures every Gauss–Legendre × Gauss–Legendre panel ([`is_gl_panel`](@ref): a
+`FlatPanel`, or a `TensorPanel` or `CurvedPanel` without a GCQ rule) gets its near and self corrections from SCTL:
+[`SCTLNearCorrection`](@ref), [`GCQNearQuad`](@ref) and [`SCTLCurvedNearQuad`](@ref) all call
+[`sctl_gl_corrections`](@ref)`(interface, panels; tol)` for those panels, and keep their own rules for the GCQ edge
+and corner panels, whose densities are singular. So they need `using SCTL` for any interface with such panels.
 
-The other panels get `fallback`, which only computes their columns. Two keywords choose how panels are split:
-- `polynomial` decides which panels SCTL handles. The default is `default_polynomial_panel`: every `FlatPanel`, and
-  `TensorPanel`s with `kind == :gl`.
-- `fallback` handles the rest; it defaults to `GCQNearQuad()`.
+Each panel is one SCTL element over its parameter square. When its node count per direction is one of SCTL's orders
+4, 8, 12, 16 or 20, the element is the panel itself; otherwise it is a proxy element of the next order, with the
+density interpolated from the panel's nodes (exact for its polynomial). A curved panel's element is SCTL's
+interpolant of its map, so its accuracy also depends on the panel's size and order. The meshers keep these panels at
+aspect ratio at most [`GL_MAX_ASPECT`](@ref).
 
 ```julia
 interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8)
-A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12),
-                        near = SCTLProxyNearQuad(tol = 1e-12, fallback = GCQNearQuad(quad_tol = 1e-12)))
+gl = findall(is_gl_panel, interface.panels)
+C_gl = sctl_gl_corrections(interface, gl; tol = 1e-12)        # the GL panels' columns of GCQNearQuad(quad_tol = 1e-12)
 ```
-
-On this box, which has 168 panels and 35,328 nodes, it agrees with the all-GCQ operator to 2e-13. It is not
-faster, though. GCQ's setup, about 20 s on 8 threads, goes almost entirely to the 120 edge and corner panels, whose
-singular densities SCTL cannot integrate. GCQ's rows for the 48 Gauss–Legendre panels take only 0.3 s, against
-1.3 s for SCTL's.
-
-Use `SCTLProxyNearQuad` for panel types without a near rule of their own: curved or parametrized patches, or new
-panel kinds. Any type works once it has a parametrization, `DielectricBIESCTLExt._panel_param`. It also serves as an
-independent check of a new rule.
 
 A quadrature that can compute only some panels' columns can implement
 `near_corrections(q, interface, sources)`, as `GCQNearQuad` does. Otherwise the default computes all columns and

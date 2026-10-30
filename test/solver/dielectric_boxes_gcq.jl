@@ -2,6 +2,8 @@ using DielectricBIE
 import DielectricBIE as DB
 using LinearAlgebra
 using Test
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 
 @testset "dielectric_tau and conductor edge powers" begin
     @test dielectric_tau(10.0, 1.0) ≈ 0.5 * (1.0 + 10.0) / (1.0 - 10.0)

@@ -12,8 +12,9 @@ end
     lhs_dielectric_box3d_gcq_fmm3d(interface, fmm_tol; reuse=true, quad_tol=1e-12, η_gcq=2.0, gcq_far=:max)
 
 FMM-accelerated operator for a `TensorPanel` interface: FMM D^T plus the sparse
-near correction plus the diagonal τ. Returns (A::LinearMap, stats), where
-`stats` reports the number of near pairs and of distinct near rows computed. `η_gcq` and
+near correction (`laplace3d_DT_tensor_corrections`: SCTL's for the Gauss-Legendre × Gauss-Legendre panels, which
+needs `using SCTL`) plus the diagonal τ. Returns (A::LinearMap, stats), where
+`stats` reports the number of near pairs and of distinct near rows computed for the GCQ panels. `η_gcq` and
 `gcq_far` set the near test of GCQ panels (see `tensor_isfar`).
 """
 function lhs_dielectric_box3d_gcq_fmm3d(interface::DielectricInterface{TensorPanel{Float64}, Float64},

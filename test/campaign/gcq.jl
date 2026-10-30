@@ -1,5 +1,7 @@
 using DielectricBIE, Test, LinearAlgebra, Serialization
 import DielectricBIE as BI
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 include(joinpath(@__DIR__, "fixture_campaign.jl"))
 
 # the fixture's Gaussian-blob template on an n^3 grid spanning the same 3.0 cell (n = 6 in fixture_campaign.jl)
@@ -37,7 +39,7 @@ end
 
     # two cooperating parts, part 2 in a separate process (started first: its start-up overlaps part 1's)
     sync = mktempdir()
-    code = "using DielectricBIE; gcq_four_index(load_campaign(\"$toml\"); far = :fmm3d, nlev = 1, n_quad = 4, " *
+    code = "using DielectricBIE, SCTL; gcq_four_index(load_campaign(\"$toml\"); far = :fmm3d, nlev = 1, n_quad = 4, " *
            "rhs_tol = 1e-4, lhs_tol = 1e-8, gmres_rtol = 1e-8, volume_tol = 1e-8, quad_tol = 1e-6, edge_tol = 1e-6, " *
            "tau = 1e-8, fg_tol = 1e-9, verbose = false, part = 2, nparts = 2, sync = \"$sync\")"
     cmd = addenv(`$(Base.julia_cmd()) --project=$(Base.active_project()) --startup-file=no -e $code`,

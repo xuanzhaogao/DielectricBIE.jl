@@ -15,6 +15,9 @@
 # whole configuration, so rows are keyed by the target position and normal in
 # the source panel's normalized frame and computed once per distinct key; on
 # vertex-graded box meshes only a few percent of the near rows are distinct.
+#
+# The columns of Gauss-Legendre × Gauss-Legendre source panels in laplace3d_DT_tensor_corrections are SCTL's
+# (sctl_gl_corrections); the product integration serves the GCQ edge and corner panels.
 
 const TENSOR_NEAR_M = 12
 const TENSOR_NEAR_GL = gausslegendre(TENSOR_NEAR_M)
@@ -409,20 +412,28 @@ end
 
 Sparse correction C such that `laplace3d_DT_fmm3d(interface, tol) + C` is the
 near-corrected D^T operator in DielectricBIE's sign convention
-(entries laplace3d_grad(y_j, x_i, n_i) w_j). Pairs that `tensor_isfar` rejects at
-`quad_tol` (and `η_gcq`, `gcq_far`) get the product-integration row. With `sources` (panel indices) only the
-columns of those source panels are computed, the others are zero. Returns (C, stats).
+(entries laplace3d_grad(y_j, x_i, n_i) w_j). The columns of the GCQ source panels (edge and corner panels): pairs
+that `tensor_isfar` rejects at `quad_tol` (and `η_gcq`, `gcq_far`) get the product-integration row. The columns of
+the Gauss-Legendre × Gauss-Legendre source panels ([`is_gl_panel`](@ref)) are SCTL's,
+[`sctl_gl_corrections`](@ref)`(interface, panels; tol = quad_tol)`, so an interface with such panels needs
+`using SCTL`. With `sources` (panel indices) only the columns of those source panels are computed, the others are
+zero. Returns (C, stats), `stats = (pairs, unique)` the near pairs and distinct rows of the GCQ source panels.
 """
 function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPanel{T}, T};
                                          reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0,
                                          gcq_far::Symbol = :max, sources = nothing) where T
     panels = interface.panels
+    srcs = sources === nothing ? collect(eachindex(panels)) : collect(sources)
+    # GL×GL source panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
+    gl = unique(filter(k -> is_gl_panel(panels[k]), srcs))
+    Cgl = isempty(gl) ? nothing : sctl_gl_corrections(interface, gl; tol = quad_tol)
     counts = num_points.(panels)
     offs = cumsum([0; counts])
     rng = [offs[k]+1:offs[k+1] for k in eachindex(panels)]
     Yl = [tensor_local_points(p) for p in panels]
     near = [Tuple{Int, Int, NTuple{3, T}, NTuple{3, T}}[] for _ in panels]
-    is_src = sources === nothing ? trues(length(panels)) : (b = falses(length(panels)); b[collect(sources)] .= true; b)
+    # the GCQ source panels: product integration
+    is_src = falses(length(panels)); is_src[srcs] .= true; is_src[gl] .= false
     Threads.@threads :dynamic for it in eachindex(panels)
         pt = panels[it]
         for (i, xo) in zip(rng[it], Yl[it])
@@ -487,7 +498,8 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
         end
     end
     ambiguous[] > 0 && @warn "$(ambiguous[]) near pairs closer than 2^-48 × box size: FMM3D may or may not skip them"
-    return SparseMatrixCSC(N, N, colptr, rowval, nzval), (pairs = length(pairs), unique = length(reps))
+    C = SparseMatrixCSC(N, N, colptr, rowval, nzval)
+    return Cgl === nothing ? C : C + Cgl, (pairs = length(pairs), unique = length(reps))
 end
 
 """

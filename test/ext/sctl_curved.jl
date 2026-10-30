@@ -25,7 +25,7 @@ if HAVE_SCTL_CURVED
     sctl_curved_lens_cache = Dict{Symbol, Any}()
     sctl_curved_lens() = get!(sctl_curved_lens_cache, :coarse) do
         g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
-        m = curved_gcq_mesh(g; nlev = 0, n_quad = 6, tol = 1e-6)
+        m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
         (g, m, near_corrections(SCTLCurvedNearQuad(tol = 1e-12), m.interface))
     end
 
@@ -34,7 +34,11 @@ if HAVE_SCTL_CURVED
         # caps' top charts have their pole at the centre of a panel, where the tangents vanish (panel scales and closest
         # points must not be taken there), and panels span ~90° of the sphere: an order-16 proxy element resolves that
         # geometry only to ~1e-5, so x ± εn of the principal value fell on one side of it (Dᵀ1 off by 1/2) until
-        # proxies were split to resolve it
+        # proxies were split to resolve it. The GL×GL panels are now SCTL elements of their own order, their geometry
+        # SCTL's order-8 interpolant of the map, which on these ~90° panels bounds every row near them (the GCQ nodes
+        # next to a GL panel included): Dᵀ1 - 1/2 is 6.3e-2 here (2.2e-2 on the all-GL sphere of these panels), 9.8e-5
+        # at n_quad = 16, 4.8e-6 at 20, 7.0e-9 with m = 2 at 16; it stays far from the off-by-1/2 of a missed principal
+        # value
         g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
         m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 8, tol = 1e-6, grade = c -> abs(c.midpoint[3]) < 1e-12)
         itf = m.interface
@@ -43,17 +47,20 @@ if HAVE_SCTL_CURVED
         Cm = near_corrections(SCTLCurvedNearQuad(tol = 1e-10), itf)
         @test all(isfinite, nonzeros(Cm))
         Dt = dt_operator(itf, Cm)
-        # Dᵀ Y_l = Y_l / (2(2l + 1)) on the unit sphere (DielectricBIE's sign); Y_1, Y_2 limited by n_quad = 8 on
-        # these large panels (2e-6, 1.1e-5 measured; 3e-9, 1.2e-8 with m = 2 and nlev = 1 to 3)
+        # Dᵀ Y_l = Y_l / (2(2l + 1)) on the unit sphere (DielectricBIE's sign). Measured: 6.3e-2 (Dᵀ1, at the GCQ
+        # nodes too), 4.4e-2 (Y_1), 1.5e-2 (Y_2); with DielectricBIE's split proxies for the GL panels (before SCTL's
+        # GL routine) 2.5e-11, 2.0e-6, 1.1e-5
         e0 = Dt(ones(length(X))) .- 0.5
-        @test maximum(abs, e0) < 3e-10                                # 2.5e-11 measured
-        @test maximum(abs, e0[isedge]) < 3e-10                        # GCQ edge-panel nodes included
-        @test maximum(abs, Dt(z) .- z ./ 6) < 2e-5
+        @test maximum(abs, e0) < 0.1
+        @test maximum(abs, e0[isedge]) < 0.1                          # GCQ edge-panel nodes included
+        @test maximum(abs, Dt(z) .- z ./ 6) < 0.07
         y2 = (3 .* z .^ 2 .- 1) ./ 2
-        @test maximum(abs, Dt(y2) .- y2 ./ 10) < 1e-4
-        # the panel-level near criterion is needed: without it, near neighbours get the node rule (1e-2)
-        D0 = dt_operator(itf, SCTLCurvedNearQuad(tol = 1e-10, η = 0.0))
-        @test maximum(abs, D0(z) .- z ./ 6) > 1e-3
+        @test maximum(abs, Dt(y2) .- y2 ./ 10) < 0.03
+        # the GL×GL panels' columns are sctl_gl_corrections' (η, order and ε_rel concern the GCQ panels only)
+        gl = findall(is_gl_panel, itf.panels)
+        glc = falses(length(X)); foreach(r -> glc[r] .= true, panel_column_ranges(itf)[gl])
+        @test !isempty(gl) && !all(glc)
+        @test Cm[:, glc] == sctl_gl_corrections(itf, gl; tol = 1e-10)[:, glc]
     end
 
     @testset "SCTLCurvedNearQuad: Gauss identity on the lens (singular edge rules)" begin
@@ -66,10 +73,10 @@ if HAVE_SCTL_CURVED
         s = [hypot(hypot(x[1], x[2]) - 1, x[3]) for x in nodes_of(itf)]
         gauss(Dt, σ) = abs(dot(w, Dt(σ)) - dot(w, σ) / 2) / dot(abs.(w), abs.(σ))
         Dt = dt_operator(itf, Cm)
-        # limited by the GCQ rule's tol = 1e-6 and n_quad = 6 (9e-11 and 3e-9 at nlev = 3, n_quad = 8, tol = 1e-8;
-        # without the panel-level near criterion it is 0.2-0.4)
-        @test gauss(Dt, s .^ p1) < 3e-7                                 # 2.9e-8 measured
-        @test gauss(Dt, s .^ (p1 + 1)) < 2e-7                           # 1.3e-8
+        # limited by the GL panels' geometry at n_quad = 8 (SCTL's order-8 elements; with DielectricBIE's split proxies
+        # for them, before SCTL's GL routine: 3.0e-8 and 4.5e-8; without the panel-level near criterion it is 0.2-0.4)
+        @test gauss(Dt, s .^ p1) < 5e-6                                 # 2.7e-6 measured
+        @test gauss(Dt, s .^ (p1 + 1)) < 1e-5                           # 5.7e-6
     end
 
     # ∫ over the parameter triangle (c, p, q), Duffy-mapped so that a 1/r singularity at c cancels: f(z, s, dz) is the
@@ -92,7 +99,7 @@ if HAVE_SCTL_CURVED
         # very thin (u-widths down to 6e-15 against a v-length ~0.76) and put nodes within 6e-8 of it. Rows: the
         # nodes nearest the edge and the farthest, at both ends in v (the worst ones of a 5 × 3 grid)
         g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
-        m = curved_gcq_mesh(g; nlev = 3, n_quad = 6, tol = 1e-12)
+        m = curved_gcq_mesh(g; nlev = 3, n_quad = 8, tol = 1e-12)
         ps = m.interface.panels
         mid(p, u, v) = p.anchor .+ BI.curved_lpoint(p, u, v)
         kP = findfirst(k -> m.panel_patch[k] <= 5 && ps[k].kind == :edge, eachindex(ps))                 # upper cap
@@ -106,8 +113,8 @@ if HAVE_SCTL_CURVED
         C = Matrix(near_corrections(SCTLCurvedNearQuad(tol = 1e-12), itf))
         offs = cumsum([0; [BI.num_points(p) for p in itf.panels]])
         X, N = BI._interface_targets_normals(itf)
-        worst = zeros(2)                                                  # same surface, across the edge
-        for (s, S) in enumerate(itf.panels[[1, 3]])                       # sources: the GCQ panel P and the thin GL G
+        worst = zeros(2, 2)               # sources (the GCQ panel P, the GL panel G) × targets (same surface, across)
+        for (s, S) in enumerate(itf.panels[[1, 3]])
             js = offs[2s - 1] .+ (1:BI.num_points(S))
             A = C[:, js] .+ BI.dt_node_rule_block(itf, 2s - 1, X, N)
             for (t, T) in enumerate(itf.panels), a in unique([1, 2, length(T.ru.x)]), b in (1, length(T.rv.x))
@@ -122,14 +129,18 @@ if HAVE_SCTL_CURVED
                 end
                 ref = sign(dot(N[:, r], X[:, r])) * square_int(f, c)
                 k = t == 2 ? 2 : 1
-                worst[k] = max(worst[k], abs(sum(A[r, :]) - ref) / abs(ref))
+                worst[s, k] = max(worst[s, k], abs(sum(A[r, :]) - ref) / abs(ref))
             end
         end
-        @test worst[1] < 1e-9                                             # 8.9e-11 measured (5e-11 at nlev 6, n_quad 12)
+        @test worst[1, 1] < 1e-9                                          # 2.3e-12 measured
         # across the edge the target's offset from P is formed from two patch maps (two anchors, ~2e-16 each) that meet
         # at the equator only to rounding: for Q's nodes 6e-8 from it that limits the geometry, and so the row (and
         # the identity behind the reference; 1.5e-9 at nlev = 6, n_quad = 12, Q's nodes 1.6e-8 from it)
-        @test worst[2] < 1e-8                                             # 8.9e-11 measured
+        @test worst[1, 2] < 1e-8                                          # 7.5e-11 measured
+        # the GL panel G is an SCTL element of order 8, its geometry the order-8 interpolant of the map (before SCTL's
+        # GL routine, with DielectricBIE's split proxies, at most 9.2e-12 and 7.5e-11, as for P)
+        @test worst[2, 1] < 1e-5                                          # 4.6e-6 measured
+        @test worst[2, 2] < 5e-8                                          # 2.0e-8 measured
     end
 
     # induced potential u(x) = Σ w σ / (4π |x - y|), by direct summation (targets well away from the surface)
@@ -168,7 +179,9 @@ if HAVE_SCTL_CURVED
         σ = solve_point(curved_operator(m), m, (0.0, 0.0, 2.5))
         T = fib(1.8)
         uref = [sphere_series(4.0, 1.0, 1.0, 2.5, collect(t)) for t in T]
-        @test maximum(abs, u_ind(m.interface, σ, T) .- uref) / maximum(abs, uref) < 1e-6
+        # 4.5e-5 measured: the panels' geometry at n_quad = 8 (SCTL's order-8 elements; 4.5e-8 with DielectricBIE's
+        # split proxies before SCTL's GL routine)
+        @test maximum(abs, u_ind(m.interface, σ, T) .- uref) / maximum(abs, uref) < 1e-4
 
         x1 = (0.3, -0.2, 1.7); x2 = (-1.4, 0.5, -0.9)
         for name in ("lens", "split sphere")
@@ -177,15 +190,15 @@ if HAVE_SCTL_CURVED
                 A = dielectric_operator(m.interface; far = FMM3DFarField(1e-12), near = Cm)
             else
                 g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
-                m = curved_gcq_mesh(g; nlev = 0, n_quad = 6, tol = 1e-6)
+                m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
                 A = curved_operator(m)
             end
             w = BI.all_weights(m.interface)
             σ1 = solve_point(A, m, x1); σ2 = solve_point(A, m, x2)
-            # every body is neutral; neutrality and reciprocity are limited by n_quad = 6 (lens: 6.2e-7 and 3.3e-6,
-            # split sphere: 7.4e-6 and 8.2e-5; split sphere at n_quad = 8: 1.4e-7 and 1.4e-6, at n_quad = 12: 1e-10
-            # and 1e-9, the same at nlev 0 to 4; one panel per patch (m = 1) instead of 2: 2e-3 and 5e-2)
-            tn, tr = name == "lens" ? (1e-5, 5e-5) : (1e-4, 1e-3)
+            # every body is neutral; neutrality and reciprocity are limited by the GL panels' geometry at n_quad = 8
+            # (SCTL's order-8 elements; lens: 7.0e-6 and 4.6e-5, split sphere: 1.8e-5 and 1.4e-4; with DielectricBIE's
+            # split proxies before SCTL's GL routine: 9.7e-8 and 3.2e-6, 1.8e-7 and 1.5e-5)
+            tn, tr = name == "lens" ? (2e-5, 1e-4) : (1e-4, 1e-3)
             @test abs(sum(w .* σ1)) / sum(w .* abs.(σ1)) < tn
             # reciprocity of the induced potential: u(x2; charge at x1) = u(x1; charge at x2)
             a12 = u_ind(m.interface, σ1, [x2])[1]; a21 = u_ind(m.interface, σ2, [x1])[1]

@@ -2,6 +2,8 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, Random
 using Test
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 
 @testset "GCQ: target-driven refinement" begin
     boxes = [(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0), (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]

@@ -1,9 +1,10 @@
 # SCTL.jl backends of the dielectric operator (`using SCTL`):
 #   SCTLFarField            node-rule D^T by SCTL's ParticleFMM (PVFMM, OpenMP, no MPI), tree kept across applications;
 #   SCTLFarField + SCTLNearQuad   the whole D^T by SCTL's BoundaryIntegralOp on a QuadElemList (FlatPanel interfaces);
-#   SCTLNearCorrection, sctl_near_list   SCTL's near correction / classification as Julia data (any far field);
-#   SCTLProxyNearQuad       SCTL's quadrature for self-defined panels with polynomial densities (proxy elements), a
-#                           fallback quadrature (e.g. GCQ) for the others;
+#   sctl_gl_corrections     SCTL's near and Duffy self rows of GL×GL panels as a sparse correction (any far field): all
+#                           of SCTLNearCorrection, the GL panels of GCQNearQuad and of SCTLCurvedNearQuad;
+#   sctl_near_list          SCTL's classification as Julia data;
+#   SCTLCurvedNearQuad      the GCQ edge panels of curved interfaces (proxy elements and thin rows);
 #   SCTLPotential           the off-surface single-layer potential by SCTL's BoundaryIntegralOp.
 module DielectricBIESCTLExt
 
@@ -122,35 +123,15 @@ function _dt_parts(far::SCTLFarField, near::SCTLNearQuad, interface::DielectricI
     return SCTLDTOp(op, perm, Vector{Float64}(undef, n), Vector{Float64}(undef, n)), nothing
 end
 
-# ---- near-field pieces: SCTL's classification and quadrature, assembled in Julia ----
+# ---- SCTLNearCorrection: every panel (or the panels `sources`) by the GL routine below ----
 
-# The interface nodes in DielectricBIE order with SCTL's coordinates (equal to rounding; exactly equal, a target on
-# a node gets the node's self-interaction row), and the normals.
-function _sctl_targets(interface::DielectricInterface, groups)
-    X, Nrm = _interface_targets_normals(interface)
-    X = Matrix{Float64}(X)
-    for g in groups
-        X[:, g.perm] .= first(node_coord(g.elist))
-    end
-    return X, Matrix{Float64}(Nrm)
-end
+DielectricBIE.near_corrections(q::DielectricBIE.SCTLNearCorrection, interface::DielectricInterface) =
+    DielectricBIE.sctl_gl_corrections(interface, eachindex(interface.panels); tol = q.tol)
+DielectricBIE.near_corrections(q::DielectricBIE.SCTLNearCorrection, interface::DielectricInterface,
+                               sources::AbstractVector{<:Integer}) =
+    DielectricBIE.sctl_gl_corrections(interface, sources; tol = q.tol)
 
-function DielectricBIE.near_corrections(q::DielectricBIE.SCTLNearCorrection, interface::DielectricInterface)
-    groups = _sctl_groups(interface, "SCTLNearCorrection"; orders = _SCTL_ORDERS)
-    Xt, Nt = _sctl_targets(interface, groups)
-    n = size(Xt, 2)
-    I = Int[]; J = Int[]; V = Float64[]
-    for g in groups
-        # rows: all interface nodes; columns: the nodes of this order's panels. SCTL's Laplace3D_FxdU dotted with the
-        # target normal is -D^T.
-        C, _ = SCTL.near_correction(Laplace3D_FxdU(), g.elist; targets = Xt, normals = Nt, tol = q.tol)
-        i, j, v = findnz(C)
-        append!(I, i); append!(J, g.perm[j]); append!(V, .-v)
-    end
-    return sparse(I, J, V, n, n)
-end
-
-# ---- SCTL's quadrature for self-defined panels, through proxy elements ----
+# ---- SCTL elements of panels ----
 
 # A panel's parametrization over [0,1]^2 and the parameters of its nodes in u and in v; nodes are ordered with v
 # fastest (as QuadElemList's).
@@ -162,68 +143,8 @@ function _panel_param(P::FlatPanel)
 end
 _panel_param(P::DielectricBIE.TensorPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.tensor_lpoint(P, u, v)), P.ru.x, P.rv.x
 _panel_param(P::DielectricBIE.CurvedPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.curved_lpoint(P, u, v)), P.ru.x, P.rv.x
-_panel_param(P) = throw(ArgumentError("SCTLProxyNearQuad: no parametrization for panels of type $(typeof(P)); " *
+_panel_param(P) = throw(ArgumentError("SCTL elements: no parametrization for panels of type $(typeof(P)); " *
                                       "define DielectricBIESCTLExt._panel_param for it"))
-
-function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, interface::DielectricInterface)
-    ps = interface.panels
-    n = num_points(interface)
-    offs = cumsum([0; [num_points(P) for P in ps]])
-    poly = findall(q.polynomial, ps)
-    other = setdiff(eachindex(ps), poly)
-    I = Int[]; J = Int[]; V = Float64[]
-    if !isempty(poly)
-        params = [_panel_param(ps[k]) for k in poly]
-        nmax = maximum(max(length(xu), length(xv)) for (_, xu, xv) in params)
-        p = if q.order === nothing   # the smallest order at which the interpolation to the proxy is exact
-            i = findfirst(>=(nmax), _SCTL_ORDERS)
-            i === nothing && throw(ArgumentError("SCTLProxyNearQuad: panels with $nmax nodes per direction exceed SCTL's orders $(_SCTL_ORDERS)"))
-            _SCTL_ORDERS[i]
-        else
-            q.order in _SCTL_ORDERS || throw(ArgumentError("SCTLProxyNearQuad: order must be one of $(_SCTL_ORDERS)"))
-            q.order >= nmax || @warn "SCTLProxyNearQuad: proxy order $(q.order) below the panels' $nmax nodes per direction: the interpolation is not exact"
-            q.order
-        end
-        el = QuadElemList(p, length(poly)) do e, u, v
-            params[e][1](u, v)
-        end
-        xn = param_nodes(p)
-        X, Nrm = _interface_targets_normals(interface)
-        X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
-        ff = far_field_nodes(el; tol = q.tol)
-        nl = near_list(ff.X, ff.radius, p^2, X)
-        quad = ElemQuadrature(Laplace3D_FxdU())
-        acc = Vector{Matrix{Float64}}(undef, length(poly))
-        plain = Vector{Matrix{Float64}}(undef, length(poly))
-        Threads.@threads :dynamic for e in eachindex(poly)
-            k = poly[e]; P = ps[k]
-            _, xu, xv = params[e]
-            ts = collect(near_targets(nl, e))
-            B = DielectricBIE.dt_node_rule_block(interface, k, X[:, ts], Nrm[:, ts])
-            plain[e] = copy(B)
-            # D^T vanishes for targets in the panel's plane with the panel's normal (both rules give zero there)
-            pn = collect(P.normal); y1 = collect(P.points[1])
-            scale = maximum(norm(collect(c) .- y1) for c in P.corners)
-            rows = findall(t -> !(abs(dot(pn, X[:, t] .- y1)) <= 1e-12 * scale && abs(dot(pn, Nrm[:, t])) >= 1 - 1e-12), ts)
-            if !isempty(rows)
-                Interp = kron(lagrange_interp_matrix(xu, xn), lagrange_interp_matrix(xv, xn))   # panel nodes -> proxy nodes
-                M = near_matrix(quad, el, e, X[:, ts[rows]]; normals = Nrm[:, ts[rows]], tol = q.tol)  # SCTL sign: -D^T
-                B[rows, :] = -M * Interp
-            end
-            acc[e] = B
-        end
-        close(quad)
-        Cp = assemble_near_correction(nl, acc, [num_points(ps[k]) for k in poly]; subtract = plain)
-        cols = reduce(vcat, [collect(offs[k]+1:offs[k+1]) for k in poly])
-        i, j, v = findnz(Cp)
-        append!(I, i); append!(J, cols[j]); append!(V, v)
-    end
-    if !isempty(other)
-        i, j, v = findnz(DielectricBIE.near_corrections(q.fallback, interface, other))
-        append!(I, i); append!(J, j); append!(V, v)
-    end
-    return sparse(I, J, V, n, n)
-end
 
 # ---- the GL routine: SCTL's near and Duffy self rows for GL×GL panels ----
 #
@@ -500,10 +421,10 @@ end
 
 # ---- SCTL's near and on-surface quadrature for curved (GCQ) panels ----
 #
-# The u-segments of a curved panel (one for Gauss-Legendre, the fine segments of a GCQ rule) next to an edge are far
-# longer in v than wide in u: GCQ fine segments down to 2^-K of the panel, graded panels 2^-nlev of the patch, against
-# a v-length ~ the patch side. SCTL's near-singular rule is not made for such elements: on one row of a deep GCQ panel
-# it is off by 1e-8 at aspect ratio 30 and has the wrong sign at 1e6. So:
+# (SCTLCurvedNearQuad's GL×GL panels are the GL routine's above; this is the GCQ edge panels' quadrature.)
+# The u-segments of a GCQ panel (the fine segments of its rule) next to an edge are far longer in v than wide in u:
+# down to 2^-K of the panel against a v-length ~ the patch side. SCTL's near-singular rule is not made for such
+# elements: on one row of a deep GCQ panel it is off by 1e-8 at aspect ratio 30 and has the wrong sign at 1e6. So:
 #   - a segment of aspect ratio (v-length / width) up to _CURVED_ASPECT is one SCTL proxy element (split in u when it
 #     is wider than long), built once per panel and evaluated for all its near targets at once;
 #   - a thinner segment is integrated row by row: at least its own width h away from the target, by its fine Gauss
@@ -566,12 +487,11 @@ function _curved_window(v0, Δ)
     return b
 end
 
-# the scales of panel P (physical length per unit u and v: mean chords across it, so a singular point of the map,
-# e.g. a polar chart's pole, does not matter) and which of its u-segments are thin
+# the scales of panel P (physical length per unit u and v: its mean chords across u and v, the measure of
+# panel_aspect, so a singular point of the map, e.g. a polar chart's pole, does not matter) and which of its
+# u-segments are thin
 function _curved_split(P)
-    y(u, v) = collect(DielectricBIE.curved_lpoint(P, u, v))
-    su = sum(norm(y(1.0, v) .- y(0.0, v)) for v in (0.25, 0.5, 0.75)) / 3
-    sv = sum(norm(y(u, 1.0) .- y(u, 0.0)) for u in (0.25, 0.5, 0.75)) / 3
+    su, sv = DielectricBIE._mean_chords((u, v) -> DielectricBIE.curved_lpoint(P, u, v))
     return [(sb - sa) * su * _CURVED_ASPECT < sv for (sa, sb) in P.ru.segs], su, sv
 end
 
@@ -857,6 +777,17 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
         throw(ArgumentError("SCTLCurvedNearQuad: the interface must consist of CurvedPanels"))
     any(p -> DielectricBIE.is_gcq(p.rv), ps) && throw(ArgumentError("SCTLCurvedNearQuad: GCQ rules in v are not supported"))
     q.order === nothing || q.order in _SCTL_ORDERS || throw(ArgumentError("SCTLCurvedNearQuad: order must be one of $(_SCTL_ORDERS)"))
+    # the GL×GL panels: SCTL's elements of their own order; the GCQ (edge) panels: proxies and thin rows
+    gl = findall(is_gl_panel, ps); gcq = findall(!is_gl_panel, ps)
+    Cgl = isempty(gl) ? nothing : DielectricBIE.sctl_gl_corrections(interface, gl; tol = q.tol)
+    isempty(gcq) && return Cgl
+    C = _curved_gcq_corrections(q, interface, gcq)
+    return Cgl === nothing ? C : C + Cgl
+end
+
+# the columns of the GCQ panels `gcq` of SCTLCurvedNearQuad
+function _curved_gcq_corrections(q::DielectricBIE.SCTLCurvedNearQuad, interface::DielectricInterface, gcq)
+    ps = interface.panels
     n = num_points(interface)
     offs = cumsum([0; [num_points(P) for P in ps]])
     owner = zeros(Int, n); loc = zeros(Int, n)
@@ -869,7 +800,7 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
     quad = ElemQuadrature(Laplace3D_FxdU())
     lk = ReentrantLock()
     blocks = Vector{Tuple{Vector{Int}, Matrix{Float64}}}(undef, length(ps))
-    Threads.@threads :dynamic for k in eachindex(ps)
+    Threads.@threads :dynamic for k in gcq
         P = ps[k]; nv = length(P.rv.x)
         nmax = max(length(P.ru.z0), length(P.rv.z0), _CURVED_MIN_ORDER)
         p = q.order === nothing ? _SCTL_ORDERS[findfirst(>=(nmax), _SCTL_ORDERS)] : q.order
@@ -909,8 +840,11 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
     end
     close(quad)
     I = Int[]; J = Int[]; V = Float64[]
-    for (k, (ts, B)) in enumerate(blocks), j in axes(B, 2), (r, t) in enumerate(ts)
-        push!(I, t); push!(J, offs[k] + j); push!(V, B[r, j])
+    for k in gcq
+        ts, B = blocks[k]
+        for j in axes(B, 2), (r, t) in enumerate(ts)
+            push!(I, t); push!(J, offs[k] + j); push!(V, B[r, j])
+        end
     end
     return sparse(I, J, V, n, n)
 end
@@ -947,9 +881,9 @@ function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, inter
                                           targets::AbstractMatrix)
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
     ps = interface.panels
-    all(DielectricBIE.default_polynomial_panel, ps) ||
-        throw(ArgumentError("SCTLPotential needs panels with polynomial densities (FlatPanels, Gauss-Legendre " *
-                            "TensorPanels); GCQ edge panels are not"))
+    all(is_gl_panel, ps) ||
+        throw(ArgumentError("SCTLPotential needs Gauss-Legendre × Gauss-Legendre panels (is_gl_panel: FlatPanels, " *
+                            "GL TensorPanels and CurvedPanels); GCQ edge and corner panels are not"))
     # one SCTL element list per proxy order: the smallest order at least the panel's nodes per direction. The density
     # is interpolated from the panel's nodes to the proxy's (exact for its polynomial), so any n_quad works.
     offs = cumsum([0; [num_points(P) for P in ps]])
