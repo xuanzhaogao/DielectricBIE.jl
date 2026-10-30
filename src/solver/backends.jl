@@ -444,9 +444,11 @@ Each source panel is one SCTL element (`QuadElemList`) over its parameter square
 - otherwise (`FlatPanel`, `TensorPanel`) a proxy element of the next SCTL order, the density interpolated from the
   panel's nodes (exact: it is a polynomial of lower degree). A `CurvedPanel` must have an SCTL order.
 The element's geometry is SCTL's order-`p` interpolant of the map, which bounds the accuracy on curved panels (unit
-sphere, 40 panels: `Dᵀ1` off by 2e-4 at `n = 8`, 5e-9 at 16, 9e-12 at 20). A target is near a panel within SCTL's radius at `tol` for the panel's own node rule (`n` nodes per direction, also
-under a proxy). On a flat panel, `Dᵀ` vanishes for targets in its plane with its normal and `D` for all targets in
-its plane: those rows are zero.
+sphere, 40 panels: `Dᵀ1` off by 2e-4 at `n = 8`, 5e-9 at 16, 9e-12 at 20). A target is near a panel within the
+near radius at `tol` of the panel's own node rule, which the far field sums: SCTL's (`far_field_nodes`) when the
+element is the panel; for a proxy, SCTL's formula (the accuracy ellipse of the panel's `n`-point rule, at the proxy's
+nodes) evaluated in Julia. On a flat panel, `Dᵀ` vanishes for targets in its plane with its normal and `D` for all
+targets in its plane: those rows are zero.
 
 Throws an `ArgumentError` for a non-GL panel in `sources`, a GL panel above [`GL_MAX_ASPECT`](@ref)
 ([`check_gl_aspect`](@ref)), a `CurvedPanel` whose node counts differ in u and v or are not an SCTL order (or whose

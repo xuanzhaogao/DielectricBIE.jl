@@ -181,6 +181,44 @@ if HAVE_SCTL_GL
             maximum(abs, row .- gl_dt_ref_row(P, X[:, t], Nrm[:, t]))
         end
         @test maximum(err) < 1e-9                                    # 1.2e-14 measured (beyond the diameter 2.2e-17)
+
+        # the proxies' radius is SCTL's formula in Julia (far_field_nodes clamps tol to 2^-53, and the order-p radius at
+        # the n-point rule's ρ would need tol' far below it): the accuracy ellipse of the n-point rule at tol, its
+        # distance at the element's nodes times the tangent lengths. For an element of the rule's own order it is
+        # far_field_nodes' radius, the clamp included
+        ext = Base.get_extension(DielectricBIE, :DielectricBIESCTLExt)
+        for p in (4, 8, 12), tol in (1e-6, 1e-12, 1e-17)
+            el = QuadElemList(p, 1) do e, u, v
+                [0.4u + 0.1v, 0.3v, 0.05u]
+            end
+            @test ext._sctl_radius(param_nodes(p), p, p, norm([0.4, 0.0, 0.05]), norm([0.1, 0.3, 0.0]), tol) ≈
+                  far_field_nodes(el; tol).radius rtol = 1e-13
+            close(el)
+        end
+        # tol = 1e-12: the 5-point rule needs ρ = 18.3, which SCTL's order-8 radius reaches only at tol' = 2.6e-20 (it
+        # stops at 2^-53: radius 0.9-1.06 instead of 1.65-1.8 here). The targets between (12, at 1.06-1.16) are near
+        # panel 1, and the single layer and Dᵀ of smooth densities there match cubature (3e-15 measured; the node rule
+        # alone, as with the clamped radius: 8.6e-12 and 4.3e-10)
+        tol = 1e-12
+        band = filter(t -> 1.06 < dist(t) < 1.5, cand)
+        band = unique(band[round.(Int, range(1, length(band), 12))])
+        Y = reduce(hcat, collect.(P.points))
+        C1 = sctl_gl_corrections(b5, [1]; tol)
+        Cp = sctl_gl_potential_corrections(b5, [1], X[:, band]; tol)
+        @test all(t -> nnz(C1[t:t, 1:n]) > 0, band) && all(r -> nnz(Cp[r:r, 1:n]) > 0, eachindex(band))
+        w = P.weights
+        for σ in (ones(n), [1 + 2Y[1, j] - Y[2, j] + 0.5Y[3, j] for j in 1:n])
+            u = [sum(w[j] * σ[j] / (4π * norm(X[:, t] .- Y[:, j])) for j in 1:n) for t in band] .+ Cp[:, 1:n] * σ
+            uref = [gl_sl_ref(P, σ, X[:, t]; rtol = 1e-14) for t in band]
+            @test maximum(abs.(u .- uref) ./ abs.(uref)) < 1e-13
+            # Dᵀ: relative to the row's scale Σ |entry σ_j| (n_t·(x - y) can nearly cancel)
+            e = map(band) do t
+                ref = gl_dt_ref_row(P, X[:, t], Nrm[:, t]; rtol = 1e-14)
+                row = dt_node_rule_block(b5, 1, [t])[1, :] .+ Vector(C1[t, 1:n])
+                abs(dot(row .- ref, σ)) / dot(abs.(ref), abs.(σ))
+            end
+            @test maximum(e) < 1e-13
+        end
     end
 
     @testset "sctl_gl_potential_corrections: single layer" begin

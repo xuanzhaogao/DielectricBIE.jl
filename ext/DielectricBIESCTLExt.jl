@@ -247,6 +247,30 @@ function _gl_diam(P)
     return norm(hi .- lo)
 end
 
+# SCTL's near radius (QuadElemList::GetFarFieldNodes) of an element with nodes `xn` (in [0, 1]) in each direction
+# and constant tangent lengths Lu, Lv, for the accuracy ellipse of the nu- and nv-point Gauss-Legendre rules at tol:
+# node (i, j) gets max(d_u(xn[i]) Lu, d_v(xn[j]) Lv), d the parameter distance from the node to the ellipse of
+# ρ = (64 / (15 tol))^(1 / 2n) (foci 0 and 1), tol clamped to 2^-53 as SCTL does. For proxies of affine panels: SCTL's
+# own radius is that of the element's order, and asking far_field_nodes for the n-point rule's ρ through a smaller
+# tol stops at the clamp.
+function _sctl_radius(xn, nu::Integer, nv::Integer, Lu::Real, Lv::Real, tol::Real)
+    function dist(n)
+        t = max(tol, 2.0^-53)
+        ρ = (64 / (15 * t))^(1 / (2n))
+        a = (ρ - 1 / ρ) / 4; b = (ρ + 1 / ρ) / 4
+        return map(xn) do x
+            c = 4 * b * (x - 0.5)
+            abs(c) <= 1 ? a * sqrt(1 + (a^2 / b^2 - 1) * c^2) : b - abs(x - 0.5)
+        end
+    end
+    du = dist(nu); dv = dist(nv)
+    return [max(du[i] * Lu, dv[j] * Lv) for i in eachindex(xn) for j in eachindex(xn)]
+end
+
+# the tangent lengths |∂X/∂u|, |∂X/∂v| of an affine panel's map (_panel_param)
+_gl_tangents(P::FlatPanel) = (norm(collect(P.corners[2] .- P.corners[1])), norm(collect(P.corners[4] .- P.corners[1])))
+_gl_tangents(P::DielectricBIE.TensorPanel) = (P.Lu * norm(collect(P.eu)), P.Lv * norm(collect(P.ev)))
+
 # the SCTL elements of the panels `sources`, one QuadElemList per order (ascending): per element its panel `ids[e]`,
 # whether it is the panel (`direct`) or a proxy (`interp`: panel nodes -> element nodes), the sign `sgn` of SCTL's
 # normal (∂u × ∂v) against the panel's, and per node its coordinates (columns of X) and near radius
@@ -267,7 +291,7 @@ function _gl_elements(interface::DielectricInterface, sources, tol::Real, what::
             throw(ArgumentError("$what: panel $k is a CurvedPanel with $nu × $nv nodes; it needs the same number in " *
                                 "u and v, one of SCTL's orders $(_SCTL_ORDERS)"))
         p = direct ? nu : _SCTL_ORDERS[findfirst(>=(max(nu, nv)), _SCTL_ORDERS)]
-        (k = Int(k), f = f, xu = xu, xv = xv, p = p, n = min(nu, nv), direct = direct)
+        (k = Int(k), f = f, xu = xu, xv = xv, p = p, direct = direct)
     end
     groups = []
     for p in sort!(unique([i.p for i in info]))
@@ -277,16 +301,15 @@ function _gl_elements(interface::DielectricInterface, sources, tol::Real, what::
         end
         X, N = node_coord(el)
         rg(e) = (e - 1) * p^2 + 1:e * p^2
-        # SCTL's radius is where the order-p rule reaches its tol: ρ = (64 / (15 tol))^(1 / 2p). The panel's n-point
-        # rule (the far field) reaches tol at ρ = (64 / (15 tol))^(1 / 2n), which is SCTL's ρ at tol' below.
-        radius = zeros(size(X, 2))
-        for n in unique([i.n for i in mine])
-            r = far_field_nodes(el; tol = (64 / 15) * (15 * tol / 64)^(p / n)).radius
-            for (e, i) in enumerate(mine)
-                i.n == n && (radius[rg(e)] .= r[rg(e)])
-            end
-        end
+        # the near radius of the panel's own node rule (the far field): SCTL's for an element that is the panel; for a
+        # proxy (order p above the panel's nu, nv nodes) SCTL's formula with the nu- and nv-point rules' ellipses
         xn = param_nodes(p)
+        radius = zeros(size(X, 2))
+        rs = any(i -> i.direct, mine) ? far_field_nodes(el; tol).radius : nothing
+        for (e, i) in enumerate(mine)
+            radius[rg(e)] .= i.direct ? rs[rg(e)] :
+                             _sctl_radius(xn, length(i.xu), length(i.xv), _gl_tangents(ps[i.k])..., tol)
+        end
         sgn = zeros(length(mine))
         interp = Vector{Union{Nothing, Matrix{Float64}}}(nothing, length(mine))
         for (e, i) in enumerate(mine)
