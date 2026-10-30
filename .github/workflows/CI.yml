@@ -38,44 +38,35 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
-      - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v7
-        with:
-          files: lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-  sctl-backend:
-    # the SCTL.jl operator backends (DielectricBIESCTLExt); SCTL.jl is not registered, so it is cloned from GitHub
-    # and its C++ shim is compiled here
-    name: SCTL backend
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1'
-      - uses: julia-actions/cache@v3
-      - name: Install DielectricBIE and SCTL.jl
+      # The whole suite (test/runtests.jl) needs SCTL.jl: every Gauss-Legendre panel's near quadrature is SCTL's, and
+      # the SCTL operator backends (DielectricBIESCTLExt) are tested. SCTL.jl is not registered, so it cannot be a test
+      # dependency (Pkg.test cannot see it): the tests run from a shared environment holding the package, SCTL.jl
+      # (cloned from GitHub, its C++ shim compiled here) and every package the tests load directly.
+      - name: Install DielectricBIE, SCTL.jl and the test dependencies
         shell: julia --project=@sctl --color=yes {0}
         env:
+          # GitHub runners may lack AVX-512: build the shim for a portable x86-64 baseline instead of -march=native
           SCTL_JL_MARCH: -march=x86-64-v3
         run: |
           using Pkg
           Pkg.develop(PackageSpec(path = pwd()))
           # Pkg.add(url) fails on SCTL.jl's git submodules; a develop clone builds from the pinned sources
           Pkg.develop(url = "https://github.com/xuanzhaogao/SCTL.jl")
-          Pkg.add(["Test", "LinearAlgebra", "SparseArrays", "Random"])
+          # what test/ (and the extensions it loads) use or import directly, as the package's own test target does
+          Pkg.add(["Test", "Random", "LinearAlgebra", "SparseArrays", "Serialization", "Distributed", "SlurmClusterManager",
+                   "FastGaussQuadrature", "HCubature", "Krylov", "LegendrePolynomials", "SpecialFunctions", "StaticArrays"])
           Pkg.build("SCTL")
-      - name: Backend tests
-        run: julia --project=@sctl -t 2 --color=yes test/ext/sctl.jl
+      - name: Run the tests
+        # OpenMP codes (FMM3D, FMM2D, FINUFFT and SCTL) get as many threads as Julia: unset, each call starts one per core
+        run: julia --project=@sctl -t 2 --color=yes --code-coverage=user test/runtests.jl
         env:
           OMP_NUM_THREADS: 2
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
   docs:
     name: Documentation
     runs-on: ubuntu-latest
