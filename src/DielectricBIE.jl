@@ -25,6 +25,7 @@ export interface_approx
 export interface_uniform_samples
 export TensorPanel, TensorRule1D, gl_tensor_rule, gcq_tensor_rule
 export CurvedPanel, curved_lpoint
+export GL_MAX_ASPECT, is_gl_panel, panel_aspect, check_gl_aspect
 export EdgeGCQRule, edge_gcq_rule, universal_gcq_rule, edge_density_powers, junction_powers, edge_gcq_family_error
 
 export PointSource, VolumeSource
@@ -123,6 +124,7 @@ include("core/panels.jl")
 include("utils/edge_gcq.jl")       # needed by the tensor panels (EdgeGCQRule)
 include("core/tensor_panels.jl")
 include("core/curved_panels.jl")
+include("core/gl_panels.jl")       # GL×GL panels: predicate, aspect ratio, splitting to GL_MAX_ASPECT
 include("core/block_corrections.jl") # near corrections as per-panel dense blocks
 include("core/sources.jl")
 include("core/source_geometry.jl")

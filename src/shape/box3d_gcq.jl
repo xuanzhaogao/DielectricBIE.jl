@@ -16,6 +16,9 @@
 # panel next to the edge and a GL panel beyond it), in the direction that is
 # unresolved; a corner panel splits like one more vertex level.
 #
+# Last, Gauss-Legendre × Gauss-Legendre panels above the aspect ratio GL_MAX_ASPECT (e.g. on the long faces of
+# an elongated box) are cut along their longer side (`_split_gl_aspect`).
+#
 # Each edge may have its own rule (`edge_rule`), e.g. when several boxes meet along
 # an edge; a GCQ × GCQ corner panel then takes, in each direction, the rule of the
 # edge it is measured from. Plane ids are geometric (axis, coordinate), so faces of
@@ -36,7 +39,8 @@ the right-angle edge with `edge_gcq_rule(eps_in, eps_out; tol)`. A GCQ × GCQ
 corner panel uses `corner_rule` if given, else `rule`. `edge_rule(m, axis)`, if
 given, returns the `EdgeGCQRule` for the edge with midpoint `m` along coordinate
 `axis` (or `nothing` for the default); the box is centred at `center`. `rhs(p, n)`
-switches on the RHS-adaptive splitting to `rhs_atol`.
+switches on the RHS-adaptive splitting to `rhs_atol`. Gauss-Legendre × Gauss-Legendre panels are
+then cut along their longer side to aspect ratio ≤ `GL_MAX_ASPECT`.
 """
 function single_dielectric_box3d_gcq(Lx::T, Ly::T, Lz::T, eps_in::T, eps_out::T;
                                      nlev::Int = 2, n_quad = 8, corner::Symbol = :gcq,
@@ -93,6 +97,7 @@ function single_dielectric_box3d_gcq(Lx::T, Ly::T, Lz::T, eps_in::T, eps_out::T;
                     _gcq_rhs_refine(quad, rhs, T(rhs_atol), max_depth, gq, rc, glk(max(nlev, 1))))
         end
     end
+    panels = _split_gl_aspect(panels)        # after all refinement
     return DielectricInterface(panels, fill(eps_in, length(panels)), fill(eps_out, length(panels)))
 end
 

@@ -27,6 +27,7 @@ using Test
     include("core/source_geometry.jl")
     include("core/tensor_panels.jl")
     include("core/curved_panels.jl")
+    include("core/gl_panels.jl")
     include("shape/curved_geometry.jl")
     include("shape/volume_field.jl")
     include("shape/volume_field_window.jl")

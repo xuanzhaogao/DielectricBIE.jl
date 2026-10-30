@@ -8,6 +8,10 @@
 # a path integral of the map's derivative (16-point Gauss-Legendre), so a map written in plain absolute
 # coordinates still gives the offsets of nodes 1e-12 from the curve to full relative precision. Tangents come
 # from the map's derivatives by the chain rule.
+#
+# Gauss-Legendre × Gauss-Legendre panels (those touching no graded curve, and with `edge = :gl` also those touching
+# one) are cut along their longer physical direction until their aspect ratio is ≤ GL_MAX_ASPECT (`_gl_aspect_rects`);
+# a piece touching the curve is again re-parametrized with the curve at its u = 0. GCQ panels are never cut.
 
 const _OFFSET_GL = gausslegendre(16)
 
@@ -24,6 +28,10 @@ function _segment_offset(f, a, b)
     end
     return acc
 end
+
+# the side of the patch on a graded curve (gs[s]) that the parameter rectangle [U0, U1] × [V0, V1] touches, 0 if none
+_touched_side(gs, U0, U1, V0, V1) =
+    gs[1] && U0 == 0 ? 1 : gs[2] && U1 == 1 ? 2 : gs[3] && V0 == 0 ? 3 : gs[4] && V1 == 1 ? 4 : 0
 
 # breakpoints of [0, 1]: dyadic toward a graded end (the edge interval [0, 2^-nlev]), uniform without one. With
 # across = a > 1 a graded direction is first split into a equal panels and the end ones graded (nlev = 0: uniform)
@@ -65,7 +73,7 @@ Base.show(io::IO, m::CurvedMesh) =
 num_points(m::CurvedMesh) = num_points(m.interface)
 
 """
-    curved_gcq_mesh(geometry; nlev = 4, n_quad = 10, m = 2, across = 1, tol = 1e-10, qmax = nothing, gmax = 20.0,
+    curved_gcq_mesh(geometry; nlev = 4, n_quad = 16, m = 2, across = 1, tol = 1e-10, qmax = nothing, gmax = 20.0,
                     edge = :gcq, edge_rule = nothing, grade = c -> !c.smooth) -> CurvedMesh
 
 Mesh the patches of a `CurvedGeometry`. A curve `c` (a `CurveJunction`) is graded when `grade(c)`: the
@@ -74,12 +82,14 @@ across it (`edge_gcq_rule(powers; tol, qmax)`, powers up to `gmax` from the sect
 permittivities) and `n_quad`-point Gauss-Legendre along it; `edge = :gl` puts Gauss-Legendre there too (an
 h-graded reference). Directions without a graded side get `m` equal panels; across a graded curve the patch is
 first split into `across` equal panels, the `nlev` levels then grade the one at the curve (`nlev = 0`, `across = a`:
-uniform panels of width 1/a, the GCQ rule on the one at the curve, for h-refinement studies). `edge_rule` replaces the
+uniform panels of width 1/a, the GCQ rule on the one at the curve, for h-refinement studies). Gauss-Legendre ×
+Gauss-Legendre panels are then cut along their longer side (mean chords) until their aspect ratio is ≤ `GL_MAX_ASPECT`
+(GCQ panels are not); `n_quad = 16`, an SCTL order, by default. `edge_rule` replaces the
 junction's own rule on every graded curve: an `EdgeGCQRule`, or a function of the curve's `CurveJunction` returning one
 (needed for edges of varying angle, e.g. `universal_gcq_rule(pmin)` with pmin the smallest power along the edge). Vertices,
 where graded curves meet, are not supported yet: graded curves on two adjacent sides of a patch throw an `ArgumentError`.
 """
-function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::Int = 2, across::Int = 1, tol::Real = 1e-10,
+function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 16, m::Int = 2, across::Int = 1, tol::Real = 1e-10,
                          qmax::Union{Nothing, Real} = nothing, gmax::Real = 20.0, edge::Symbol = :gcq,
                          edge_rule = nothing, grade = c -> !c.smooth)
     edge in (:gcq, :gl) || throw(ArgumentError("edge must be :gcq or :gl"))
@@ -102,10 +112,19 @@ function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 10, m::
             throw(ArgumentError("patch $k has graded curves on adjacent sides (a vertex): not supported yet"))
         Ub = _graded_breaks(gs[1], gs[2], nlev, m, across); Vb = _graded_breaks(gs[3], gs[4], nlev, m, across)
         f = P.map
+        # the panels' parameter rectangles; the GL×GL ones (no graded side, or edge = :gl) cut to the aspect limit
+        rects = NTuple{4, Float64}[]
         for (U0, U1) in zip(Ub[1:end-1], Ub[2:end]), (V0, V1) in zip(Vb[1:end-1], Vb[2:end])
+            if edge == :gl || _touched_side(gs, U0, U1, V0, V1) == 0
+                _gl_aspect_rects(f, U0, U1, V0, V1; out = rects)
+            else
+                push!(rects, (U0, U1, V0, V1))
+            end
+        end
+        for (U0, U1, V0, V1) in rects
             dU = U1 - U0; dV = V1 - V0
             # the side on a graded curve this panel touches (if any) goes to the panel's u = 0
-            s = gs[1] && U0 == 0 ? 1 : gs[2] && U1 == 1 ? 2 : gs[3] && V0 == 0 ? 3 : gs[4] && V1 == 1 ? 4 : 0
+            s = _touched_side(gs, U0, U1, V0, V1)
             pa, A, along_v, sgn = s == 1 ? (((u, v) -> (U0 + u * dU, V0 + v * dV)), (0.0, V0), true, 1) :
                                   s == 2 ? (((u, v) -> (1 - u * dU, V0 + v * dV)), (1.0, V0), true, -1) :
                                   s == 3 ? (((u, v) -> (U0 + v * dU, u * dV)), (U0, 0.0), false, -1) :
