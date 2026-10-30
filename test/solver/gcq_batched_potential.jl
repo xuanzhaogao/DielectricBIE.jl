@@ -106,6 +106,23 @@ end
         @test abs(ug[2] - ug[1]) <= 1e-10 * abs(ug[1])
         @test abs(ug[1] - un[1]) <= 1e-10 * abs(un[1])
     end
+    # a GL panel much smaller than the box of nodes and targets (a far target makes it ~1000 here): FMM3D skips pairs
+    # closer than ~2^-51 × box, far above 1e-13 of the panel's size (2e-14), so the snap radius is at least 2^-48 × box
+    # (3.6e-12): a node moved by 1e-13 (FMM3D skips it) or by 1e-12 (~1e-15 × box) gives the value on the node
+    far = [1000.0, 0.1, 0.2]
+    k = gl[end ÷ 2]
+    y = collect(ps[k].points[6])
+    @test 1e-13 * diam(ps[k]) < 1e-13 < 2.0^-51 * 1000
+    for δ in (1e-13, 1e-12)
+        Tn = [y y .+ δ .* e far]
+        @test Tn[:, 2] != Tn[:, 1]
+        un = BI.potential_tensor(itf, σ, [Tuple(Tn[:, t]) for t in axes(Tn, 2)]; quad_tol = 1e-12)
+        ug = potential_operator(GCQPotential(quad_tol = 1e-12, far = FMM3DFarField(1e-13)), itf, Tn) * σ
+        @test all(isfinite, un) && all(isfinite, ug)
+        @test abs(un[2] - un[1]) <= 1e-10 * abs(un[1])
+        @test abs(ug[2] - ug[1]) <= 1e-10 * abs(ug[1])
+        @test abs(ug[1] - un[1]) <= 1e-10 * abs(un[1])
+    end
     # on a node of a proxied GL panel (n_quad 3: proxy elements of order 4) SCTL has no self row
     p3 = boxes[3].panels[findfirst(is_gl_panel, boxes[3].panels)]
     @test_throws ArgumentError BI.potential_tensor(boxes[3], randn(rng, BI.num_points(boxes[3])), [p3.points[1]])

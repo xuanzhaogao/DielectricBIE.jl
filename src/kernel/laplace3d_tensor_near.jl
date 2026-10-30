@@ -503,18 +503,25 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
     return Cgl === nothing ? C : C + Cgl, (pairs = length(pairs), unique = length(reps))
 end
 
-# The targets (3 × Nt) with every target within 1e-13 × (node diameter) of a node of a GL×GL panel `gl` moved onto that
-# node (its `points` entry: SCTL's node coordinates when the panel is its own SCTL element). The node rule of the
-# single layer is skipped at r = 0 by the direct sums and FMM3D (which skips r below ~2^-51 × box size) and by the
-# subtraction in sctl_gl_potential_corrections (r² = 0): a target a rounding error off a node would keep an
-# uncancelled ~1/r term in one of them. On the node all of them skip it, and SCTL's correction is the Duffy self row.
+# The targets (3 × Nt) with every target within max(1e-13 × (node diameter), 2^-48 × box) of a node of a GL×GL panel
+# `gl` moved onto that node (its `points` entry: SCTL's node coordinates when the panel is its own SCTL element); box is
+# the largest coordinate extent of all interface nodes and the targets. The node rule of the single layer is skipped at
+# r = 0 by the direct sums, below ~2^-51 × box by FMM3D, and at r² = 0 by the subtraction in
+# sctl_gl_potential_corrections: a target a rounding error off a node would keep an uncancelled ~1/r term in one of
+# them (2^-48 × box covers FMM3D's band on panels smaller than ~4e-3 × box). On the node all of them skip it, and
+# SCTL's correction is the Duffy self row.
 function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix)
     Xs = Matrix{Float64}(targets)
     (isempty(gl) || size(Xs, 2) == 0) && return Xs
+    lo = vec(minimum(Xs; dims = 2)); hi = vec(maximum(Xs; dims = 2))
+    for P in panels, y in P.points
+        lo .= min.(lo, y); hi .= max.(hi, y)
+    end
+    hbox = 2.0^-48 * maximum(hi .- lo)
     tree = KDTree(Matrix{Float64}(targets))
     for k in gl
         P = panels[k]
-        h = 1e-13 * _gl_diam(P)
+        h = max(1e-13 * _gl_diam(P), hbox)
         for y in P.points, t in inrange(tree, collect(y), h)
             Xs[:, t] .= y
         end
@@ -529,7 +536,8 @@ Single-layer potential u(x) = ∫ σ(y) / (4π|x - y|) dA(y) at `targets` (absol
 summed directly over all panels. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)): their node rule
 plus SCTL's correction, [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (near-singular
 rows, and SCTL's Duffy self row for a target on a node), so an interface with such panels needs `using SCTL`. A target
-within 1e-13 of a GL panel's size from one of its nodes is moved onto the node first. On a node of a GL panel whose
+within max(1e-13 × the GL panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes is moved onto the
+node first. On a node of a GL panel whose
 `n_quad` is not one of SCTL's orders (4, 8, 12, 16, 20) there is no self row: an `ArgumentError`. The GCQ edge and
 corner panels: their own rule where `tensor_isfar` accepts the pair, else the product-integration row of
 `tensor_near_row` (accurate for targets close to edges and corners, down to the floating-point resolution of the

@@ -615,8 +615,8 @@ corrections. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref))
 [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). The GCQ edge
 and corner panels: for every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration
 row of `tensor_near_row` minus the node rule; candidate pairs are found with a KD tree, `gcq_far` as for
-[`GCQNearQuad`](@ref). A target within 1e-13 of a GL panel's size from one of its nodes is moved onto the node first,
-so that the far field and SCTL's correction skip the same pair (a target on a node gets SCTL's Duffy self row; on a
+[`GCQNearQuad`](@ref). A target within max(1e-13 × a GL panel's size, 2^-48 × the extent of nodes and targets) of one
+of its nodes is moved onto the node first, so that the far field and SCTL's correction skip the same pair (a target on a node gets SCTL's Duffy self row; on a
 node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`). The same quadrature as
 [`potential_tensor`](@ref), which sums directly over all pairs.
 """
