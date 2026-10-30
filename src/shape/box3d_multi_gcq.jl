@@ -86,8 +86,9 @@ target-driven refinement after the RHS one: every panel that a target is near (`
 up to `target_depth` levels and down to sides of `target_min_size`. For many targets (e.g. millions of
 density points), `target_skin = δ` refines for the targets closest to the interface planes only (per cell of side
 δ across each plane, the nearest one on each side): a target left near is corrected exactly by `GCQPotential`. Every target is then far from every
-panel, so `GCQPotential` with the same three parameters needs no near corrections (the node rule, i.e. the
-FMM, is the potential).
+panel, so `GCQPotential` with the same three parameters needs no near corrections for the GCQ panels (their node
+rule, i.e. the FMM, is their potential); its Gauss-Legendre × Gauss-Legendre panels still get SCTL's corrections,
+whose near radius is not `tensor_isfar`'s, of the size of `target_tol`.
 
 Last, Gauss-Legendre × Gauss-Legendre panels are cut along their longer side to aspect ratio ≤ `GL_MAX_ASPECT`.
 """

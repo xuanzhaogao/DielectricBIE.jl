@@ -20,12 +20,16 @@ Base.find_package("SCTL") === nothing || @eval using SCTL
     p0, p1 = m0.interface.panels, m1.interface.panels
     @test length(p1) > length(p0)
     @test sum(BI.all_weights(m1.interface)) ≈ sum(BI.all_weights(m0.interface)) rtol = 1e-10
-    # every target is far from every panel, so GCQPotential is the plain FMM
+    # every target is far from every panel, so GCQPotential is the plain FMM plus SCTL's corrections of the GL×GL
+    # panels (SCTL's near radius is not tensor_isfar's), which are at the tolerance: 7e-9 here, 8e-10 of Σ|wσ|
     @test all(isfar(p, t) for p in p1, t in axes(X, 2))
     @test !all(isfar(p, t) for p in p0, t in axes(X, 2))
     ev = GCQPotential(quad_tol = 1e-8, gcq_far = :direction, far = FMM3DFarField(1e-13))
     σ = randn(rng, BI.num_points(m1.interface))
-    @test potential_operator(ev, m1.interface, X) * σ ≈ BI.laplace3d_pottrg_fmm3d(m1.interface, X, 1e-13) * σ rtol = 1e-12
+    F = BI.laplace3d_pottrg_fmm3d(m1.interface, X, 1e-13) * σ
+    Cσ = sctl_gl_potential_corrections(m1.interface, findall(is_gl_panel, p1), X; tol = 1e-8) * σ
+    @test potential_operator(ev, m1.interface, X) * σ ≈ F + Cσ rtol = 1e-12
+    @test maximum(abs, Cσ) < 1e-8 * sum(abs, BI.all_weights(m1.interface) .* σ)
     # a smallest side stops the refinement
     m2 = multi_dielectric_box3d_gcq(boxes, [4.0, 2.0], 1.0; kw..., targets = X, target_tol = 1e-8, target_min_size = 0.1)
     @test length(p0) < length(m2.interface.panels) < length(p1)

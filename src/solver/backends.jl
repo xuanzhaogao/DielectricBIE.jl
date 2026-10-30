@@ -572,35 +572,26 @@ Base.:*(op::DielectricOperator, x::AbstractVector) = mul!(Vector{Float64}(undef,
 
 How the single-layer potential `u(x) = ∫ G(x - y) σ(y) dS_y` of a solved density is evaluated at targets off (or
 near) the interface: [`potential_operator`](@ref)`(ev, interface, targets)` returns a `LinearMap` `P` (`Nt × N`),
-applied to one density at a time (`P * σ`). Available: [`HCubaturePotential`](@ref) (default) and
-[`SCTLPotential`](@ref) (needs `using SCTL`).
+applied to one density at a time (`P * σ`). Available: [`SCTLPotential`](@ref) (the default of
+`evaluate_batch_potential`, `four_index_matrix` and the campaign's eval phase) for Gauss-Legendre × Gauss-Legendre
+interfaces, and [`GCQPotential`](@ref) for `TensorPanel` (GCQ) interfaces. `SCTLPotential` needs `using SCTL`, and so
+does `GCQPotential` on an interface with GL×GL panels.
 """
 abstract type PotentialEvaluator end
 
 """
-    HCubaturePotential(tol; range_factor = 5.0)
-
-`laplace3d_pottrg_fmm3d_corrected_hcubature`: panels near targets are refined, FMM3D evaluates the node rule, and
-targets within `range_factor × (panel size) / n_quad` of a panel's centre get an adaptive cubature (HCubature)
-correction. Targets near the edges or corners of panels can fall outside that range and get no correction (errors
-up to 1e-3 at distances 1e-4 from the surface were measured); see [`SCTLPotential`](@ref).
-"""
-struct HCubaturePotential <: PotentialEvaluator
-    tol::Float64
-    range_factor::Float64
-end
-HCubaturePotential(tol::Real; range_factor::Real = 5.0) = HCubaturePotential(Float64(tol), Float64(range_factor))
-
-"""
     SCTLPotential(; tol = 1e-10)
 
-SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein radius at `tol`), its near-singular rule (each target's
-closest point on the panel, dyadic refinement toward it) and PVFMM for the far field, the octree kept for all
-densities. Accurate to about `tol` at any distance from the surface, except for rounding: the near correction
-cancels the node rule's term of the nearest node, which for a target at distance `d` from a node costs about
-`1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref):
-`FlatPanel`s of any `n_quad` ≤ 20, GL `TensorPanel`s and `CurvedPanel`s): each is a proxy SCTL element of order 4, 8,
-12, 16 or 20 with the panel's geometry, the density interpolated to its nodes (exact). Needs `using SCTL`.
+SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein
+radius at `tol`), its near-singular rule (each target's closest point on the panel, dyadic refinement toward it) and
+PVFMM for the far field, the octree kept for all densities. Accurate to about `tol` at any distance from the surface,
+except for rounding: the near correction cancels the node rule's term of the nearest node, which for a target at
+distance `d` from a node costs about `1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Gauss-Legendre ×
+Gauss-Legendre panels ([`is_gl_panel`](@ref): `FlatPanel`s of any `n_quad` ≤ 20, GL `TensorPanel`s and
+`CurvedPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or 20 with the panel's geometry, the density
+interpolated to its nodes (exact); an interface with GCQ edge or corner panels is an `ArgumentError` (use
+[`GCQPotential`](@ref)). The default evaluator of `evaluate_batch_potential`, `four_index_matrix` (both with
+`tol = lhs_tol`) and the campaign's eval phase. Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLPotential <: PotentialEvaluator
     tol::Float64 = 1e-10
@@ -612,9 +603,6 @@ end
 The off-surface single-layer potential operator, a `LinearMap` of size `size(targets, 2) × num_points(interface)`, for
 densities in the interface's node order: `P * σ` (for a block apply it per column; `P * Σ` is a lazy map).
 """
-potential_operator(ev::HCubaturePotential, interface::DielectricInterface, targets::AbstractMatrix) =
-    laplace3d_pottrg_fmm3d_corrected_hcubature(interface, Matrix{Float64}(targets), ev.tol, ev.tol, ev.range_factor)
-
 potential_operator(::SCTLPotential, interface, targets) =
     error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
@@ -622,10 +610,15 @@ potential_operator(::SCTLPotential, interface, targets) =
     GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, far = FMM3DFarField(1e-12))
 
 Off-surface single-layer potential for `TensorPanel` (GCQ) interfaces, accurate near edges and corners: the node
-rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus, for
-every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration row of
-`tensor_near_row` minus the node rule. The same quadrature as `potential_tensor`, which sums directly over all
-pairs; candidate pairs are found with a KD tree. `gcq_far` as for [`GCQNearQuad`](@ref).
+rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus near
+corrections. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)): SCTL's,
+[`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). The GCQ edge
+and corner panels: for every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration
+row of `tensor_near_row` minus the node rule; candidate pairs are found with a KD tree, `gcq_far` as for
+[`GCQNearQuad`](@ref). A target within 1e-13 of a GL panel's size from one of its nodes is moved onto the node first,
+so that the far field and SCTL's correction skip the same pair (a target on a node gets SCTL's Duffy self row; on a
+node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`). The same quadrature as
+[`potential_tensor`](@ref), which sums directly over all pairs.
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
@@ -643,16 +636,21 @@ _pottrg_far(far::SCTLFarField, interface, targets) =
 function potential_operator(ev::GCQPotential, interface::DielectricInterface{TensorPanel{T}, T},
                             targets::AbstractMatrix) where T
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
-    Xt = Matrix{Float64}(targets)
-    nt = size(Xt, 2)
     panels = interface.panels
+    gl = findall(is_gl_panel, panels)
+    Xt = _snap_to_gl_nodes(panels, gl, targets)
+    nt = size(Xt, 2)
     offs = cumsum([0; num_points.(panels)])
+    # the GL×GL panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
+    Cgl = isempty(gl) ? nothing : sctl_gl_potential_corrections(interface, gl, Xt; tol = ev.quad_tol)
+    # the GCQ panels: product integration
+    gcq = findall(!is_gl_panel, panels)
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
     tree = KDTree(Xt)
     rows = [Int[] for _ in panels]; cols = [Int[] for _ in panels]; vals = [T[] for _ in panels]
-    foreach(p -> (_tensor_near_tables(p.ru); _tensor_near_tables(p.rv)), panels)
+    foreach(k -> (_tensor_near_tables(panels[k].ru); _tensor_near_tables(panels[k].rv)), gcq)
     _blas_single() do
-    Threads.@threads :dynamic for k in eachindex(panels)
+    Threads.@threads :dynamic for k in gcq
         ps = panels[k]
         ws = _TensorRowWS([ps])
         L = max(ps.Lu, ps.Lv)
@@ -677,6 +675,7 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
     end
     end
     C = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
+    Cgl === nothing || (C += Cgl)
     F = _pottrg_far(ev.far, interface, Xt)
     return LinearMap{Float64}(σ -> F * σ .+ C * σ, nt, offs[end])
 end

@@ -68,7 +68,7 @@ far_pad_steps = 2.0
 ## Running serially
 
 ```julia
-using DielectricBIE
+using DielectricBIE, SCTL    # the eval phase's potential evaluator, SCTLPotential, needs SCTL
 
 c = load_campaign("campaign.toml")
 prepare(c)

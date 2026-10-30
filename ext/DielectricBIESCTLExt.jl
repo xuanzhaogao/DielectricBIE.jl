@@ -15,7 +15,7 @@ using SparseArrays
 
 import DielectricBIE: far_field_operator, apply_far!, _dt_parts
 using DielectricBIE: DielectricInterface, FlatPanel, SCTLFarField, SCTLNearQuad, num_points, all_weights,
-                     _interface_targets_normals, _close_nodes, _close_direct!
+                     _interface_targets_normals, _close_nodes, _close_direct!, _gl_diam
 
 # PVFMM's gradients (Laplace3D_FxdU) lose about 1.5 digits relative to the requested accuracy: ask for 2 more
 const _EXTRA_DIGITS = 2
@@ -158,15 +158,6 @@ _panel_param(P) = throw(ArgumentError("SCTL elements: no parametrization for pan
 # the unit normal of node j of a panel
 _gl_normal(P::Union{FlatPanel, DielectricBIE.TensorPanel}, j) = P.normal
 _gl_normal(P::DielectricBIE.CurvedPanel, j) = P.normals[j]
-
-# the diameter of a panel's nodes (the scale of the node checks)
-function _gl_diam(P)
-    lo = collect(P.points[1]); hi = copy(lo)
-    for y in P.points
-        lo .= min.(lo, y); hi .= max.(hi, y)
-    end
-    return norm(hi .- lo)
-end
 
 # SCTL's near radius (QuadElemList::GetFarFieldNodes) of an element with nodes `xn` (in [0, 1]) in each direction
 # and constant tangent lengths Lu, Lv, for the accuracy ellipse of the nu- and nv-point Gauss-Legendre rules at tol:

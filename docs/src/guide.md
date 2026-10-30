@@ -434,40 +434,40 @@ Potentials at points off the interface are needed for `evaluate_batch_potential`
 campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) through
 [`potential_operator`](@ref)`(ev, interface, targets)`:
 
-- **[`HCubaturePotential`](@ref)`(tol)`**, the default, is `laplace3d_pottrg_fmm3d_corrected_hcubature`:
-  1. panels near the targets are refined;
-  2. FMM3D evaluates the node rule for every density column;
-  3. targets within `5 × (panel size) / n_quad` of a panel's center get an HCubature correction.
-- **[`SCTLPotential`](@ref)`(tol = …)`** is SCTL's `BoundaryIntegralOp` for the single layer with the targets set:
+- **[`SCTLPotential`](@ref)`(tol = …)`**, the default (with `tol = lhs_tol`), is SCTL's `BoundaryIntegralOp` for the
+  single layer with the targets set:
   1. a near test per node (the Bernstein radius at `tol`);
   2. for each near target, the panel split at the target's closest point and refined dyadically toward it;
   3. PVFMM for the far field, with the octree built once for all densities.
 
-  It needs `FlatPanel`s with `n_quad` in 4, 8, 12, 16 or 20, and `using SCTL`.
+  It needs Gauss–Legendre × Gauss–Legendre panels ([`is_gl_panel`](@ref)) and `using SCTL`.
+- **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel`) interfaces: the node rule by a
+  far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref)) for the GL×GL panels and the product
+  integration of `tensor_near_row` for the edge and corner panels. [`potential_tensor`](@ref) is the same quadrature
+  summed directly, and also works on the surface (SCTL's Duffy self rows at the GL panels' nodes).
 
 ```julia
-Φ = evaluate_batch_potential(interface, Σ, sources, targets; lhs_tol = 1e-8, volume_tol = 1e-8,
-                             potential = SCTLPotential(tol = 1e-8))
-V = four_index_matrix(interface, sources, Σ; lhs_tol = 1e-8, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-8))
+Φ = evaluate_batch_potential(interface, Σ, sources, targets; lhs_tol = 1e-8, volume_tol = 1e-8)   # SCTLPotential(tol = 1e-8)
+V = four_index_matrix(interface, sources, Σ; lhs_tol = 1e-8, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
 ```
 
-In a campaign, `potential = "sctl"` in the `[backend]` table selects it for the eval phase.
+A campaign's eval phase uses `SCTLPotential(tol = lhs_tol)`; `potential = "hcubature"` in the `[backend]` table, the
+former default, is read as `"sctl"` with a warning.
 
-Here is a comparison on a box of 80,896 nodes (`n_quad = 8`, `l_ec = 0.05`), with 1.1 million targets: a cloud
-around the box, plus 100,000 points between 1e-4 and 1e-1 from the surface. The run used 32 threads at tolerance
-1e-8. Errors are against a tight adaptive cubature over every panel.
+`SCTLPotential` replaced an evaluator that corrected the FMM by adaptive cubature (HCubature) for targets within
+`5 × (panel size) / n_quad` of a panel's center. Here is a comparison on a box of 80,896 nodes (`n_quad = 8`,
+`l_ec = 0.05`), with 1.1 million targets: a cloud around the box, plus 100,000 points between 1e-4 and 1e-1 from the
+surface. The run used 32 threads at tolerance 1e-8. Errors are against a tight adaptive cubature over every panel.
 
 | evaluator | setup | per density | max error (cloud) | max error (closest 20 targets) |
 |:--|:--|:--|:--|:--|
-| `HCubaturePotential` | 10.1 s | 6.5 s | 7e-10 | 8e-4 |
+| HCubature-corrected FMM (removed) | 10.1 s | 6.5 s | 7e-10 | 8e-4 |
 | `SCTLPotential` | 1.0 s | 0.14 s | 8e-12 | 2e-12 |
 
-`HCubaturePotential`'s correction radius is measured from panel centers and doesn't depend on the tolerance.
-That causes two kinds of error:
-- **Targets close to the surface near panel edges or corners**, of their own panel or of its neighbours, get no
-  correction, hence the 8e-4 above.
-- **Interfaces with large panels relative to `n_quad`** can be wrong even far from the surface: 5e-4 at the grid
-  points of the coarse 24-panel box in the tests.
+The removed evaluator's correction radius was measured from panel centers and didn't depend on the tolerance:
+targets close to the surface near panel edges or corners got no correction (the 8e-4 above), and interfaces with
+large panels relative to `n_quad` could be wrong even far from the surface (5e-4 at the grid points of the coarse
+24-panel box in the tests).
 
 ## Visualization
 

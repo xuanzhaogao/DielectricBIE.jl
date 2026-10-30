@@ -298,16 +298,15 @@ function solve_dielectric_box3d_block(
 end
 
 """
-    four_index_matrix(interface, sources, Σ; lhs_tol, volume_tol, c_pad=5.0,
-        range_factor=5.0) -> K×K
+    four_index_matrix(interface, sources, Σ; lhs_tol, volume_tol, c_pad=5.0, potential=nothing) -> K×K
 
 Four-index contraction `V[a,b] = ∫ ρ_a (u_inc[ρ_b] + u[σ_b])` for `K` sources sharing one
 interface. `Σ` is the `N × K` density matrix from [`solve_dielectric_box3d_block`](@ref).
 The incident term `u_inc` is evaluated with a [`PrecomputedVolumeField`](@ref) of each
-screened source (tolerance `volume_tol`, padding `c_pad`); the induced term `u[σ]` with the
-near-corrected FMM target evaluation at tolerance `lhs_tol` (or `potential`, a
-[`PotentialEvaluator`](@ref), e.g. `SCTLPotential(tol = lhs_tol)`). Targets are the quadrature
-points of `sources[1]`, so all sources must share one grid.
+screened source (tolerance `volume_tol`, padding `c_pad`); the induced term `u[σ]` by
+`potential`, a [`PotentialEvaluator`](@ref), by default [`SCTLPotential`](@ref)`(tol = lhs_tol)`
+(needs `using SCTL`). `range_factor` (of the former HCubature evaluator) is accepted and
+ignored. Targets are the quadrature points of `sources[1]`, so all sources must share one grid.
 """
 function four_index_matrix(interface, sources::Vector{<:VolumeSource{Float64, 3}},
         Σ::AbstractMatrix; lhs_tol::Float64, volume_tol::Float64, c_pad::Float64 = 5.0,
@@ -315,7 +314,7 @@ function four_index_matrix(interface, sources::Vector{<:VolumeSource{Float64, 3}
     K = length(sources)
     K == 0 && return zeros(Float64, 0, 0)
     targets = sources[1].positions
-    pottrg = potential_operator(something(potential, HCubaturePotential(lhs_tol; range_factor)), interface, targets)
+    pottrg = potential_operator(something(potential, SCTLPotential(tol = lhs_tol)), interface, targets)
     u_inc = Vector{Vector{Float64}}(undef, K)
     for b in 1:K
         sb = screened_volume_source(interface, sources[b], SharpScreening())

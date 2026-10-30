@@ -116,3 +116,12 @@ function _gl_aspect_rects(f, U0, U1, V0, V1; out = NTuple{4, Float64}[], depth =
     end
     return out
 end
+
+# the diameter of a panel's nodes (the diagonal of their bounding box): the scale of the node-coincidence tests
+function _gl_diam(P)
+    lo = collect(P.points[1]); hi = copy(lo)
+    for y in P.points
+        lo .= min.(lo, y); hi .= max.(hi, y)
+    end
+    return norm(hi .- lo)
+end

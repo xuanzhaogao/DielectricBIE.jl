@@ -2,6 +2,8 @@
 using DielectricBIE
 using Test
 using LinearAlgebra
+# the default potential evaluator (SCTLPotential) needs SCTL.jl
+Base.find_package("SCTL") === nothing || @eval using SCTL
 
 @testset "lattice_batch" begin
     fixdir = joinpath(@__DIR__, "..", "fixtures")
@@ -107,7 +109,7 @@ using LinearAlgebra
         # comparing them here would be checking two discretizations against each
         # other rather than checking the code under test. Reference against the
         # same near_field_geometry the code under test uses instead.
-        pottrg = laplace3d_pottrg_fmm3d_corrected_hcubature(res_e.interface, targets, 1e-6, 1e-6, 5.0)
+        pottrg = potential_operator(SCTLPotential(tol = 1e-6), res_e.interface, targets)
         for a in 1:2
             sa = DielectricBIE.screened_volume_source(res_e.interface, res_e.sources[a],
                 DielectricBIE.SharpScreening())
@@ -164,17 +166,18 @@ using LinearAlgebra
         # `four_index_matrix` docstring, which points here). Since Task 5's
         # migration, both sides build the incident term the same way --
         # `PrecomputedVolumeField` on the same screened source at the same
-        # `c_pad` -- and both call `laplace3d_pottrg_fmm3d_corrected_hcubature`
+        # `c_pad` -- and both use the default `SCTLPotential(tol = lhs_tol)`
         # with identical arguments for the layer term. The incident and layer
         # code paths are therefore identical, and the measured difference
-        # between `V` and `V_ref` below is exactly 0.0 by construction, not an
+        # between `V` and `V_ref` below is zero by construction up to rounding
+        # (2e-21 relative with SCTLPotential), not an
         # agreement demonstrated by this test. What this test still genuinely
         # verifies is contraction index ordering and column mapping: `V` is
         # hand-rolled here as `dot(weights .* densities[:, a], Φ[:, bb])`
         # while `four_index_matrix` computes its own `V[a, b]` internally, so
         # a transposed or mis-mapped `V[a, b]` would still be caught here --
         # `V` is not symmetric, so such a bug would not cancel out. The 1e-6
-        # tolerance is kept as a harmless upper bound on the (exactly zero)
+        # tolerance is kept as a harmless upper bound on the (rounding-level)
         # difference.
         V_ref = four_index_matrix(res_e.interface, res_e.sources, res_e.sigma;
                                   lhs_tol = 1e-6, volume_tol = 1e-8)

@@ -36,6 +36,23 @@ end
     @test c.pair_overrides == [(1, 1), (1, 2)]
 end
 
+@testset "[backend] potential: SCTL by default, \"hcubature\" means SCTL" begin
+    fixdir = joinpath(@__DIR__, "..", "fixtures")
+    base = read(joinpath(fixdir, "system_small.toml"), String)
+    mktempdir() do dir
+        cfg(extra) = (f = joinpath(dir, "c.toml"); write(f, base * extra); load_campaign(f))
+        c0 = cfg("")
+        ev = @test_logs DielectricBIE.campaign_potential(c0)                  # no warning
+        @test ev isa SCTLPotential && ev.tol == c0.solve["lhs_tol"]
+        @test DielectricBIE.campaign_potential(cfg("\n[backend]\npotential = \"sctl\"\n")) isa SCTLPotential
+        ch = cfg("\n[backend]\npotential = \"hcubature\"\n")
+        evh = @test_logs (:warn, r"SCTL") DielectricBIE.campaign_potential(ch)
+        @test evh isa SCTLPotential && evh.tol == ch.solve["lhs_tol"]
+        @test DielectricBIE.campaign_uses_sctl(c0)
+        @test_throws ErrorException DielectricBIE.campaign_potential(cfg("\n[backend]\npotential = \"fmm\"\n"))
+    end
+end
+
 @testset "legacy far_pad_steps key is rejected, not silently reinterpreted" begin
     # far_pad_steps was an absolute length (position units); c_pad is a dimensionless
     # multiple of the lattice spacing. Silently falling back to the c_pad default

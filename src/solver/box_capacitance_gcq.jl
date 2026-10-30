@@ -105,6 +105,9 @@ Two estimates of C are returned:
   ~5e-15, and every run with `n_quad ≥ 12`, `nlev ≥ 8` agrees to ±1.5e-15.
 - `C_point`: Q / (4π U(x)) at the interior `targets` (first order in the error of σ; ~1e-13 here).
 
+Sσ at the nodes of the Gauss-Legendre panels is SCTL's Duffy self row ([`potential_tensor`](@ref)): `n_quad` must be
+one of SCTL's orders (4, 8, 12, 16, 20; otherwise an `ArgumentError`), and `using SCTL` is needed.
+
 Returns `(; C, C_point, Q, σ, interface, orbit, reps)`, with `Q = wᵀσ` the discrete total charge.
 """
 function box_capacitance_gcq(Lx::Real, Ly::Real, Lz::Real; nlev::Int = 8, n_quad::Int = 12, tol::Real = 1e-14,

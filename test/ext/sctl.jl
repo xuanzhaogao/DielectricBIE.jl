@@ -83,7 +83,7 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test BI.campaign_uses_sctl(cfg("\n[backend]\nfar = \"sctl\"\n"))
         @test_throws ErrorException BI.campaign_backend(cfg("\n[backend]\nnear = \"sctl\"\n"))
         @test_throws ErrorException BI.campaign_backend(cfg("\n[backend]\nfar = \"fmm2d\"\n"))
-        @test BI.campaign_potential(cfg("")) === nothing
+        @test BI.campaign_potential(cfg("")) isa SCTLPotential          # the default (also for "hcubature")
         @test BI.campaign_potential(cfg("\n[backend]\npotential = \"sctl\"\n")) isa SCTLPotential
         @test BI.campaign_uses_sctl(cfg("\n[backend]\npotential = \"sctl\"\n"))
         @test_throws ErrorException BI.campaign_potential(cfg("\n[backend]\npotential = \"fmm\"\n"))
@@ -182,9 +182,6 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         u6 = potential_operator(SCTLPotential(tol = 1e-10), six, T6) * σ6
         @test maximum(abs, u6 - [_ref_potential(six, σ6, T6[:, t]) for t in 1:3]) / maximum(abs, u6) < 1e-9
         @test_throws ArgumentError potential_operator(SCTLPotential(), gcq, zeros(3, 1))   # GCQ edge panels
-        # the HCubature evaluator is the previous function
-        Ph = potential_operator(HCubaturePotential(1e-10), small, Tp[:, end-1:end])
-        @test Ph * σp ≈ BI.laplace3d_pottrg_fmm3d_corrected_hcubature(small, Tp[:, end-1:end], 1e-10, 1e-10, 5.0) * σp
 
         # GCQPotential with SCTL's far field
         Tg = hcat(rand(rng, 3, 20) .* 2 .- 1, [0.501, 0.499, 0.4999])
@@ -206,21 +203,18 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
         @test size(Σ1) == size(Σ0) == (BI.num_points(bitf), 2)
         @test relerr(Σ1, Σ0) < 1e-8
         @test relerr(Σ2, Σ0) < 1e-6
-        # ... and the potential at the sources' grid points with either evaluator: the results differ by exactly the
-        # evaluators' difference, which is now rounding (before the HCubature path corrected every near pair it was off
-        # by ~5e-4 on this coarse 24-panel interface)
-        Ph_b = potential_operator(HCubaturePotential(1e-10), bitf, pos)
+        # ... and the potential at the sources' grid points: the default evaluator is SCTLPotential(tol = lhs_tol)
+        # (range_factor is accepted and ignored), and V contracts that potential
         Ps_b = potential_operator(SCTLPotential(tol = 1e-10), bitf, pos)
-        dU = reduce(hcat, [Ps_b * Σ0[:, a] - Ph_b * Σ0[:, a] for a in 1:2])
-        Φh = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8)
+        Φd = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8, range_factor = 3.0)
         Φs = BI.evaluate_batch_potential(bitf, Σ0, vss, pos; lhs_tol = 1e-10, volume_tol = 1e-8,
                                          potential = SCTLPotential(tol = 1e-10))
-        @test maximum(abs, (Φs - Φh) - dU) < 1e-12 * maximum(abs, Φs)
-        @test maximum(abs, Φs - Φh) < 1e-9 * maximum(abs, Φs)
-        Vh = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8)
+        @test maximum(abs, Φd - Φs) < 1e-13 * maximum(abs, Φs)
+        Vd = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8, range_factor = 3.0)
         Vs = BI.four_index_matrix(bitf, vss, Σ0; lhs_tol = 1e-10, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
         tw = [v.weights .* v.density for v in vss]
-        @test maximum(abs, (Vs - Vh) - [dot(tw[a], dU[:, b]) for a in 1:2, b in 1:2]) < 1e-12 * maximum(abs, Vs)
+        @test maximum(abs, Vd - Vs) < 1e-13 * maximum(abs, Vs)
+        @test maximum(abs, Vs - [dot(tw[a], Φs[:, b]) for a in 1:2, b in 1:2]) < 1e-12 * maximum(abs, Vs)
         sref = [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in 1:4:size(pos, 2)]
         @test maximum(abs, Ps_b * Σ0[:, 1] - [_ref_potential(bitf, Σ0[:, 1], pos[:, t]) for t in axes(pos, 2)]) /
               maximum(abs, sref) < 1e-12
