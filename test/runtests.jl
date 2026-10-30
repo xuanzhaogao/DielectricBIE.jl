@@ -53,6 +53,7 @@ using Test
     # single box with GCQ edge panels (tensor panels, FMM + near corrections)
     include("solver/dielectric_box3d_gcq.jl")
     include("solver/dielectric_boxes_gcq.jl")
+    include("solver/box_capacitance_gcq.jl")
     include("solver/gcq_batched_potential.jl")
     include("solver/gcq_target_refine.jl")
     include("kernel/laplace3d_tensor_near_row.jl")
@@ -77,6 +78,7 @@ using Test
     include("campaign/tasks.jl")
     include("campaign/gcq.jl")
     include("campaign/gcq_cut.jl")
+    include("campaign/gcq_nearfar.jl")
     if run_full
         include("campaign/pipeline.jl")
         include("campaign/distributed_ext.jl")

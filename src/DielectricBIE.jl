@@ -67,8 +67,10 @@ export Rhs_dielectric_box3d, Rhs_dielectric_box3d_fmm3d, Rhs_dielectric_box3d_hy
 
 # linear algebra
 export solve_lu, solve_gmres
-export lhs_dielectric_box3d_gcq_fmm3d, lhs_dielectric_box3d_gcq_dense, solve_dielectric_box3d_gcq
+export lhs_dielectric_box3d_gcq_fmm3d, lhs_dielectric_box3d_gcq_dense, solve_dielectric_box3d_gcq,
+       solve_dielectric_box3d_gcq_block
 export join_bodies, source_permittivity, box_charge_constraints, solve_dielectric_boxes_gcq
+export box_node_orbits, symmetric_dense_operator, box_capacitance_gcq
 
 export density_centroid
 
@@ -104,6 +106,7 @@ export CenterInfo, BatchSpec, enumerate_centers, enumerate_pairs, build_batches
 export write_centers, read_centers, write_manifest, read_manifest
 export prepare, solve_batch, consolidate, eval_batch, assemble_v, pending_batches
 export gcq_four_index, run_gcq_campaign, gcq_pair_shapes
+export GCQNearFarV, nearfar_bytes
 export four_index_integrals
 export run_phase
 export write_v_table
@@ -163,6 +166,7 @@ include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
 include("solver/dielectric_box3d_gcq.jl")
 include("solver/dielectric_boxes_gcq.jl")
+include("solver/box_capacitance_gcq.jl")
 include("solver/multi_rhs.jl")
 include("solver/lattice_batch.jl")
 include("solver/batch_io.jl")
@@ -176,6 +180,7 @@ include("campaign/v_output.jl")
 include("campaign/gcq.jl")       # GCQ campaign mode: the whole V on one GCQ interface
 include("campaign/gcq_cut.jl")   # GCQ campaign mode: pair densities cut by faces
 include("campaign/gcq_surface.jl")  # GCQ campaign mode: the surface corrections of the RHS of cut densities
+include("campaign/gcq_nearfar.jl")  # GCQ campaign mode: V as near entries, moment far field and layer factors
 
 # # visualization
 include("visualization/viz_2d.jl")
