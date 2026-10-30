@@ -1,7 +1,7 @@
 using DielectricBIE, Test, LinearAlgebra, Serialization
 import DielectricBIE as BI
 # the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 include(joinpath(@__DIR__, "fixture_campaign.jl"))
 
 # the fixture's Gaussian-blob template on an n^3 grid spanning the same 3.0 cell (n = 6 in fixture_campaign.jl)

@@ -5,7 +5,8 @@ using SparseArrays, StaticArrays
 using QuadGK: quadgk_segbuf_count
 using Serialization
 using FastGaussQuadrature, LegendrePolynomials, SpecialFunctions
-using Krylov, LinearMaps, HCubature
+using Krylov, LinearMaps
+import HCubature    # hquadrature: the thin rows of curved GCQ panels (SCTL extension)
 using NearestNeighbors
 using ForwardDiff
 using TOML
@@ -43,11 +44,6 @@ export laplace2d_S_fmm2d, laplace2d_DT_fmm2d, laplace2d_D_fmm2d, laplace2d_pottr
 export laplace3d_pot, laplace3d_grad
 export laplace3d_S, laplace3d_D, laplace3d_DT, laplace3d_pottrg
 export laplace3d_S_fmm3d, laplace3d_DT_fmm3d, laplace3d_D_fmm3d, laplace3d_pottrg_fmm3d
-export laplace3d_DT_fmm3d_corrected
-export laplace3d_DT_fmm3d_corrected_hcubature
-export laplace3d_D_fmm3d_corrected
-export laplace3d_pottrg_fmm3d_corrected_hcubature
-export laplace3d_pottrg_near
 export laplace3d_DT_tensor_corrections, tensor_near_row, potential_tensor
 
 # shapes
@@ -61,9 +57,9 @@ export SurfacePatch, CurvedGeometry, CurveJunction, junction_angles, patch_frame
 # solvers
 export lhs_dielectric_box2d, lhs_dielectric_box2d_fmm2d, rhs_dielectric_box2d
 export Lhs_dielectric_box2d, Lhs_dielectric_box2d_fmm2d, Rhs_dielectric_box2d
-export lhs_dielectric_box3d, lhs_dielectric_box3d_fmm3d, lhs_dielectric_box3d_fmm3d_corrected
+export lhs_dielectric_box3d, lhs_dielectric_box3d_fmm3d
 export rhs_dielectric_box3d, rhs_dielectric_box3d_fmm3d, rhs_dielectric_box3d_hybrid
-export Lhs_dielectric_box3d, Lhs_dielectric_box3d_fmm3d, Lhs_dielectric_box3d_fmm3d_corrected
+export Lhs_dielectric_box3d, Lhs_dielectric_box3d_fmm3d
 export Rhs_dielectric_box3d, Rhs_dielectric_box3d_fmm3d, Rhs_dielectric_box3d_hybrid
 
 # linear algebra
@@ -82,13 +78,18 @@ export solve_dielectric_box3d_block, dielectric_diagonal_scaling
 
 # operator backends (far field x near quadrature)
 export FarField, FMM3DFarField, SCTLFarField, far_field_operator, apply_far!, point_charge_field, layer_field
-export NearQuadrature, near_corrections, UpsampledNearQuad, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
+export NearQuadrature, near_corrections, GCQNearQuad, SCTLNearQuad, CorrectionMatrix, FunctionNearQuad
 export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block, sctl_gl_corrections, sctl_gl_potential_corrections
 export SCTLCurvedNearQuad
 export PotentialEvaluator, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
+
+# kept for old scripts: thin wrappers over the operators above (src/deprecated.jl)
+export lhs_dielectric_box3d_fmm3d_corrected, Lhs_dielectric_box3d_fmm3d_corrected
+export laplace3d_DT_fmm3d_corrected, laplace3d_DT_fmm3d_corrected_hcubature, laplace3d_D_fmm3d_corrected
+export laplace3d_pottrg_fmm3d_corrected_hcubature, laplace3d_pottrg_near
 
 # lattice batch
 export lattice_grid_steps, OrbitalInstance
@@ -132,10 +133,6 @@ include("core/source_geometry.jl")
 # kernel functions
 include("kernel/laplace2d.jl")
 include("kernel/laplace3d.jl")
-include("kernel/laplace3d_near_adaptive.jl")
-include("kernel/laplace3d_near.jl")
-include("kernel/laplace3d_near_upsampling.jl")
-include("kernel/laplace3d_near_hcubature.jl")
 include("kernel/laplace3d_tensor_near.jl")
 
 # # geometries
@@ -172,6 +169,7 @@ include("solver/box_capacitance_gcq.jl")
 include("solver/multi_rhs.jl")
 include("solver/lattice_batch.jl")
 include("solver/batch_io.jl")
+include("deprecated.jl")              # old entry points kept for scripts, as wrappers of the above
 
 # # campaign
 include("campaign/toml_input.jl")

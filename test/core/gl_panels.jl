@@ -23,6 +23,9 @@ box_area(L) = 2 * (L[1] * L[2] + L[2] * L[3] + L[3] * L[1])
     m = curved_gcq_mesh(l; nlev = 2, n_quad = 8)
     @test all(is_gl_panel(p) == (p.kind == :gl) for p in m.interface.panels)
     @test all(is_gl_panel, curved_gcq_mesh(l; nlev = 2, n_quad = 8, edge = :gl).interface.panels)
+    # an unknown panel type is refused, not taken for a GCQ panel
+    @test_throws ArgumentError is_gl_panel((corners = (), points = []))
+    @test_throws ArgumentError check_gl_aspect((corners = (), points = []), 1)
 end
 
 @testset "aspect guard" begin

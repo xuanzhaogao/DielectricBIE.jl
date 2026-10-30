@@ -3,7 +3,7 @@ import DielectricBIE as BI
 using LinearAlgebra, SparseArrays, Random
 using Test
 # the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 
 @testset "dielectric box3d with GCQ edge panels" begin
     ε = 10.0

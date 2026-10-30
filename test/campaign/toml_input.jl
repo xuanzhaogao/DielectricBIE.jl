@@ -48,7 +48,6 @@ end
         ch = cfg("\n[backend]\npotential = \"hcubature\"\n")
         evh = @test_logs (:warn, r"SCTL") DielectricBIE.campaign_potential(ch)
         @test evh isa SCTLPotential && evh.tol == ch.solve["lhs_tol"]
-        @test DielectricBIE.campaign_uses_sctl(c0)
         @test_throws ErrorException DielectricBIE.campaign_potential(cfg("\n[backend]\npotential = \"fmm\"\n"))
     end
 end

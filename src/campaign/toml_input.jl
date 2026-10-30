@@ -100,17 +100,18 @@ end
     campaign_backend(c) -> (far, near)
 
 Operator backends of the solve phase, from the optional `[backend]` table of the campaign
-`.toml` (`nothing` = the default FMM3D far field / DielectricBIE near quadrature):
+`.toml` (`nothing` = the default of [`solve_dielectric_box3d_block`](@ref): FMM3D far field, SCTL's near
+correction `SCTLNearCorrection(tol = solve.lhs_tol)`):
 
 ```toml
 [backend]
 far = "sctl"        # "fmm3d" (default) or "sctl": SCTLFarField(tol = solve.lhs_tol)
-near = "upsampled"  # "upsampled" (default) or "sctl": SCTLNearQuad() (needs far = "sctl")
+near = "upsampled"  # "upsampled" (default, a former name kept) or "sctl": SCTLNearQuad() (needs far = "sctl")
 potential = "sctl"  # eval phase: "sctl" (default): SCTLPotential(tol = solve.lhs_tol)
 ```
 
-The eval phase always uses `SCTLPotential` (see [`campaign_potential`](@ref)), so a campaign needs SCTL.jl in the
-environment; `run_phase` loads it on every process.
+Both phases use SCTL's quadrature (the near corrections of the solve, `SCTLPotential` in eval; see
+[`campaign_potential`](@ref)), so a campaign needs SCTL.jl in the environment; `run_phase` loads it on every process.
 """
 function campaign_backend(c::CampaignInput)
     b = isfile(c.toml_path) ? get(TOML.parsefile(c.toml_path), "backend", Dict()) : Dict()
@@ -142,10 +143,6 @@ function campaign_potential(c::CampaignInput)
     s in ("sctl", "hcubature") && return SCTLPotential(c.solve["lhs_tol"])
     error("$(c.toml_path): [backend] potential must be \"sctl\" (or \"hcubature\", read as \"sctl\"), got \"$s\"")
 end
-
-"Whether the campaign uses SCTL.jl (see [`campaign_backend`](@ref)): always, the eval phase's `SCTLPotential` does."
-campaign_uses_sctl(c::CampaignInput) =
-    any(x -> x isa Union{SCTLFarField, SCTLNearQuad}, campaign_backend(c)) || campaign_potential(c) isa SCTLPotential
 
 manifest_path(c::CampaignInput)  = joinpath(c.root, "manifest.tsv")
 centers_path(c::CampaignInput)   = joinpath(c.root, "centers.tsv")

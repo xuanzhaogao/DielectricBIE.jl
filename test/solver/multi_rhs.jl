@@ -1,4 +1,5 @@
 using DielectricBIE
+using SCTL       # the near corrections of the operator (sctl_gl_corrections)
 using Test
 using Krylov
 
@@ -11,7 +12,7 @@ using Krylov
 
     # coarse agreement-test parameters
     NQ, RTOL_REFINE, LEC = 4, 1e-2, 2.0      # n_quad, rhs_atol, l_ec
-    FT, UT, MO = 1e-6, 1e-6, 8               # fmm_tol, up_tol, max_order
+    FT, UT, MO = 1e-6, 1e-6, 8               # fmm_tol, up_tol (SCTL's), max_order (ignored)
     GTOL = 1e-6                              # gmres rtol (block vs looped agree to roundoff)
 
     # ---- fast tests that need no interface ----
@@ -47,7 +48,7 @@ using Krylov
     end
 
     @testset "batched matvec == columnwise (Unit 5)" begin
-        ref = lhs_dielectric_box3d_fmm3d_corrected(interface, FT, UT, MO)
+        ref = dielectric_operator(interface; far = FMM3DFarField(FT), near = SCTLNearCorrection(tol = UT))
         x = collect(range(0.1, 1.0; length = Np))
         ref_x = ref * x                      # reused for column 1 below (X[:, 1] == x)
         @test maximum(abs.(op * x .- ref_x)) < 1e-9

@@ -3,7 +3,7 @@ import DielectricBIE as DB
 using LinearAlgebra
 using Test
 # the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 
 cube(c; L = 1.0) = (center = c, Lx = L, Ly = L, Lz = L)
 # nodes, weights, normals and (eps_in, eps_out) of every quadrature node

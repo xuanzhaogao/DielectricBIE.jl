@@ -3,6 +3,7 @@ import DielectricBIE as BI
 using LinearAlgebra, Krylov
 using Random
 using SpecialFunctions: erf
+using SCTL       # the near corrections of the corrected operator (SCTLNearCorrection)
 using Test
 
 @testset "dielectric_box3d" begin
@@ -32,35 +33,13 @@ using Test
     @test isapprox(total_flux_gmres + 1.0 / eps_box, 1.0, atol = 1e-1)
 end
 
-@testset "laplace3d_pottrg_near near/far" begin
-    eps_box = 4.0
-    interface = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 2, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
-    sol = randn(BI.num_points(interface))
-
-    # far away target
-    target = (100.0, 100.0, 100.0)
-    pot_direct = (BI.laplace3d_pottrg(interface, reshape(collect(target), 3, 1)) * sol)[1]
-    pot_hc_1 = BI.laplace3d_pottrg_near(interface, target, sol, 1e-8; range_factor = 0.0)
-    pot_hc_2 = BI.laplace3d_pottrg_near(interface, target, sol, 1e-8; range_factor = Inf)
-    @test isapprox(pot_hc_1, pot_direct, rtol = 1e-8)
-    @test isapprox(pot_hc_2, pot_direct, rtol = 1e-8)
-
-    # near target
-    target = (0.6, 0.1, 0.2)
-    pot_direct = (BI.laplace3d_pottrg(interface, reshape(collect(target), 3, 1)) * sol)[1]
-    pot_hc_1 = BI.laplace3d_pottrg_near(interface, target, sol, 1e-6; range_factor = 5.0)
-    pot_hc_2 = BI.laplace3d_pottrg_near(interface, target, sol, 1e-6; range_factor = Inf)
-    # @test isapprox(pot_hc_1, pot_direct, rtol = 0.15)
-    @test isapprox(pot_hc_1, pot_hc_2, atol = 1e-4)
-end
-
 @testset "dielectric_box3d corrected" begin
     eps_box = 4.0
     interface = BI.single_dielectric_box3d(1.2, 0.8, 0.6, 4, 0.2, eps_box, 1.0, Float64; alpha = sqrt(2))
 
-    # Default-kwarg corrected operator. (The uncorrected FMM operator's GMRES solve and
+    # FMM3D plus SCTL's near correction. (The uncorrected FMM operator's GMRES solve and
     # flux are already checked, more tightly, in the "dielectric_box3d" testset above.)
-    lhs_corrected = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12)
+    lhs_corrected = dielectric_operator(interface; far = FMM3DFarField(1e-6), near = SCTLNearCorrection(tol = 1e-6))
     rhs = BI.rhs_dielectric_box3d(interface, BI.PointSource((0.1, 0.1, 0.1), 1.0), eps_box)
     ws = BI.all_weights(interface)
 
@@ -243,63 +222,4 @@ end
     @test !occursin("using FBCPoisson", entrypoint)
     @test occursin("ltkm3dc", shape_sources)
     @test !occursin("lfbc3d", shape_sources)
-end
-
-@testset "dielectric_box3d correct_edges improves edge-near pointwise potential" begin
-    eps_box = 4.0
-    # Small box; the target sits 0.1 from each of the three faces meeting at the
-    # +x/+y/+z corner (same target/face geometry as the original 3x3x1 setup).
-    Lx, Ly, Lz = 1.2, 1.2, 0.8
-    source = BI.PointSource((0.1, 0.1, 0.1), 1.0)
-    near_corner = (0.50, 0.50, 0.30)
-
-    # Direct Coulomb potential of the point source (free space inside the box).
-    function source_pot(target, src::BI.PointSource)
-        r = sqrt((target[1]-src.point[1])^2 + (target[2]-src.point[2])^2 + (target[3]-src.point[3])^2)
-        return src.charge / (4π * r)
-    end
-
-    function pot_at(interface, σ, target)
-        induced = BI.laplace3d_pottrg_near(interface, target, σ, 1e-8; range_factor = 5.0)
-        return source_pot(target, source) / eps_box + induced
-    end
-
-    function solve_at(l_ec, correct_edges_flag; checks = true)
-        interface = BI.single_dielectric_box3d(Lx, Ly, Lz, 4, l_ec, eps_box, 1.0, Float64; alpha = sqrt(2))
-        lhs = BI.lhs_dielectric_box3d_fmm3d_corrected(interface, 1e-6, 1e-6, 12;
-                                                     correct_edges = correct_edges_flag,
-                                                     adaptive_atol = 1e-8)
-        rhs = BI.rhs_dielectric_box3d(interface, source, eps_box)
-        σ = BI.solve_gmres(lhs, rhs, 1e-7, 1e-7)
-        res = checks ? norm(lhs * σ - rhs) : NaN
-        flux_err = abs(dot(BI.all_weights(interface), σ) + 1.0 / eps_box - 1.0)
-        return pot_at(interface, σ, near_corner), res, flux_err
-    end
-
-    # Reference at finer resolution with correction enabled.
-    pot_ref, _, _ = solve_at(0.10, true; checks = false)
-
-    # Coarse-mesh comparison.
-    pot_off, res_off, flux_err_off = solve_at(0.20, false)
-    pot_on,  res_on,  flux_err_on  = solve_at(0.20, true)
-
-    # (Merged from the former "corrected edges flag" testset, which solved the same
-    # correct_edges = false/true operators on its own mesh.) Both modes converge
-    # GMRES and give a physically reasonable total flux (loose check).
-    @info "dielectric box flux error: off=$(flux_err_off) on=$(flux_err_on)"
-    @test res_off < 1e-5
-    @test res_on  < 1e-5
-    @test flux_err_off < 1e-1
-    @test flux_err_on  < 1e-1
-
-    err_off = abs(pot_off - pot_ref)
-    err_on  = abs(pot_on  - pot_ref)
-    @info "near-corner pointwise error" err_off err_on
-
-    # The corrected version must be meaningfully better near the corner.
-    # Measured (n_quad = 4, l_ec 0.20 vs reference 0.10): err_off ≈ 6.5e-3,
-    # err_on ≈ 5.1e-4 (12.7x better). Require >= 4x, and an absolute bound that the
-    # uncorrected solution fails.
-    @test err_on < err_off / 4
-    @test err_on < 2e-3     # absolute bound
 end

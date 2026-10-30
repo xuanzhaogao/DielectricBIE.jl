@@ -1,4 +1,5 @@
 using DielectricBIE
+using SCTL       # the near corrections of the operator (sctl_gl_corrections)
 using Krylov
 using Test
 

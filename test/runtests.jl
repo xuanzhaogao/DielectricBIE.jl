@@ -3,6 +3,7 @@
 haskey(ENV, "OMP_NUM_THREADS") || (ENV["OMP_NUM_THREADS"] = string(Threads.nthreads()))
 
 using DielectricBIE
+using SCTL       # the near and self corrections of Gauss-Legendre panels, SCTLPotential: SCTL's (DielectricBIESCTLExt)
 using LinearAlgebra
 using Test
 
@@ -35,16 +36,9 @@ using Test
     # kernel functions
     include("kernel/laplace2d.jl")
     include("kernel/laplace3d.jl")
-    include("kernel/laplace3d_near_smoke.jl")
-    include("kernel/laplace3d_pottrg_near_targets.jl")
 
     # shape functions
     if run_full
-        include("kernel/laplace3d_near.jl")
-        include("kernel/laplace3d_near_adaptive.jl")
-        include("kernel/laplace3d_near_source_cache.jl")
-        include("kernel/laplace3d_near_corner_pairs.jl")
-        include("kernel/laplace3d_near_touching.jl")
         include("shape/box3d.jl")
     end
 
@@ -65,8 +59,9 @@ using Test
     include("solver/multi_rhs_vector.jl")
     include("solver/lattice_batch.jl")
     include("solver/batch_io.jl")
+    include("solver/deprecated_wrappers.jl")
 
-    # operator backends (far field x near quadrature); the SCTL ones when SCTL.jl is installed
+    # operator backends (far field x near quadrature)
     include("ext/sctl.jl")
     include("ext/sctl_curved.jl")
     include("ext/sctl_far_close.jl")

@@ -192,8 +192,7 @@ function solve_batch_core(c::CampaignInput, spec::BatchSpec,
         far = far, near = near,
         n_quad = Int(c.solve["n_quad"]), rhs_atol = c.solve["rhs_tol"],
         l_ec = campaign_l_ec(c), fmm_tol = c.solve["lhs_tol"],
-        up_tol = c.solve["lhs_tol"], max_order = Int(c.solve["max_order"]),
-        gmres_rtol = c.solve["gmres_rtol"], max_depth = Int(c.solve["max_depth"]))
+        up_tol = c.solve["lhs_tol"], gmres_rtol = c.solve["gmres_rtol"], max_depth = Int(c.solve["max_depth"]))
     stats = Dict{String,Any}(
         "niter" => res.stats.niter, "dof" => size(res.sigma, 1),
         "n_support" => length(b.gidx), "K" => length(spec.pairs),
@@ -333,7 +332,7 @@ measured.
 
 Evaluating every row also makes the eval cost `n_pairs × n_targets`, hence independent of the
 batching, and it removes a second-order accuracy concern: with subsets, each batch refined its
-interface (`_refine_interface_for_targets`) against a DIFFERENT target set, so the quadrature a
+interface (the former `_refine_interface_for_targets`) against a DIFFERENT target set, so the quadrature a
 given entry received depended on which batch happened to own it.
 
 `assemble_v` then mirrors nothing, and its `max_rel_asym` recovers its full meaning as an

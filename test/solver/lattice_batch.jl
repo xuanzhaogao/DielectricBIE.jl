@@ -3,7 +3,7 @@ using DielectricBIE
 using Test
 using LinearAlgebra
 # the default potential evaluator (SCTLPotential) needs SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 
 @testset "lattice_batch" begin
     fixdir = joinpath(@__DIR__, "..", "fixtures")

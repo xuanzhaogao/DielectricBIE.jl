@@ -3,7 +3,7 @@ import DielectricBIE as BI
 using LinearAlgebra, SparseArrays, Random
 using Test
 # the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 
 @testset "GCQ: batched RHS refinement and GCQPotential" begin
     # batched refinement gives the same panels as the pointwise one

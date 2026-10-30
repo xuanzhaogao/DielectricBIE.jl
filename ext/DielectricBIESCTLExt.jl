@@ -143,8 +143,6 @@ function _panel_param(P::FlatPanel)
 end
 _panel_param(P::DielectricBIE.TensorPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.tensor_lpoint(P, u, v)), P.ru.x, P.rv.x
 _panel_param(P::DielectricBIE.CurvedPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.curved_lpoint(P, u, v)), P.ru.x, P.rv.x
-_panel_param(P) = throw(ArgumentError("SCTL elements: no parametrization for panels of type $(typeof(P)); " *
-                                      "define DielectricBIESCTLExt._panel_param for it"))
 
 # ---- the GL routine: SCTL's near and Duffy self rows for GL×GL panels ----
 #
@@ -1004,23 +1002,33 @@ _avx512() = Sys.islinux() && occursin("avx512f", read("/proc/cpuinfo", String))
     if _avx512()
         @compile_workload begin
             src = PointSource((0.1, 0.15, 0.2), 1.0)
-            # FlatPanel box: the whole D^T by SCTL
+            T = [0.0 0.3 2.0; 0.0 0.2 0.0; 0.55 0.0 0.0]
+            # FlatPanel box: the default near correction (sctl_gl_corrections) with FMM3D, the whole D^T by SCTL,
+            # the off-surface potential
             itf = DielectricBIE.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
-            dielectric_operator(itf; far = SCTLFarField(tol = 1e-6), near = SCTLNearQuad()) *
-                rhs_dielectric_box3d(itf, src, 4.0)
-            # GCQ box: SCTL's far field (the default with SCTL loaded) and the point-charge field
+            b = rhs_dielectric_box3d(itf, src, 4.0)
+            σ = dielectric_operator(itf; far = FMM3DFarField(1e-6)) * b
+            dielectric_operator(itf; far = SCTLFarField(tol = 1e-6), near = SCTLNearQuad()) * b
+            potential_operator(SCTLPotential(tol = 1e-6), itf, T) * σ
+            # GCQ box: FMM3D's and SCTL's far field (the default with SCTL loaded), the GCQ potential, the
+            # point-charge field
             gi = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 0, n_quad = 3,
                                              rule = edge_gcq_rule(10.0, 1.0; tol = 1e-3))
-            solve_dielectric_box3d_gcq(dielectric_operator(gi), rhs_dielectric_box3d(gi, src, 10.0), gi; rtol = 1e-6)
+            bi = rhs_dielectric_box3d(gi, src, 10.0)
+            σi, _ = solve_dielectric_box3d_gcq(dielectric_operator(gi; far = FMM3DFarField(1e-6)), bi, gi; rtol = 1e-6)
+            potential_operator(GCQPotential(far = FMM3DFarField(1e-6)), gi, T) * σi
+            solve_dielectric_box3d_gcq(dielectric_operator(gi), bi, gi; rtol = 1e-6)
             point_charge_field(SCTLFarField(), rand(3, 20), rand(20), rand(3, 5))
             # curved sphere with GCQ edge panels: SCTLCurvedNearQuad
             m = DielectricBIE._precompile_sphere_mesh()
             solve_dielectric_box3d_gcq(dielectric_operator(m.interface; near = SCTLCurvedNearQuad(tol = 1e-6)),
                                        rhs_dielectric_box3d(m.interface, PointSource((0.0, 0.0, 2.0), 1.0), 1.0),
                                        m.interface; rtol = 1e-6)
-            # the campaign with SCTL's far field
-            mktempdir() do dir
-                DielectricBIE._precompile_four_index(DielectricBIE._precompile_campaign(dir), :sctl)
+            # the campaign with either far field
+            for far in (:fmm3d, :sctl)
+                mktempdir() do dir
+                    DielectricBIE._precompile_four_index(DielectricBIE._precompile_campaign(dir), far)
+                end
             end
         end
     end

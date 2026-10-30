@@ -1,6 +1,7 @@
-# Precompile workload: small instances of the expensive first calls (GCQ rules, a GCQ box solve with the FMM3D far
-# field and the GCQ potential, multi-box and curved meshes, a tiny GCQ campaign), so that scripts and the tests do
-# not compile them again in every process. The SCTL extension has its own workload (ext/DielectricBIESCTLExt.jl).
+# Precompile workload: small instances of the expensive first calls that need no SCTL (GCQ rules, box, multi-box and
+# curved meshes, a right-hand side), so that scripts and the tests do not compile them again in every process. The
+# operators, solves, potentials and the campaign need SCTL's quadrature for Gauss-Legendre panels: they are in the
+# SCTL extension's workload (ext/DielectricBIESCTLExt.jl), which uses the helpers below.
 using PrecompileTools: @setup_workload, @compile_workload
 
 # the unit sphere as six cube-sphere patches, each oriented outward (also used by the SCTL extension's workload)
@@ -51,7 +52,7 @@ function _precompile_campaign(dir)
     return toml
 end
 
-# the campaign with loose tolerances (far = :fmm3d here, :sctl in the SCTL extension's workload)
+# the campaign with loose tolerances (far = :fmm3d or :sctl)
 _precompile_four_index(toml, far) =
     gcq_four_index(load_campaign(toml); far, nlev = 0, n_quad = 3, quad_tol = 1e-4, edge_tol = 1e-3, rhs_tol = 1e-2,
                    lhs_tol = 1e-4, gmres_rtol = 1e-6, tau = 1e-6, fg_tol = 1e-6, verbose = false)
@@ -62,17 +63,10 @@ _precompile_four_index(toml, far) =
         universal_gcq_rule(-0.3; qmax = 6.0, tol = 1e-6)
         r = edge_gcq_rule(10.0, 1.0; tol = 1e-3)
         itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 0, n_quad = 3, rule = r)
-        b = rhs_dielectric_box3d(itf, PointSource((0.1, 0.15, 0.2), 1.0), 10.0)
-        A = dielectric_operator(itf; far = FMM3DFarField(1e-6))
-        σ, _ = solve_dielectric_box3d_gcq(A, b, itf; rtol = 1e-6)
-        T = [0.0 0.3 2.0; 0.0 0.2 0.0; 0.55 0.0 0.0]
-        potential_operator(GCQPotential(far = FMM3DFarField(1e-6)), itf, T) * σ
+        rhs_dielectric_box3d(itf, PointSource((0.1, 0.15, 0.2), 1.0), 10.0)
         multi_dielectric_box3d_gcq([(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0),
                                     (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)], [4.0, 2.0], 1.0;
                                    nlev = 0, n_quad = 3, tol = 1e-3)
         _precompile_sphere_mesh()
-        mktempdir() do dir
-            _precompile_four_index(_precompile_campaign(dir), :fmm3d)
-        end
     end
 end

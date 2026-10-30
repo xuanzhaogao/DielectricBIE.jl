@@ -202,7 +202,6 @@ Built in:
 - [`GCQNearQuad`](@ref): the product-integration rules of the GCQ edge and corner panels, SCTL's for the
   Gauss-Legendre ones (`TensorPanel` interfaces, default);
 - [`SCTLCurvedNearQuad`](@ref): `CurvedPanel` interfaces, GCQ edge panels included (default; `using SCTL`);
-- [`UpsampledNearQuad`](@ref): upsampling plus adaptive quadtrees for `FlatPanel` interfaces;
 - [`SCTLNearQuad`](@ref): SCTL's singular quadrature of `QuadElemList` as its whole operator (needs `SCTLFarField`
   and `using SCTL`);
 - [`CorrectionMatrix`](@ref) (a precomputed `C`) and [`FunctionNearQuad`](@ref) (`C = f(interface)`).
@@ -245,30 +244,6 @@ function _keep_source_columns(C::SparseMatrixCSC, interface::DielectricInterface
     I, J, V = findnz(C)
     m = keep[J]
     return sparse(I[m], J[m], V[m], size(C)...)
-end
-
-"""
-    UpsampledNearQuad(; up_tol = 1e-9, max_order = 8, correct_edges = true, adaptive_atol = up_tol,
-                      adaptive_rtol = sqrt(eps()), adaptive_n_GL = 0, adaptive_max_depth = 20)
-
-Near corrections of `laplace3d_DT_fmm3d_corrected` for `FlatPanel` interfaces: Bernstein-radius neighbor
-lists, upsampled quadrature for near pairs and adaptive quadtrees for touching pairs.
-"""
-Base.@kwdef struct UpsampledNearQuad <: NearQuadrature
-    up_tol::Float64 = 1e-9
-    max_order::Int = 8
-    correct_edges::Bool = true
-    adaptive_atol::Float64 = up_tol
-    adaptive_rtol::Float64 = sqrt(eps(Float64))
-    adaptive_n_GL::Int = 0
-    adaptive_max_depth::Int = 20
-end
-
-function near_corrections(q::UpsampledNearQuad, interface::DielectricInterface)
-    cfg = AdaptiveConfig(q.adaptive_atol, q.adaptive_rtol, q.adaptive_n_GL, q.adaptive_max_depth)
-    (; upsample, adaptive) = build_neighbor_list(interface, q.max_order, q.up_tol;
-        correct_edges = q.correct_edges, adaptive_cfg = cfg)
-    return SparseMatrixCSC{Float64, Int}(laplace3d_DT_corrections(interface, upsample, adaptive))
 end
 
 """
@@ -616,9 +591,9 @@ corrections. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref))
 and corner panels: for every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration
 row of `tensor_near_row` minus the node rule; candidate pairs are found with a KD tree, `gcq_far` as for
 [`GCQNearQuad`](@ref). A target within max(1e-13 × a GL panel's size, 2^-48 × the extent of nodes and targets) of one
-of its nodes is moved onto the node first, so that the far field and SCTL's correction skip the same pair (a target on a node gets SCTL's Duffy self row; on a
-node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`). The same quadrature as
-[`potential_tensor`](@ref), which sums directly over all pairs.
+of its nodes is moved onto the node first, so that the far field and SCTL's correction skip the same pair: a target on
+a node gets SCTL's Duffy self row (on a node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`).
+The same quadrature as [`potential_tensor`](@ref), which sums directly over all pairs.
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
@@ -657,7 +632,7 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
         cc = ps.anchor .+ ps.o .+ (ps.Lu / 2) .* ps.eu .+ (ps.Lv / 2) .* ps.ev
         half_diag = hypot(ps.Lu, ps.Lv) / 2
         # every target that tensor_isfar can reject: within η L of a GCQ panel, or inside the Bernstein ellipse of
-        # the Gauss-Legendre directions (semi-axes A⋆, B⋆ in units of L/2, as in build_neighbor_list)
+        # the Gauss-Legendre directions at quad_tol (ρ = quad_tol^(-1/2n), semi-axes A⋆, B⋆ in units of L/2)
         n = min(length(ps.ru.x), length(ps.rv.x))
         ρs = ev.quad_tol^(-1 / (2n))
         As = (ρs + 1 / ρs) / 2; Bs = (ρs - 1 / ρs) / 2

@@ -11,8 +11,9 @@ four-index runs, see [Lattice campaigns](campaign.md).
 ## FMM-accelerated solves
 
 For larger problems, replace the dense operator with an FMM-accelerated `LinearMap` and
-solve with GMRES. In 3D, `lhs_dielectric_box3d_fmm3d_corrected` adds the near-field
-correction needed for accuracy near the surface.
+solve with GMRES. In 3D, [`dielectric_operator`](@ref) combines an FMM far field with SCTL.jl's
+near-field correction, which is needed for accuracy near the surface (see the operator backends
+below).
 
 ```julia
 using DielectricBIE
@@ -249,9 +250,9 @@ The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
 
 - **`far`, a [`FarField`](@ref)**, evaluates the adjoint double layer with the smooth node rule (the
   interface's quadrature points and weights):
-  - [`FMM3DFarField`](@ref)`(tol)` is FMM3D, the default;
-  - [`SCTLFarField`](@ref)`(tol = …)` is SCTL.jl's FMM. It uses PVFMM with OpenMP and no MPI, and keeps its
-    octree across GMRES iterations.
+  - [`SCTLFarField`](@ref)`(tol = …)` is SCTL.jl's FMM, the default once SCTL is loaded. It uses PVFMM with
+    OpenMP and no MPI, and keeps its octree across GMRES iterations;
+  - [`FMM3DFarField`](@ref)`(tol)` is FMM3D.
 - **`near`, a [`NearQuadrature`](@ref)**, returns the sparse correction `C` (accurate minus node rule) for
   nearby panel pairs:
   - [`SCTLNearCorrection`](@ref) is the default for `FlatPanel` interfaces: SCTL's near and singular quadrature
@@ -259,10 +260,13 @@ The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
   - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` interfaces: the GCQ rules for the edge and corner
     panels, SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones;
   - [`SCTLCurvedNearQuad`](@ref) is the default for `CurvedPanel` interfaces;
-  - [`UpsampledNearQuad`](@ref) is DielectricBIE's upsampling quadrature for `FlatPanel` interfaces;
-  - [`SCTLNearQuad`](@ref) is SCTL's singular quadrature, for `FlatPanel` interfaces with `n_quad` in 4, 8, 12,
-    16 or 20, combined with `SCTLFarField`;
+  - [`SCTLNearQuad`](@ref) is SCTL's whole operator (its own FMM and singular quadrature), for `FlatPanel`
+    interfaces with `n_quad` in 4, 8, 12, 16 or 20, combined with `SCTLFarField`;
   - your own quadrature works too, as described below.
+
+Every Gauss–Legendre × Gauss–Legendre panel gets its near and self corrections from SCTL (see "SCTL's quadrature
+for Gauss–Legendre panels" below), so any interface with such panels, a `FlatPanel` interface in particular, needs
+`using SCTL`.
 
 The result, a [`DielectricOperator`](@ref), supports `A * x` and `A * X` for an `N × K` block, so it serves
 both `Krylov.gmres` and `Krylov.block_gmres`.
@@ -286,19 +290,18 @@ A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-10), near = SCTLN
 sigma, stats = Krylov.gmres(A, rhs; rtol = 1e-8)
 ```
 
-Here are timings for this box on 32 cores of an AMD EPYC 9474F, at tolerance 1e-8, with
-Julia's BLAS at one thread and the right-hand side `rhs` from the example above. The error is the
-maximum relative error of `Dᵀσ` for a smooth density. The GMRES runs took 14–15 iterations with
-every backend.
+Here are timings of `SCTLNearQuad` for this box on 32 cores of an AMD EPYC 9474F, at tolerance 1e-8,
+with Julia's BLAS at one thread and the right-hand side `rhs` from the example above. The error is the
+maximum relative error of `Dᵀσ` for a smooth density. The GMRES runs took 14–15 iterations.
 
 | nodes (`n_quad`, `l_ec`) | backend (`far` + `near`) | setup | one apply | GMRES solve | error |
 |:--|:--|:--|:--|:--|:--|
-| 80,896 (8, 0.05) | FMM3D + `UpsampledNearQuad` | 2.8 s | 0.49 s | 7.0 s | 5e-10 |
-| | SCTL + `UpsampledNearQuad` | 2.3 s | 0.039 s | 0.56 s | 1.4e-8 |
-| | SCTL + `SCTLNearQuad` | 0.34 s | 0.050 s | 0.73 s | 1.2e-10 |
-| 288,256 (8, 0.02) | FMM3D + `UpsampledNearQuad` | 7.0 s | 2.0 s | 30.2 s | 5e-10 |
-| | SCTL + `UpsampledNearQuad` | 6.7 s | 0.086 s | 1.35 s | 1.1e-8 |
-| | SCTL + `SCTLNearQuad` | 1.3 s | 0.128 s | 1.97 s | 1.1e-10 |
+| 80,896 (8, 0.05) | SCTL + `SCTLNearQuad` | 0.34 s | 0.050 s | 0.73 s | 1.2e-10 |
+| 288,256 (8, 0.02) | SCTL + `SCTLNearQuad` | 1.3 s | 0.128 s | 1.97 s | 1.1e-10 |
+
+In the same runs an application with the FMM3D far field (and DielectricBIE's former near correction) took 0.49 s
+and 2.0 s. `SCTLNearCorrection` uses SCTL's near and self quadrature too, stored as a sparse correction, and
+combines with either far field.
 
 Things to know about the SCTL backends:
 
@@ -323,9 +326,10 @@ sigma, stats = solve_dielectric_box3d_block(interface, vss; rtol = 1e-8,
                                             far = SCTLFarField(tol = 1e-10), near = SCTLNearQuad())
 ```
 
+Without `far` and `near` the operator is FMM3D's far field at `fmm_tol` plus `SCTLNearCorrection(tol = up_tol)`.
 FMM3D evaluates the `K` densities in one vectorized FMM. SCTL's FMM evaluates them one after another on the
 same octree. For a [lattice campaign](campaign.md), add a `[backend]` table to the `.toml`
-(`far = "sctl"`, optionally `near = "sctl"`; see [`campaign_backend`](@ref)). `run_phase` then loads SCTL.jl on
+(`far = "sctl"`, optionally `near = "sctl"`; see [`campaign_backend`](@ref)). `run_phase` loads SCTL.jl on
 every worker.
 
 ### Self-defined near quadratures (e.g. for GCQ panels)
@@ -362,8 +366,10 @@ DielectricBIE they are available as follows:
 - [`dt_node_rule_block`](@ref)`(interface, k, targets)` is the node-rule block that a correction subtracts.
 
 So a quadrature written in Julia only has to produce the accurate rows. This example uses SCTL's classification
-with DielectricBIE's adaptive quadtree for the rows. The tree's moments use the panel's Lagrange basis, so they act
-on nodal values. Targets in the panel's plane keep the node rule, since `Dᵀ` vanishes there:
+with a dense composite Gauss rule for the rows: 4 × 4 squares of 24 × 24 points on each panel, times the panel's
+Lagrange basis, so that the rows act on nodal values. That is accurate for targets at least one node offset from
+the panel, as are the targets of a box off the panel's plane. Targets in the panel's plane keep the node rule,
+since `Dᵀ` vanishes there:
 
 ```julia
 using DielectricBIE, SCTL
@@ -374,20 +380,35 @@ interface = single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
 nl = sctl_near_list(interface; tol = 1e-10)              # SCTL's near test
 X, Nrm = BI._interface_targets_normals(interface)
 owner = reduce(vcat, [fill(k, BI.num_points(p)) for (k, p) in enumerate(interface.panels)])
-cfg = BI.AdaptiveConfig(atol = 1e-12)
 
 coplanar(p, q) = abs(dot(p.normal, q.normal)) > 1 - 1e-12 && abs(dot(p.normal, q.points[1] .- p.points[1])) < 1e-12
 
-accurate = map(eachindex(interface.panels)) do k                   # your quadrature goes here
+# Dᵀ rows of panel p at targets Xt with normals Nt (3 × m): your quadrature goes here
+function dense_rows(p, Xt, Nt; m = 4, q = 24)
+    a, b, c, d = p.corners
+    cc = (a .+ b .+ c .+ d) ./ 4; bma = b .- a; dma = d .- a
+    g, w = BI.gausslegendre(q)
+    us = [(-1 + (2s - 1 + g[i]) / m, w[i] / m) for s in 1:m for i in 1:q]   # composite rule on [-1, 1]
+    B = zeros(size(Xt, 2), p.n_quad^2)
+    for (u, wu) in us, (v, wv) in us
+        ℓ = kron(BI.barycentric_row(p.gl_xs, p.bary_weights, u), BI.barycentric_row(p.gl_xs, p.bary_weights, v))
+        y = cc .+ bma .* (u / 2) .+ dma .* (v / 2)
+        for t in axes(Xt, 2)
+            r = Xt[:, t] .- y
+            B[t, :] .+= wu * wv * norm(bma) * norm(dma) / 4 * dot(Nt[:, t], r) / (4π * norm(r)^3) .* ℓ
+        end
+    end
+    return B
+end
+
+accurate = map(eachindex(interface.panels)) do k
     p = interface.panels[k]
     ts = SCTL.near_targets(nl, k)
     B = dt_node_rule_block(interface, k, ts)               # start from the node rule
     for k2 in unique(owner[ts])
         coplanar(p, interface.panels[k2]) && continue      # Dᵀ = 0 in the panel's plane
         rows = findall(t -> owner[t] == k2, ts)
-        K = zeros(length(rows), BI.num_points(p))
-        BI.adaptive_block_moments_tree!(K, p, [Tuple(X[:, t]) for t in ts[rows]], interface.panels[k2].normal, :DT, cfg)
-        B[rows, :] = K
+        B[rows, :] = dense_rows(p, X[:, ts[rows]], Nrm[:, ts[rows]])
     end
     B
 end
@@ -397,23 +418,38 @@ C = SCTL.assemble_near_correction(nl, accurate, [BI.num_points(p) for p in inter
 A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-12), near = C)
 ```
 
-On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-9. That comparison is part of the
+On this box, `A` agrees with `near = SCTLNearCorrection(tol = 1e-12)` to 1e-13. That comparison is part of the
 tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, give the radii:
 `sctl_near_list(interface; radius = r)`, with one radius per node or one for all.
 
 ### SCTL's quadrature for Gauss–Legendre panels
 
-In the default near quadratures every Gauss–Legendre × Gauss–Legendre panel ([`is_gl_panel`](@ref): a
-`FlatPanel`, or a `TensorPanel` or `CurvedPanel` without a GCQ rule) gets its near and self corrections from SCTL:
+Every Gauss–Legendre × Gauss–Legendre panel ([`is_gl_panel`](@ref): a `FlatPanel`, or a `TensorPanel` or
+`CurvedPanel` without a GCQ rule) gets its near and self corrections from SCTL, in every near quadrature:
 [`SCTLNearCorrection`](@ref), [`GCQNearQuad`](@ref) and [`SCTLCurvedNearQuad`](@ref) all call
 [`sctl_gl_corrections`](@ref)`(interface, panels; tol)` for those panels, and keep their own rules for the GCQ edge
-and corner panels, whose densities are singular. So they need `using SCTL` for any interface with such panels.
+and corner panels, whose densities are singular. The same holds for the single-layer potential
+([`sctl_gl_potential_corrections`](@ref), used by [`SCTLPotential`](@ref), [`GCQPotential`](@ref) and
+[`potential_tensor`](@ref)). So SCTL is required for any interface with such panels: without `using SCTL` these
+calls throw an error naming the package.
 
-Each panel is one SCTL element over its parameter square. When its node count per direction is one of SCTL's orders
-4, 8, 12, 16 or 20, the element is the panel itself; otherwise it is a proxy element of the next order, with the
-density interpolated from the panel's nodes (exact for its polynomial). A curved panel's element is SCTL's
-interpolant of its map, so its accuracy also depends on the panel's size and order. The meshers keep these panels at
-aspect ratio at most [`GL_MAX_ASPECT`](@ref).
+Each panel is one SCTL element over its parameter square:
+- **Elements.** When the panel's node count per direction is one of SCTL's orders 4, 8, 12, 16 or 20, the element
+  is the panel itself. Otherwise, for a `FlatPanel` or a GL `TensorPanel` only, it is a proxy element of the next
+  order, with the density interpolated from the panel's nodes (exact for its polynomial); a target is near the
+  panel within the near radius of the panel's own node rule. A `CurvedPanel` needs the same SCTL order in u and v
+  (4, 8, 12, 16 or 20 nodes per direction): any other count is an `ArgumentError`.
+- **Self rows.** When the element is the panel, the panel's own nodes are passed to SCTL with the element nodes'
+  exact coordinates, so they get SCTL's Duffy rule (the singular self rows), not a one-sided near-singular limit. A
+  proxy element has no self rows at the panel's nodes (`Dᵀ` vanishes there on a flat panel): the single-layer
+  potential at such a node is an `ArgumentError`.
+- **Curved panels.** A curved panel's element is SCTL's interpolant of its map at the element's order, so the
+  accuracy also depends on the panel's size and order: on the unit sphere with 40 panels `Dᵀ1` is off by 2e-4 at
+  8 nodes per direction, 5e-9 at 16 and 9e-12 at 20.
+- **Aspect ratio.** SCTL's rule on one element is accurate for moderate aspect ratios only. The meshers split GL
+  panels to aspect ratio at most [`GL_MAX_ASPECT`](@ref) = 4 ([`panel_aspect`](@ref)), and the near quadrature
+  refuses a larger one with an `ArgumentError` naming the panel ([`check_gl_aspect`](@ref)). GCQ panels have no
+  such limit.
 
 ```julia
 interface = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8)
@@ -440,7 +476,8 @@ campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) throu
   2. for each near target, the panel split at the target's closest point and refined dyadically toward it;
   3. PVFMM for the far field, with the octree built once for all densities.
 
-  It needs Gauss–Legendre × Gauss–Legendre panels ([`is_gl_panel`](@ref)) and `using SCTL`.
+  It needs Gauss–Legendre × Gauss–Legendre panels ([`is_gl_panel`](@ref)) and `using SCTL`. A panel whose node
+  count is not one of SCTL's orders is a proxy element of the next order, as above.
 - **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel`) interfaces: the node rule by a
   far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref)) for the GL×GL panels and the product
   integration of `tensor_near_row` for the edge and corner panels. [`potential_tensor`](@ref) is the same quadrature
@@ -451,10 +488,9 @@ campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) throu
 V = four_index_matrix(interface, sources, Σ; lhs_tol = 1e-8, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
 ```
 
-A campaign's eval phase uses `SCTLPotential(tol = lhs_tol)`; `potential = "hcubature"` in the `[backend]` table, the
-former default, is read as `"sctl"` with a warning.
+A campaign's eval phase uses `SCTLPotential(tol = lhs_tol)` (see [`campaign_potential`](@ref)).
 
-`SCTLPotential` replaced an evaluator that corrected the FMM by adaptive cubature (HCubature) for targets within
+`SCTLPotential` replaced an evaluator that corrected the FMM by adaptive cubature for targets within
 `5 × (panel size) / n_quad` of a panel's center. Here is a comparison on a box of 80,896 nodes (`n_quad = 8`,
 `l_ec = 0.05`), with 1.1 million targets: a cloud around the box, plus 100,000 points between 1e-4 and 1e-1 from the
 surface. The run used 32 threads at tolerance 1e-8. Errors are against a tight adaptive cubature over every panel.

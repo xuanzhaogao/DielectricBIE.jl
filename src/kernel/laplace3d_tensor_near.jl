@@ -537,11 +537,10 @@ summed directly over all panels. The Gauss-Legendre × Gauss-Legendre panels ([`
 plus SCTL's correction, [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (near-singular
 rows, and SCTL's Duffy self row for a target on a node), so an interface with such panels needs `using SCTL`. A target
 within max(1e-13 × the GL panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes is moved onto the
-node first. On a node of a GL panel whose
-`n_quad` is not one of SCTL's orders (4, 8, 12, 16, 20) there is no self row: an `ArgumentError`. The GCQ edge and
-corner panels: their own rule where `tensor_isfar` accepts the pair, else the product-integration row of
-`tensor_near_row` (accurate for targets close to edges and corners, down to the floating-point resolution of the
-target position).
+node first. On a node of a GL panel whose `n_quad` is not one of SCTL's orders (4, 8, 12, 16, 20) there is no self
+row: an `ArgumentError`. The GCQ edge and corner panels: their own rule where `tensor_isfar` accepts the pair, else
+the product-integration row of `tensor_near_row` (accurate for targets close to edges and corners, down to the
+floating-point resolution of the target position).
 """
 function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ::AbstractVector,
                           targets::AbstractVector; quad_tol = 1e-12, η_gcq = 2.0,

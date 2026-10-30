@@ -25,10 +25,13 @@ const _GL_ASPECT_LIMIT = GL_MAX_ASPECT * (1 + 1e-8)
     is_gl_panel(p) -> Bool
 
 Whether `p` is a Gauss-Legendre × Gauss-Legendre panel: every `FlatPanel`; a `TensorPanel` or `CurvedPanel`
-when neither of its rules `ru`, `rv` is a GCQ rule (whatever its `kind`, e.g. a GL corner panel).
+when neither of its rules `ru`, `rv` is a GCQ rule (whatever its `kind`, e.g. a GL corner panel). Any other type
+is an `ArgumentError`: a new panel type defines its own method (and the SCTL extension's `_panel_param`, its map).
 """
 is_gl_panel(::FlatPanel) = true
 is_gl_panel(p::Union{TensorPanel, CurvedPanel}) = !is_gcq(p.ru) && !is_gcq(p.rv)
+is_gl_panel(p) = throw(ArgumentError("is_gl_panel: unknown panel type $(typeof(p)) (FlatPanel, TensorPanel and " *
+                                     "CurvedPanel are known)"))
 
 _aspect(a, b) = Float64(max(a, b) / min(a, b))
 

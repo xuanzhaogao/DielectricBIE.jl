@@ -1,6 +1,6 @@
 using DielectricBIE, Serialization, LinearAlgebra, Test
 # the eval phase's potential evaluator (SCTLPotential) needs SCTL.jl
-Base.find_package("SCTL") === nothing || @eval using SCTL
+using SCTL
 include("fixture_campaign.jl")
 
 @testset "prepare + serial phases + in-memory" begin
