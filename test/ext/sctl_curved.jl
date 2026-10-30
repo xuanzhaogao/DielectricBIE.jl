@@ -35,27 +35,26 @@ if HAVE_SCTL_CURVED
         # points must not be taken there), and panels span ~90° of the sphere: an order-16 proxy element resolves that
         # geometry only to ~1e-5, so x ± εn of the principal value fell on one side of it (Dᵀ1 off by 1/2) until
         # proxies were split to resolve it. The GL×GL panels are now SCTL elements of their own order, their geometry
-        # SCTL's order-8 interpolant of the map, which on these ~90° panels bounds every row near them (the GCQ nodes
-        # next to a GL panel included): Dᵀ1 - 1/2 is 6.3e-2 here (2.2e-2 on the all-GL sphere of these panels), 9.8e-5
-        # at n_quad = 16, 4.8e-6 at 20, 7.0e-9 with m = 2 at 16; it stays far from the off-by-1/2 of a missed principal
-        # value
+        # SCTL's order-n_quad interpolant of the map, which on these ~90° panels bounds every row near them (the GCQ
+        # nodes next to a GL panel included): Dᵀ1 - 1/2 is 6.3e-2 at n_quad = 8, 9.8e-5 at 16, 4.8e-6 at 20, 7.0e-9
+        # with m = 2 at 16. Hence n_quad = 16 here (8 before SCTL's GL routine)
         g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
-        m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 8, tol = 1e-6, grade = c -> abs(c.midpoint[3]) < 1e-12)
+        m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 16, tol = 1e-6, grade = c -> abs(c.midpoint[3]) < 1e-12)
         itf = m.interface
         X = nodes_of(itf); z = [x[3] for x in X]
         isedge = reduce(vcat, [fill(p.kind == :edge, BI.num_points(p)) for p in itf.panels])
         Cm = near_corrections(SCTLCurvedNearQuad(tol = 1e-10), itf)
         @test all(isfinite, nonzeros(Cm))
         Dt = dt_operator(itf, Cm)
-        # Dᵀ Y_l = Y_l / (2(2l + 1)) on the unit sphere (DielectricBIE's sign). Measured: 6.3e-2 (Dᵀ1, at the GCQ
-        # nodes too), 4.4e-2 (Y_1), 1.5e-2 (Y_2); with DielectricBIE's split proxies for the GL panels (before SCTL's
-        # GL routine) 2.5e-11, 2.0e-6, 1.1e-5
+        # Dᵀ Y_l = Y_l / (2(2l + 1)) on the unit sphere (DielectricBIE's sign), limited by the GL panels' geometry
+        # (n_quad = 8 with DielectricBIE's split proxies for the GL panels, before SCTL's GL routine: 2.5e-11 for Dᵀ1,
+        # 2.0e-6 for Y_1, 1.1e-5 for Y_2)
         e0 = Dt(ones(length(X))) .- 0.5
-        @test maximum(abs, e0) < 0.1
-        @test maximum(abs, e0[isedge]) < 0.1                          # GCQ edge-panel nodes included
-        @test maximum(abs, Dt(z) .- z ./ 6) < 0.07
+        @test maximum(abs, e0) < 2e-4                                 # 9.8e-5 measured
+        @test maximum(abs, e0[isedge]) < 8e-5                         # GCQ edge-panel nodes: 4.0e-5
+        @test maximum(abs, Dt(z) .- z ./ 6) < 1.5e-4                  # 7.6e-5
         y2 = (3 .* z .^ 2 .- 1) ./ 2
-        @test maximum(abs, Dt(y2) .- y2 ./ 10) < 0.03
+        @test maximum(abs, Dt(y2) .- y2 ./ 10) < 8e-5                 # 4.0e-5
         # the GL×GL panels' columns are sctl_gl_corrections' (η, order and ε_rel concern the GCQ panels only)
         gl = findall(is_gl_panel, itf.panels)
         glc = falses(length(X)); foreach(r -> glc[r] .= true, panel_column_ranges(itf)[gl])
