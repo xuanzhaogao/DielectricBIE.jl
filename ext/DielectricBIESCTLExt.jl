@@ -161,6 +161,7 @@ function _panel_param(P::FlatPanel)
     return (u, v) -> collect(cc .+ (b .- a) .* (u - 0.5) .+ (d .- a) .* (v - 0.5)), x, x
 end
 _panel_param(P::DielectricBIE.TensorPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.tensor_lpoint(P, u, v)), P.ru.x, P.rv.x
+_panel_param(P::DielectricBIE.CurvedPanel) = (u, v) -> collect(P.anchor .+ DielectricBIE.curved_lpoint(P, u, v)), P.ru.x, P.rv.x
 _panel_param(P) = throw(ArgumentError("SCTLProxyNearQuad: no parametrization for panels of type $(typeof(P)); " *
                                       "define DielectricBIESCTLExt._panel_param for it"))
 
@@ -222,6 +223,256 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLProxyNearQuad, inte
         append!(I, i); append!(J, j); append!(V, v)
     end
     return sparse(I, J, V, n, n)
+end
+
+# ---- the GL routine: SCTL's near and Duffy self rows for GL×GL panels ----
+#
+# Every GL×GL source panel is one SCTL element over its parameter square, with the panel's map (its geometry is SCTL's
+# order-p interpolant of it). When the panel's node count n per direction is an SCTL order (p = n) the element's nodes
+# are the panel's; otherwise (flat panels) the element is a proxy of the next order and the density is interpolated to
+# its nodes. SCTL's near list (radius sized for the panel's own n-point rule) and near_blocks give the accurate blocks;
+# SCTL matches a target to an element node by exact equality, so the panel's own nodes are passed with the element
+# nodes' coordinates (equal to rounding) and get the Duffy self rows. The correction is that block minus the node rule.
+
+# the unit normal of node j of a panel
+_gl_normal(P::Union{FlatPanel, DielectricBIE.TensorPanel}, j) = P.normal
+_gl_normal(P::DielectricBIE.CurvedPanel, j) = P.normals[j]
+
+# the diameter of a panel's nodes (the scale of the node checks)
+function _gl_diam(P)
+    lo = collect(P.points[1]); hi = copy(lo)
+    for y in P.points
+        lo .= min.(lo, y); hi .= max.(hi, y)
+    end
+    return norm(hi .- lo)
+end
+
+# the SCTL elements of the panels `sources`, one QuadElemList per order (ascending): per element its panel `ids[e]`,
+# whether it is the panel (`direct`) or a proxy (`interp`: panel nodes -> element nodes), the sign `sgn` of SCTL's
+# normal (∂u × ∂v) against the panel's, and per node its coordinates (columns of X) and near radius
+function _gl_elements(interface::DielectricInterface, sources, tol::Real, what::AbstractString)
+    tol > 0 || throw(ArgumentError("$what: tol must be positive"))
+    ps = interface.panels
+    info = map(unique(sources)) do k
+        P = ps[k]
+        is_gl_panel(P) || throw(ArgumentError("$what: panel $k is not a GL×GL panel (it has a GCQ rule)"))
+        check_gl_aspect(P, Int(k))
+        f, xu, xv = _panel_param(P)
+        nu, nv = length(xu), length(xv)
+        max(nu, nv) <= last(_SCTL_ORDERS) ||
+            throw(ArgumentError("$what: panel $k has $(max(nu, nv)) nodes per direction, above SCTL's largest order " *
+                                "$(last(_SCTL_ORDERS))"))
+        direct = nu == nv && nu in _SCTL_ORDERS
+        P isa DielectricBIE.CurvedPanel && !direct &&
+            throw(ArgumentError("$what: panel $k is a CurvedPanel with $nu × $nv nodes; it needs the same number in " *
+                                "u and v, one of SCTL's orders $(_SCTL_ORDERS)"))
+        p = direct ? nu : _SCTL_ORDERS[findfirst(>=(max(nu, nv)), _SCTL_ORDERS)]
+        (k = Int(k), f = f, xu = xu, xv = xv, p = p, n = min(nu, nv), direct = direct)
+    end
+    groups = []
+    for p in sort!(unique([i.p for i in info]))
+        mine = filter(i -> i.p == p, info)
+        el = QuadElemList(p, length(mine)) do e, u, v
+            mine[e].f(u, v)
+        end
+        X, N = node_coord(el)
+        rg(e) = (e - 1) * p^2 + 1:e * p^2
+        # SCTL's radius is where the order-p rule reaches its tol: ρ = (64 / (15 tol))^(1 / 2p). The panel's n-point
+        # rule (the far field) reaches tol at ρ = (64 / (15 tol))^(1 / 2n), which is SCTL's ρ at tol' below.
+        radius = zeros(size(X, 2))
+        for n in unique([i.n for i in mine])
+            r = far_field_nodes(el; tol = (64 / 15) * (15 * tol / 64)^(p / n)).radius
+            for (e, i) in enumerate(mine)
+                i.n == n && (radius[rg(e)] .= r[rg(e)])
+            end
+        end
+        xn = param_nodes(p)
+        sgn = zeros(length(mine))
+        interp = Vector{Union{Nothing, Matrix{Float64}}}(nothing, length(mine))
+        for (e, i) in enumerate(mine)
+            P = ps[i.k]
+            if i.direct
+                d = maximum(t -> norm(X[:, rg(e)[t]] .- collect(P.points[t])), 1:p^2)
+                d <= 1e-13 * _gl_diam(P) ||
+                    throw(ArgumentError("$what: panel $(i.k): its nodes are not those of SCTL's order-$p element " *
+                                        "(off by $d): not Gauss-Legendre nodes?"))
+            else
+                interp[e] = kron(lagrange_interp_matrix(i.xu, xn), lagrange_interp_matrix(i.xv, xn))
+            end
+            # (a proxy is flat: its normal is the panel's at any node)
+            sgn[e] = sign(sum(dot(N[:, rg(e)[t]], collect(_gl_normal(P, i.direct ? t : 1))) for t in 1:p^2))
+        end
+        push!(groups, (order = p, ids = [i.k for i in mine], direct = [i.direct for i in mine], elist = el, X = X,
+                       radius = radius, sgn = sgn, interp = interp))
+    end
+    return groups
+end
+
+# SCTL's near list of a group's elements for targets Xt, keeping the pairs (e, t) with keep(e, t)
+function _gl_near_list(g, Xt, keep = nothing)
+    nl = near_list(g.X, g.radius, g.order^2, Xt)
+    keep === nothing && return nl
+    ptr = [1]; trg = Int[]
+    for e in eachindex(g.ids)
+        for t in near_targets(nl, e)
+            keep(e, t) && push!(trg, t)
+        end
+        push!(ptr, length(trg) + 1)
+    end
+    return NearList(ptr, trg, nl.ntrg)
+end
+
+# node rules of panel P to targets Xt: the double layer w_j n_j·(y_j - x) / (4π r³) and the single layer
+# w_j / (4π r), zero where x = y_j
+function _d_node_rule_block(P, Xt::AbstractMatrix)
+    B = zeros(size(Xt, 2), num_points(P))
+    for j in 1:num_points(P)
+        y = P.points[j]; n = _gl_normal(P, j); w = P.weights[j]
+        for t in axes(Xt, 2)
+            d1, d2, d3 = y[1] - Xt[1, t], y[2] - Xt[2, t], y[3] - Xt[3, t]
+            r2 = d1^2 + d2^2 + d3^2
+            r2 == 0 && continue
+            B[t, j] = w * (n[1] * d1 + n[2] * d2 + n[3] * d3) / (4π * r2 * sqrt(r2))
+        end
+    end
+    return B
+end
+
+function _s_node_rule_block(P, Xt::AbstractMatrix)
+    B = zeros(size(Xt, 2), num_points(P))
+    for j in 1:num_points(P)
+        y = P.points[j]; w = P.weights[j]
+        for t in axes(Xt, 2)
+            r2 = (Xt[1, t] - y[1])^2 + (Xt[2, t] - y[2])^2 + (Xt[3, t] - y[3])^2
+            r2 == 0 && continue
+            B[t, j] = w / (4π * sqrt(r2))
+        end
+    end
+    return B
+end
+
+# the accurate blocks of a group with DielectricBIE's sign (`sign_row(e, t)`: the sign of SCTL's row of target t),
+# times the proxies' density maps, minus the node rule `rule(e, ts)`: per element its near targets and correction
+function _gl_blocks(g, nl, blocks, sign_row, rule)
+    out = Vector{Tuple{Vector{Int}, Matrix{Float64}}}(undef, length(g.ids))
+    DielectricBIE._blas_single() do
+        Threads.@threads :dynamic for e in eachindex(g.ids)
+            ts = collect(near_targets(nl, e))
+            A = blocks[e] .* [sign_row(e, t) for t in ts]
+            g.interp[e] === nothing || (A = A * g.interp[e])
+            out[e] = (ts, A .- rule(e, ts))
+        end
+    end
+    return out
+end
+
+# the m × n sparse matrix with the column blocks `cols[k] => (rows, block)` of the panels, in column order
+function _gl_assemble(blocks::Dict{Int, Tuple{Vector{Int}, Matrix{Float64}}}, cols, m::Int, n::Int)
+    nz = sum(length(B) for (_, B) in values(blocks); init = 0)
+    colptr = ones(Int, n + 1); rowval = Vector{Int}(undef, nz); nzval = Vector{Float64}(undef, nz)
+    q = 0
+    for (k, c) in enumerate(cols)
+        ts, B = get(blocks, k, (Int[], zeros(0, length(c))))
+        for (jc, j) in enumerate(c)
+            rowval[q+1:q+length(ts)] .= ts; nzval[q+1:q+length(ts)] .= view(B, :, jc)
+            q += length(ts)
+            colptr[j + 1] = q + 1
+        end
+    end
+    return SparseMatrixCSC(m, n, colptr, rowval, nzval)
+end
+
+function DielectricBIE.sctl_gl_corrections(interface::DielectricInterface, sources::AbstractVector{<:Integer};
+                                           tol::Real, kernel::Symbol = :DT)
+    kernel in (:DT, :D) || throw(ArgumentError("sctl_gl_corrections: kernel must be :DT or :D, got :$kernel"))
+    ps = interface.panels
+    n = num_points(interface)
+    cols = DielectricBIE.panel_column_ranges(interface)
+    groups = _gl_elements(interface, sources, tol, "sctl_gl_corrections")
+    X, Nrm = _interface_targets_normals(interface)
+    X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
+    # the targets for SCTL: the nodes of the (non-proxy) source panels with their elements' exact coordinates
+    Xs = copy(X)
+    for g in groups, (e, k) in enumerate(g.ids)
+        g.direct[e] && (Xs[:, cols[k]] .= g.X[:, (e - 1) * g.order^2 + 1:e * g.order^2])
+    end
+    out = Dict{Int, Tuple{Vector{Int}, Matrix{Float64}}}()
+    quad = ElemQuadrature(kernel == :DT ? Laplace3D_FxdU() : Laplace3D_DxU())
+    try
+        for g in groups
+            # flat panels: no rows for the targets in the panel's plane (with its normal, for Dᵀ), where the kernel
+            # vanishes (their own nodes among them)
+            plane = map(g.ids) do k
+                P = ps[k]
+                P isa Union{FlatPanel, DielectricBIE.TensorPanel} || return nothing
+                (collect(P.normal), collect(P.points[1]), 1e-12 * _gl_diam(P))
+            end
+            nl = _gl_near_list(g, Xs, (e, t) -> begin
+                plane[e] === nothing && return true
+                pn, y1, h = plane[e]
+                abs(pn[1] * (X[1, t] - y1[1]) + pn[2] * (X[2, t] - y1[2]) + pn[3] * (X[3, t] - y1[3])) <= h || return true
+                kernel == :DT && abs(pn[1] * Nrm[1, t] + pn[2] * Nrm[2, t] + pn[3] * Nrm[3, t]) < 1 - 1e-12
+            end)
+            blocks = kernel == :DT ? near_blocks(quad, g.elist, nl, Xs; normals = Nrm, tol) :
+                                     near_blocks(quad, g.elist, nl, Xs; tol)
+            # SCTL's rows are -Dᵀ (Laplace3D_FxdU dotted with the target normal) and -D with the element's normal as
+            # source normal; a self row (a panel's own node) is dotted with the element's normal too
+            sign_row = kernel == :D ? (e, t) -> -g.sgn[e] :
+                       (e, t) -> g.direct[e] && t in cols[g.ids[e]] ? -g.sgn[e] : -1.0
+            rule = kernel == :DT ?
+                (e, ts) -> DielectricBIE.dt_node_rule_block(interface, g.ids[e], X[:, ts], Nrm[:, ts]) :
+                (e, ts) -> _d_node_rule_block(ps[g.ids[e]], X[:, ts])
+            for (e, b) in enumerate(_gl_blocks(g, nl, blocks, sign_row, rule))
+                out[g.ids[e]] = b
+            end
+        end
+    finally
+        close(quad)
+        foreach(g -> close(g.elist), groups)
+    end
+    return _gl_assemble(out, cols, n, n)
+end
+
+function DielectricBIE.sctl_gl_potential_corrections(interface::DielectricInterface, sources::AbstractVector{<:Integer},
+                                                     targets::AbstractMatrix; tol::Real)
+    size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
+    ps = interface.panels
+    n = num_points(interface)
+    cols = DielectricBIE.panel_column_ranges(interface)
+    what = "sctl_gl_potential_corrections"
+    groups = _gl_elements(interface, sources, tol, what)
+    X = Matrix{Float64}(targets)
+    nt = size(X, 2)
+    # a target within 1e-13 of the panel's size of a node: the element node's exact coordinates (Duffy self row), or
+    # an error on a proxy, whose nodes are not the panel's
+    Xs = copy(X)
+    if nt > 0
+        tree = DielectricBIE.NearestNeighbors.KDTree(X)
+        for g in groups, (e, k) in enumerate(g.ids)
+            P = ps[k]; h = 1e-13 * _gl_diam(P)
+            for (j, y) in enumerate(P.points), t in DielectricBIE.NearestNeighbors.inrange(tree, collect(y), h)
+                g.direct[e] || throw(ArgumentError("$what: target $t lies on node $j of panel $k, a proxy element " *
+                                                   "(its node count is not an SCTL order): SCTL has no self row there"))
+                Xs[:, t] .= g.X[:, (e - 1) * g.order^2 + j]
+            end
+        end
+    end
+    out = Dict{Int, Tuple{Vector{Int}, Matrix{Float64}}}()
+    quad = ElemQuadrature(Laplace3D_FxU())
+    try
+        for g in groups
+            nl = _gl_near_list(g, Xs)
+            blocks = near_blocks(quad, g.elist, nl, Xs; tol)
+            for (e, b) in enumerate(_gl_blocks(g, nl, blocks, (e, t) -> 1.0,
+                                               (e, ts) -> _s_node_rule_block(ps[g.ids[e]], X[:, ts])))
+                out[g.ids[e]] = b
+            end
+        end
+    finally
+        close(quad)
+        foreach(g -> close(g.elist), groups)
+    end
+    return _gl_assemble(out, cols, nt, n)
 end
 
 # ---- SCTL's near and on-surface quadrature for curved (GCQ) panels ----

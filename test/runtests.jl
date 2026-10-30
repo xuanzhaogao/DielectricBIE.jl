@@ -70,6 +70,7 @@ using Test
     include("ext/sctl.jl")
     include("ext/sctl_curved.jl")
     include("ext/sctl_far_close.jl")
+    include("ext/sctl_gl.jl")
 
     # campaign
     include("campaign/toml_input.jl")

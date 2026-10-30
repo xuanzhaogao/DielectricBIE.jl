@@ -429,6 +429,47 @@ function dt_node_rule_block(interface::DielectricInterface, k::Integer, targets:
 end
 
 """
+    sctl_gl_corrections(interface, sources; tol, kernel = :DT) -> SparseMatrixCSC{Float64, Int}
+
+SCTL's near correction of the GL×GL panels `sources` (panel indices, [`is_gl_panel`](@ref)): the `N × N` matrix,
+rows = interface nodes, nonzero only in the columns of `sources`, of (SCTL's accurate block) − (DielectricBIE's node
+rule) for every target near a source panel. `kernel = :DT` is `Dᵀ` (`w_j n_i·(x_i − y_j) / (4π r³)`, the node rule
+[`dt_node_rule_block`](@ref)); `kernel = :D` the double layer with the sign of `laplace3d_D_fmm3d`
+(`w_j n_j·(y_j − x_i) / (4π r³)`). Added to the node rule (the far field) it gives the accurate operator.
+
+Each source panel is one SCTL element (`QuadElemList`) over its parameter square, with the panel's map:
+- order `n`, the panel's node count per direction, when `n` is one of SCTL's orders 4, 8, 12, 16, 20 (the same in u
+  and v): its nodes are the panel's (checked to 1e-13 of the panel's size). An interface node of such a panel is
+  passed to SCTL with the element node's exact coordinates, so that it gets SCTL's Duffy self row;
+- otherwise (`FlatPanel`, `TensorPanel`) a proxy element of the next SCTL order, the density interpolated from the
+  panel's nodes (exact: it is a polynomial of lower degree). A `CurvedPanel` must have an SCTL order.
+The element's geometry is SCTL's order-`p` interpolant of the map, which bounds the accuracy on curved panels (unit
+sphere, 40 panels: `Dᵀ1` off by 2e-4 at `n = 8`, 5e-9 at 16, 9e-12 at 20). A target is near a panel within SCTL's radius at `tol` for the panel's own node rule (`n` nodes per direction, also
+under a proxy). On a flat panel, `Dᵀ` vanishes for targets in its plane with its normal and `D` for all targets in
+its plane: those rows are zero.
+
+Throws an `ArgumentError` for a non-GL panel in `sources`, a GL panel above [`GL_MAX_ASPECT`](@ref)
+([`check_gl_aspect`](@ref)), a `CurvedPanel` whose node counts differ in u and v or are not an SCTL order (or whose
+nodes are not SCTL's), and more than 20 nodes per direction. Needs `using SCTL`.
+"""
+sctl_gl_corrections(interface, sources; kwargs...) =
+    error("sctl_gl_corrections needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
+    sctl_gl_potential_corrections(interface, sources, targets; tol) -> SparseMatrixCSC{Float64, Int}
+
+SCTL's near correction of the single-layer potential `∫ σ(y) / (4π |x − y|) dS_y` of the GL×GL panels `sources` at
+the points `targets` (`3 × Nt`): the `Nt × N` matrix of (SCTL's accurate block) − (the node rule
+`w_j / (4π |x − y_j|)`, zero where `x = y_j`), nonzero only in the columns of `sources`. Elements, proxies and near
+radii as for [`sctl_gl_corrections`](@ref); a target within 1e-13 of a panel's size of a node of a non-proxied panel
+is passed with the node's exact SCTL coordinates and gets SCTL's Duffy self row. A target on a node of a proxied
+panel throws an `ArgumentError` (SCTL has no self row there), as do the cases listed for `sctl_gl_corrections`.
+Needs `using SCTL`.
+"""
+sctl_gl_potential_corrections(interface, sources, targets; kwargs...) =
+    error("sctl_gl_potential_corrections needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
     CorrectionMatrix(C)
 
 A precomputed near correction `C` (sparse `N × N`), e.g. from a quadrature computed elsewhere.
