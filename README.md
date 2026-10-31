@@ -34,6 +34,11 @@ using Pkg
 Pkg.add("DielectricBIE")
 ```
 
+The near-corrected 3D operators, solvers and potentials need the unregistered SCTL.jl: run
+`Pkg.develop(url = "https://github.com/xuanzhaogao/SCTL.jl"); Pkg.build("SCTL")` once, then `using DielectricBIE, SCTL`.
+Its C++ shim is built with `-march=native`, so a build on an AVX-512 machine fails with "Illegal instruction" on CPUs
+without AVX-512: set `ENV["SCTL_JL_MARCH"] = "-march=x86-64-v3"` before `Pkg.build` for a portable build.
+
 ## Quickstart
 
 ```julia

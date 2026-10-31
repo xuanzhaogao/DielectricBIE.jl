@@ -38,7 +38,7 @@ refinement toward the vertices only. Near-singular interactions are a sparse cor
 added to the FMM operator.
 
 ```julia
-using DielectricBIE, LinearAlgebra
+using DielectricBIE, SCTL, LinearAlgebra   # SCTL: the near quadrature of the Gauss–Legendre panels
 import DielectricBIE as BI
 
 eps_in = 10.0
@@ -68,7 +68,7 @@ FMM operator and the right-hand side (each point charge scaled by the permittivi
 region containing it), and solves with one total-charge constraint per body:
 
 ```julia
-using DielectricBIE, LinearAlgebra
+using DielectricBIE, SCTL, LinearAlgebra
 
 R = 1e4                                                   # contrast; Inf = perfect conductor
 rule = edge_gcq_rule(R, 1.0; tol = 1e-12, qmax = 24.0)
@@ -151,7 +151,9 @@ is reduced to one unknown per node orbit, using `box_node_orbits` and
 corrections) and solved by LU. For the unit cube with N = 150k nodes that is 3.2k unknowns.
 
 ```julia
-c = box_capacitance_gcq(1.0, 1.0, 1.0)       # nlev = 8, n_quad = 12, tol = 1e-14: ~40 s on 32 threads
+using DielectricBIE, SCTL
+
+c = box_capacitance_gcq(1.0, 1.0, 1.0)       # nlev = 8, n_quad = 12, tol = 1e-14: ~25 s on 8 threads
 c.C          # 0.660678154099568: the Thomson energy Q² / (4π ∫σ Sσ)
 c.C_point    # Q / (4π U) at interior points (`targets`), less accurate
 ```
@@ -235,7 +237,7 @@ For several sources sharing one interface, assemble and block-solve all right-ha
 at once, then contract into the four-index Coulomb matrix `V[a, b]`:
 
 ```julia
-using DielectricBIE
+using DielectricBIE, SCTL
 
 # vss::Vector{VolumeSource} on a shared interface that resolves all of them
 # (e.g. built with multi_dielectric_box3d_rhs_adaptive)
@@ -477,13 +479,16 @@ campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) throu
   3. PVFMM for the far field, with the octree built once for all densities.
 
   It needs Gauss–Legendre × Gauss–Legendre panels ([`is_gl_panel`](@ref)) and `using SCTL`. A panel whose node
-  count is not one of SCTL's orders is a proxy element of the next order, as above.
+  count is not one of SCTL's orders is a proxy element of the next order, as above. A target on a node of a panel
+  that is its own element (4, 8, 12, 16 or 20 nodes per direction) gets SCTL's Duffy self row.
 - **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel`) interfaces: the node rule by a
   far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref)) for the GL×GL panels and the product
   integration of `tensor_near_row` for the edge and corner panels. [`potential_tensor`](@ref) is the same quadrature
   summed directly, and also works on the surface (SCTL's Duffy self rows at the GL panels' nodes).
 
 ```julia
+using DielectricBIE, SCTL
+
 Φ = evaluate_batch_potential(interface, Σ, sources, targets; lhs_tol = 1e-8, volume_tol = 1e-8)   # SCTLPotential(tol = 1e-8)
 V = four_index_matrix(interface, sources, Σ; lhs_tol = 1e-8, volume_tol = 1e-8, potential = SCTLPotential(tol = 1e-10))
 ```

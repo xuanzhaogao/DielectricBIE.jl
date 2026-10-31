@@ -2,6 +2,16 @@
 # threads, and an FMM of a few hundred points takes a second instead of milliseconds. Set before the libraries load.
 haskey(ENV, "OMP_NUM_THREADS") || (ENV["OMP_NUM_THREADS"] = string(Threads.nthreads()))
 
+# SCTL.jl is not registered, so it cannot be a test dependency and Pkg.test() cannot install it: the tests run from
+# an environment that holds it, as in CI (docs/src/development.md)
+Base.find_package("SCTL") === nothing &&
+    error("""the tests need SCTL.jl, which this environment lacks (it is not registered: Pkg.test() cannot install it).
+             Run test/runtests.jl from an environment with DielectricBIE, SCTL.jl and the test dependencies, as CI does:
+                 using Pkg; Pkg.develop(path = "."); Pkg.develop(url = "https://github.com/xuanzhaogao/SCTL.jl")
+                 Pkg.add([...the test dependencies in .github/workflows/CI.yml...]); Pkg.build("SCTL")
+             then `OMP_NUM_THREADS=8 julia --project=<that environment> -t 8 test/runtests.jl`
+             (docs/src/development.md).""")
+
 using DielectricBIE
 using SCTL       # the near and self corrections of Gauss-Legendre panels, SCTLPotential: SCTL's (DielectricBIESCTLExt)
 using LinearAlgebra
