@@ -95,8 +95,7 @@ import DielectricBIE as BI
     Hs = volume_field_hessian(fs, Y); trs = maximum(abs, Hs[1, :] + Hs[2, :] + Hs[3, :] + ρf.(eachcol(Y)))
     @test trw < 2 * trs + 1e-12 * maximum(abs, He)
     # the per-quantity evaluators dispatch to the same gathering (in the box; outside, one FMM per quantity instead of
-    # one for all), and batches reuse the grid: the results agree to rounding (rtol 1e-13), not bitwise, because the
-    # summation order is threaded (an exact == failed intermittently at -t 2)
+    # one for all), and batches reuse the grid: the results agree to rounding (rtol 1e-13)
     inb = 1:400
     @test isapprox(volume_field_gradient(fw, Y[:, inb]), r.grad[:, inb]; rtol = 1e-13) &&
           isapprox(volume_field_hessian(fw, Y[:, inb]), r.hess[:, inb]; rtol = 1e-13) &&

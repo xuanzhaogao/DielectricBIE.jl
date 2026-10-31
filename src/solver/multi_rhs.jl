@@ -258,7 +258,7 @@ N×K RHS, then block-GMRES solves A Σ = F for the layer densities Σ (N×K).
 
 The near and self corrections are SCTL's ([`SCTLNearCorrection`](@ref)`(tol = up_tol)`, every panel, edges
 included), so the solve needs `using SCTL`. `max_order` and `correct_edges`, of the former upsampling quadrature,
-are accepted and ignored.
+are accepted for compatibility and ignored.
 
 `precondition` (default `true`) applies the diagonal contrast scaling of
 [`dielectric_diagonal_scaling`](@ref) as a RIGHT preconditioner. Right rather than left so

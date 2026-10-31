@@ -283,7 +283,8 @@ end
 
 Solve an explicit-pair batch: ONE shared interface refined on the batch envelope,
 then block GMRES over all pair densities. `far` / `near` select the operator backends as in
-[`solve_dielectric_box3d_block`](@ref).
+[`solve_dielectric_box3d_block`](@ref). `max_order` and `correct_edges`, of the former upsampling quadrature, are
+accepted for compatibility and ignored (SCTL corrects every panel, edges included).
 """
 function solve_dielectric_lattice_batch(boxes::Vector{BoxGeom}, epses::Vector{Float64},
         eps_out::Float64, b::LatticeBatch;

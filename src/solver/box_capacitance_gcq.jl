@@ -101,9 +101,9 @@ so the system is `symmetric_dense_operator` (one row per orbit; `quad_tol`, `η_
 Two estimates of C are returned:
 - `C`: the Thomson energy Q² / (4π ∫σ Sσ), Sσ at one node per orbit (`potential_tensor` on the
   surface). The energy is stationary at the equilibrium density, so its error is second order in the
-  error of σ: the default mesh (N ≈ 150k for a cube, ~40 s on 32 threads) gives the unit cube's C to
-  ~5e-15, and every run with `n_quad ≥ 12`, `nlev ≥ 8` agrees to ±1.5e-15.
-- `C_point`: Q / (4π U(x)) at the interior `targets` (first order in the error of σ; ~1e-13 here).
+  error of σ: the default mesh (N ≈ 150k for a cube, ~25 s on 8 threads) gives the unit cube's C to
+  ~5e-15, and runs with `n_quad ≥ 12`, `nlev ≥ 8` agree to about 2.3e-15 (n_quad 16 against 12 at nlev 8).
+- `C_point`: Q / (4π U(x)) at the interior `targets` (first order in the error of σ; ~2.2e-12 here).
 
 Sσ at the nodes of the Gauss-Legendre panels is SCTL's Duffy self row ([`potential_tensor`](@ref)): `n_quad` must be
 one of SCTL's orders (4, 8, 12, 16, 20; otherwise an `ArgumentError`), and `using SCTL` is needed.
