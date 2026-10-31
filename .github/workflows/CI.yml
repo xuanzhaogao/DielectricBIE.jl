@@ -16,8 +16,7 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    # the suite alone took about 30 (Julia 1.10), 75 (1.13) and 90+ (1.14 alpha) minutes on a 4-vCPU runner
-    timeout-minutes: 150
+    timeout-minutes: 90
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
@@ -59,14 +58,15 @@ jobs:
           Pkg.build("SCTL")
       - name: Run the tests
         # OpenMP codes (FMM3D, FMM2D, FINUFFT and SCTL) get as many threads as Julia: unset, each call starts one per core.
-        # Coverage (it slows the Julia code down) is collected on the lts job only: one report is enough for Codecov.
+        # Coverage makes the suite 4x slower on Julia 1.13 (74 min with it, 18 without), so it is collected on the lts
+        # job only (46 min with it): one report is enough for Codecov.
         run: julia --project=@sctl -t 2 --color=yes --code-coverage=${{ matrix.version == 'lts' && 'user' || 'none' }} test/runtests.jl
         env:
           OMP_NUM_THREADS: 2
       - uses: julia-actions/julia-processcoverage@v1
-        if: matrix.version == 'lts'
+        if: ${{ !cancelled() && matrix.version == 'lts' }}
       - uses: codecov/codecov-action@v7
-        if: matrix.version == 'lts'
+        if: ${{ !cancelled() && matrix.version == 'lts' }}
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
