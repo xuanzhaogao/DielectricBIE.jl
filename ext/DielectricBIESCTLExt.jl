@@ -322,8 +322,8 @@ function DielectricBIE.sctl_gl_corrections(interface::DielectricInterface, sourc
     n = num_points(interface)
     cols = DielectricBIE.panel_column_ranges(interface)
     groups = _gl_elements(interface, sources, tol, "sctl_gl_corrections")
-    X, Nrm = _interface_targets_normals(interface)
-    X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
+    X0, N0 = _interface_targets_normals(interface)
+    X = Matrix{Float64}(X0); Nrm = Matrix{Float64}(N0)      # (new names: closures capture X and Nrm, unboxed)
     # the targets for SCTL: the nodes of the (non-proxy) source panels with their elements' exact coordinates
     Xs = copy(X)
     for g in groups, (e, k) in enumerate(g.ids)
@@ -777,7 +777,7 @@ function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, int
     Cgl = isempty(gl) ? nothing : DielectricBIE.sctl_gl_corrections(interface, gl; tol = q.tol)
     isempty(gcq) && return Cgl
     C = _curved_gcq_corrections(q, interface, gcq)
-    return Cgl === nothing ? C : C + Cgl
+    return Cgl === nothing ? C : DielectricBIE._add_corrections(C, Cgl)
 end
 
 # the columns of the GCQ panels `gcq` of SCTLCurvedNearQuad
@@ -789,8 +789,8 @@ function _curved_gcq_corrections(q::DielectricBIE.SCTLCurvedNearQuad, interface:
     for (k, P) in enumerate(ps), i in 1:num_points(P)
         owner[offs[k] + i] = k; loc[offs[k] + i] = i
     end
-    X, Nrm = _interface_targets_normals(interface)
-    X = Matrix{Float64}(X); Nrm = Matrix{Float64}(Nrm)
+    X0, N0 = _interface_targets_normals(interface)
+    X = Matrix{Float64}(X0); Nrm = Matrix{Float64}(N0)      # (new names: closures capture X and Nrm, unboxed)
     tree = DielectricBIE.NearestNeighbors.KDTree(X)
     quad = ElemQuadrature(Laplace3D_FxdU())
     lk = ReentrantLock()

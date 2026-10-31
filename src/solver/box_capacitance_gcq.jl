@@ -125,8 +125,10 @@ function box_capacitance_gcq(Lx::Real, Ly::Real, Lz::Real; nlev::Int = 8, n_quad
     σ = s[orbit]
     Q = dot(w, σ)
     X = reduce(vcat, [p.points for p in itf.panels])
-    Us = potential_tensor(itf, σ, X[reps]; quad_tol = 1e-16)
-    E = sum(W[o] * s[o] * Us[o] for o in eachindex(reps))    # ∫σ Sσ
-    U = potential_tensor(itf, σ, collect(targets); quad_tol = 1e-16)
+    # Sσ at one node per orbit and U at the interior targets, in one call (one set of SCTL elements and near lists)
+    no = length(reps)
+    Uall = potential_tensor(itf, σ, vcat(X[reps], collect(targets)); quad_tol = 1e-16)
+    E = sum(W[o] * s[o] * Uall[o] for o in eachindex(reps))    # ∫σ Sσ
+    U = Uall[no+1:end]
     return (; C = Q^2 / (4π * E), C_point = Q ./ (4π .* U), Q, σ, interface = itf, orbit, reps)
 end

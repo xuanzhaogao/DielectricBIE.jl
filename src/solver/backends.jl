@@ -652,8 +652,8 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
         end
     end
     end
-    C = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
-    Cgl === nothing || (C += Cgl)
+    Cgcq = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
+    C = Cgl === nothing ? Cgcq : _add_corrections(Cgcq, Cgl)     # (not reassigned: the closure below captures it)
     F = _pottrg_far(ev.far, interface, Xt)
     return LinearMap{Float64}(σ -> F * σ .+ C * σ, nt, offs[end])
 end

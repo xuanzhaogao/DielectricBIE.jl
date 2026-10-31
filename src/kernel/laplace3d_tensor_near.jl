@@ -500,7 +500,7 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
     end
     ambiguous[] > 0 && @warn "$(ambiguous[]) near pairs closer than 2^-48 × box size: FMM3D may or may not skip them"
     C = SparseMatrixCSC(N, N, colptr, rowval, nzval)
-    return Cgl === nothing ? C : C + Cgl, (pairs = length(pairs), unique = length(reps))
+    return Cgl === nothing ? C : _add_corrections(C, Cgl), (pairs = length(pairs), unique = length(reps))
 end
 
 # The targets (3 × Nt) with every target within max(1e-13 × (node diameter), 2^-48 × box) of a node of a GL×GL panel
@@ -551,11 +551,12 @@ function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ:
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
     gl = findall(is_gl_panel, panels)
     isgl = falses(length(panels)); isgl[gl] .= true
-    X = Matrix{Float64}(undef, 3, length(targets))
+    X0 = Matrix{Float64}(undef, 3, length(targets))
     for (t, x) in enumerate(targets)
-        X[:, t] .= x
+        X0[:, t] .= x
     end
-    X = _snap_to_gl_nodes(panels, gl, X)
+    # a new name: X is captured by the threaded loop below, and a reassigned captured variable is boxed (type-unstable)
+    X = _snap_to_gl_nodes(panels, gl, X0)
     # the GL×GL panels' correction (first, so that a missing SCTL fails before the sums)
     u = isempty(gl) ? zeros(T, size(X, 2)) : Vector{T}(sctl_gl_potential_corrections(interface, gl, X; tol = quad_tol) * σ)
     Threads.@threads :dynamic for it in axes(X, 2)

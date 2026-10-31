@@ -157,3 +157,13 @@ LinearAlgebra.mul!(y::AbstractVector, B::BlockCorrection, x::AbstractVector, α:
 LinearAlgebra.mul!(y::AbstractVector, B::BlockCorrection, x::AbstractVector) = mul!(y, B, x, true, false)
 Base.:*(B::BlockCorrection{T}, x::AbstractVector) where T = mul!(Vector{T}(undef, B.m), B, x)
 Base.:*(B::BlockCorrection{T}, X::AbstractMatrix) where T = mul!(Matrix{T}(undef, B.m, size(X, 2)), B, X)
+
+# The sum of two near corrections with disjoint column sets (the GCQ and the GL×GL source panels' columns): one of
+# them as it is when the other has no entries, where a sparse sum would copy and merge every entry of both.
+function _add_corrections(A::SparseMatrixCSC, B::SparseMatrixCSC)
+    size(A) == size(B) || throw(DimensionMismatch("corrections of sizes $(size(A)) and $(size(B))"))
+    T = promote_type(eltype(A), eltype(B))
+    nnz(B) == 0 && eltype(A) == T && return A
+    nnz(A) == 0 && eltype(B) == T && return B
+    return A + B
+end
