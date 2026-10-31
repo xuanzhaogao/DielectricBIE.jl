@@ -43,7 +43,9 @@ end
     # Gauss identity wᵀ Dᵀ σ = ½ wᵀ σ on the closed box: for a random σ (limited by the GCQ edge panels) and a random
     # σ on the GL panels' nodes only (the GL columns, limited by the node rule over the targets); bounds: 1.5 times
     # the values with the product-integration GL columns (before the GL panels moved to SCTL, commit 844db1c)
-    for (nq, tol, gall, ggl) in ((3, 1e-3, 5e-5, 8e-7),     # before: 3.55e-5, 5.35e-7; SCTL: 3.55e-5, 5.35e-7
+    # ggl at nq = 3 (was 8e-7): the random σg is another stream on Julia 1.10 (lts) than on 1.13 (randn(MersenneTwister(4))
+    # differs), 8.99e-7 on lts against 5.35e-7 on 1.13, and 2e-7 to 3.1e-6 over seeds 1:12 on 1.13: 1.5e-6 covers lts
+    for (nq, tol, gall, ggl) in ((3, 1e-3, 5e-5, 1.5e-6),   # before: 3.55e-5, 5.35e-7; SCTL: 3.55e-5, 5.35e-7
                                  (5, 1e-6, 7e-5, 1.3e-9))   # before: 4.81e-5, 8.44e-10; SCTL: 4.81e-5, 7.54e-10
         itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 1, n_quad = nq, rule = edge_gcq_rule(10.0, 1.0; tol))
         gl = findall(is_gl_panel, itf.panels); gcq = findall(!is_gl_panel, itf.panels)

@@ -239,7 +239,9 @@ end
         u = point_charge_field(SCTLFarField(tol = tol), S, q, T); g = point_charge_field(SCTLFarField(tol = tol), S, q, T; grad = true)
         @test size(u) == size(u0) && size(g) == size(g0)
         @test maximum(abs, u - u0) < tol * maximum(abs, u0)
-        @test maximum(abs, g - g0) < tol * maximum(abs, g0)
+        # the gradient to 2 tol (was tol): the random inputs are another stream on Julia 1.10 (lts) than on 1.13; at tol = 1e-10
+        # the error is 1.15 tol max|g0| on lts (1.166e-9) and 0.73 on 1.13, and 0.33 to 1.31 over seeds 1:6 on 1.13
+        @test maximum(abs, g - g0) < 2 * tol * maximum(abs, g0)
     end
     @test size(point_charge_field(SCTLFarField(), S, q, zeros(3, 0); grad = true)) == (3, 0)
     # the RHS of a volume source through either evaluator

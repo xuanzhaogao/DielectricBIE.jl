@@ -52,8 +52,13 @@ end
 
     out = joinpath(dir, "gcq_out")
     res = run_gcq_campaign(c; kw..., dir = out)
-    # the two parts give the same V as one
-    @test maximum(abs, r1.V - res.V) / maximum(abs, res.V) < 1e-12
+    # the two parts give the same V as one, to the GMRES tolerance: each part solves its columns as one block, so the
+    # block GMRES iterates of 3 + 2 columns and of all 5 differ and the solutions differ at the level of gmres_rtol.
+    # Measured gap (rel., 8 threads): 8.0e-12 at gmres_rtol = 1e-8, 1.2e-14 at 1e-11, 1.0e-14 with gmres_block = 1
+    # (columns solved one by one), 8.0e-12 again at quad_tol = 1e-10 and at fg_tol = 1e-11; a rerun of the one-part V
+    # differs by 6e-15. Bound gmres_rtol / 100 = 1e-10 (was 1e-12, which fails with 8.0e-12 on every Julia version and on
+    # the CI runners; dev CI passed it without loading SCTL, why was not investigated).
+    @test maximum(abs, r1.V - res.V) / maximum(abs, res.V) < kw.gmres_rtol / 100
     # the batch pipeline's output files
     @test all(isfile(joinpath(out, f)) for f in ("V_full.tsv", "V_full_eV.jls", "V_full_eV.tsv", "report.txt"))
     r = deserialize(joinpath(out, "V_full_eV.jls"))
