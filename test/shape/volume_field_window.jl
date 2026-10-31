@@ -94,14 +94,16 @@ import DielectricBIE as BI
     trw = maximum(abs, r.hess[1, :] + r.hess[2, :] + r.hess[3, :] + ρf.(eachcol(Y)))
     Hs = volume_field_hessian(fs, Y); trs = maximum(abs, Hs[1, :] + Hs[2, :] + Hs[3, :] + ρf.(eachcol(Y)))
     @test trw < 2 * trs + 1e-12 * maximum(abs, He)
-    # the per-quantity evaluators dispatch to the same gathering (identical in the box; outside, one FMM per quantity
-    # instead of one for all), and batches reuse the grid
+    # the per-quantity evaluators dispatch to the same gathering (in the box; outside, one FMM per quantity instead of
+    # one for all), and batches reuse the grid: the results agree to rounding (rtol 1e-13), not bitwise, because the
+    # summation order is threaded (an exact == failed intermittently at -t 2)
     inb = 1:400
-    @test volume_field_gradient(fw, Y[:, inb]) == r.grad[:, inb] && volume_field_hessian(fw, Y[:, inb]) == r.hess[:, inb] &&
-          volume_field_potential(fw, Y[:, inb]) == r.pot[inb]
+    @test isapprox(volume_field_gradient(fw, Y[:, inb]), r.grad[:, inb]; rtol = 1e-13) &&
+          isapprox(volume_field_hessian(fw, Y[:, inb]), r.hess[:, inb]; rtol = 1e-13) &&
+          isapprox(volume_field_potential(fw, Y[:, inb]), r.pot[inb]; rtol = 1e-13)
     @test volume_field_hessian(fw, Y) ≈ r.hess rtol = 1e-10
     r2 = volume_field_derivatives(fw, Y[:, 101:200]; pot = false, hess = false)
-    @test r2.pot === nothing && r2.hess === nothing && r2.grad == r.grad[:, 101:200]
+    @test r2.pot === nothing && r2.hess === nothing && isapprox(r2.grad, r.grad[:, 101:200]; rtol = 1e-13)
     @test_throws ArgumentError PrecomputedVolumeField(sv; tol = 1e-10, window_derivatives = true, cache_fft = true)
 end
 
