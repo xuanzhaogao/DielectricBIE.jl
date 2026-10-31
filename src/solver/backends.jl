@@ -565,7 +565,10 @@ distance `d` from a node costs about `1e-16 × (node spacing) / d` (1e-9 at `d =
 Gauss-Legendre panels ([`is_gl_panel`](@ref): `FlatPanel`s of any `n_quad` ≤ 20, GL `TensorPanel`s and
 `CurvedPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or 20 with the panel's geometry, the density
 interpolated to its nodes (exact); an interface with GCQ edge or corner panels is an `ArgumentError` (use
-[`GCQPotential`](@ref)). The default evaluator of `evaluate_batch_potential`, `four_index_matrix` (both with
+[`GCQPotential`](@ref)). On the surface: a target within max(1e-13 × the panel's size, 2^-48 × the extent of nodes
+and targets) of a node of a panel with 4, 8, 12, 16 or 20 nodes per direction (its own element) is moved onto the
+element's node, where SCTL's row is the Duffy self row; elsewhere, the proxies' nodes included, the near-singular rule
+(the single layer is continuous). The default evaluator of `evaluate_batch_potential`, `four_index_matrix` (both with
 `tol = lhs_tol`) and the campaign's eval phase. Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLPotential <: PotentialEvaluator

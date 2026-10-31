@@ -509,8 +509,9 @@ end
 # r = 0 by the direct sums, below ~2^-51 × box by FMM3D, and at r² = 0 by the subtraction in
 # sctl_gl_potential_corrections: a target a rounding error off a node would keep an uncancelled ~1/r term in one of
 # them (2^-48 × box covers FMM3D's band on panels smaller than ~4e-3 × box). On the node all of them skip it, and
-# SCTL's correction is the Duffy self row.
-function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix)
+# SCTL's correction is the Duffy self row. `node(k, j)`: the coordinates that node j of panel k is moved to
+# (SCTLPotential passes its SCTL elements' node coordinates).
+function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix; node = (k, j) -> panels[k].points[j])
     Xs = Matrix{Float64}(targets)
     (isempty(gl) || size(Xs, 2) == 0) && return Xs
     lo = vec(minimum(Xs; dims = 2)); hi = vec(maximum(Xs; dims = 2))
@@ -522,8 +523,8 @@ function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix)
     for k in gl
         P = panels[k]
         h = max(1e-13 * _gl_diam(P), hbox)
-        for y in P.points, t in inrange(tree, collect(y), h)
-            Xs[:, t] .= y
+        for (j, y) in enumerate(P.points), t in inrange(tree, collect(y), h)
+            Xs[:, t] .= node(k, j)
         end
     end
     return Xs

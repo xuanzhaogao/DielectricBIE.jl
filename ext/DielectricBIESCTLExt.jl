@@ -334,16 +334,22 @@ function DielectricBIE.sctl_gl_corrections(interface::DielectricInterface, sourc
     try
         for g in groups
             # flat panels: no rows for the targets in the panel's plane (with its normal, for Dᵀ), where the kernel
-            # vanishes (their own nodes among them)
+            # vanishes: the panel's own nodes (by index), and the targets with |n·(x - y₁)| within 1e-12 of the panel's
+            # size plus the rounding of n·(x - y₁), ~eps (|x| + |y₁|) (far from the origin it exceeds the first: an own
+            # node of a proxy element would get SCTL's off-node rule there, the one-sided limit)
             plane = map(g.ids) do k
                 P = ps[k]
                 P isa Union{FlatPanel, DielectricBIE.TensorPanel} || return nothing
-                (collect(P.normal), collect(P.points[1]), 1e-12 * _gl_diam(P))
+                y1 = collect(P.points[1])
+                (collect(P.normal), y1, 1e-12 * _gl_diam(P) + 8eps() * norm(y1), cols[k])
             end
             nl = _gl_near_list(g, Xs, (e, t) -> begin
                 plane[e] === nothing && return true
-                pn, y1, h = plane[e]
-                abs(pn[1] * (X[1, t] - y1[1]) + pn[2] * (X[2, t] - y1[2]) + pn[3] * (X[3, t] - y1[3])) <= h || return true
+                pn, y1, h, own = plane[e]
+                t in own && return false
+                x1, x2, x3 = X[1, t], X[2, t], X[3, t]
+                abs(pn[1] * (x1 - y1[1]) + pn[2] * (x2 - y1[2]) + pn[3] * (x3 - y1[3])) <=
+                    h + 8eps() * sqrt(x1^2 + x2^2 + x3^2) || return true
                 kernel == :DT && abs(pn[1] * Nrm[1, t] + pn[2] * Nrm[2, t] + pn[3] * Nrm[3, t]) < 1 - 1e-12
             end)
             blocks = kernel == :DT ? near_blocks(quad, g.elist, nl, Xs; normals = Nrm, tol) :
@@ -886,10 +892,19 @@ function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, inter
     op = BoundaryIntegralOp(Laplace3D_FxU(); accuracy = ev.tol / 10.0^_EXTRA_DIGITS)
     I = Int[]; J = Int[]; V = Float64[]
     row = 0
+    # the panels that are their own element (p nodes per direction), with the element's node coordinates
+    own = Dict{Int, Matrix{Float64}}()
     for p in sort!(unique(pord))
         ids = findall(==(p), pord)
         el = QuadElemList(p, length(ids)) do e, u, v
             params[ids[e]][1](u, v)
+        end
+        Xe = first(node_coord(el))
+        for (e, k) in enumerate(ids)
+            _, xu, xv = params[k]
+            length(xu) == length(xv) == p || continue
+            Xk = Xe[:, (e - 1) * p^2 + 1:e * p^2]
+            maximum(t -> norm(Xk[:, t] .- collect(ps[k].points[t])), 1:p^2) <= 1e-13 * _gl_diam(ps[k]) && (own[k] = Xk)
         end
         xn = param_nodes(p)
         for k in ids
@@ -906,7 +921,13 @@ function DielectricBIE.potential_operator(ev::DielectricBIE.SCTLPotential, inter
     end
     Pm = sparse(I, J, V, row, offs[end])                    # interface nodes -> SCTL proxy nodes
     nt = size(targets, 2)
-    nt == 0 || set_target_coord!(op, Matrix{Float64}(targets))
+    # SCTL matches a target to an element node by exact equality (then the Duffy self row): a target on a node of a
+    # panel that is its own element, or within max(1e-13 × its size, 2^-48 × box) of one, is moved onto the element's
+    # node (as potential_tensor's targets are for sctl_gl_potential_corrections), which the panel's node is only to
+    # rounding; off it SCTL's near rule leaves the node rule's 1/r uncancelled (0.5 off). A proxy's nodes are not the
+    # panel's: its targets stay, and SCTL's off-node rule is accurate there (the single layer is continuous).
+    Xt = DielectricBIE._snap_to_gl_nodes(ps, sort!(collect(keys(own))), targets; node = (k, j) -> view(own[k], :, j))
+    nt == 0 || set_target_coord!(op, Xt)
     nt == 0 || setup!(op)
     apply = σ -> nt == 0 ? Float64[] : compute_potential(op, Pm * σ)
     return DielectricBIE.LinearMap{Float64}(apply, nt, offs[end])
