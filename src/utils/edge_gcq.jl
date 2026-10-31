@@ -25,6 +25,16 @@ function junction_powers(angles::AbstractVector, eps::AbstractVector;
                          gmax::Real = 20.0, ngrid::Int = 200_000)
     length(angles) == length(eps) || throw(ArgumentError("angles and eps must have equal length"))
     abs(sum(angles) - 2pi) < 1e-12 || throw(ArgumentError("angles must sum to 2π"))
+    # cached (one junction is ~0.5 s of determinant evaluations, and every mesh call asks for its junctions again)
+    key = (Float64.(angles), Float64.(eps), Float64(gmax), ngrid)
+    return copy(lock(() -> get!(() -> _junction_powers(angles, eps, gmax, ngrid), JUNCTION_POWERS_CACHE, key),
+                     JUNCTION_POWERS_LOCK))
+end
+
+const JUNCTION_POWERS_CACHE = Dict{Tuple{Vector{Float64}, Vector{Float64}, Float64, Int}, Vector{Float64}}()
+const JUNCTION_POWERS_LOCK = ReentrantLock()
+
+function _junction_powers(angles, eps, gmax, ngrid)
     f = g -> theta_ODE_det(angles[1:end-1], eps, g)
     gs = collect(range(1e-3, gmax, length = ngrid))
     fs = f.(gs)
@@ -130,10 +140,11 @@ Fine grid (`grid`):
   floating-point range) is refused.
 - `:adaptive`: adaptive Gauss-Kronrod on s^p1 · family (fails for p1 ≲ -0.95).
 In both, the interpolation matrix `P` gives v at the 14-point Gauss-Legendre
-nodes of every fine segment (`segs`, `z0`).
+nodes of every fine segment (`segs`, `z0`). With `floor` > 0 the nodes are chosen
+among the fine points s ≥ floor only (the fine grid still resolves the family below).
 """
 function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 20,
-                       qmax::Union{Nothing, Real} = nothing, grid::Symbol = :graded)
+                       qmax::Union{Nothing, Real} = nothing, grid::Symbol = :graded, floor::Real = 0.0)
     p1 = minimum(dpows)
     p1 > -1 || throw(ArgumentError("density power $p1 is not integrable"))
     qmax === nothing || (nsmooth = ceil(Int, qmax - p1))
@@ -177,6 +188,7 @@ function edge_gcq_rule(dpows::AbstractVector; tol::Real = 1e-10, nsmooth::Int = 
     # edge, which the near-field and FMM machinery resolves poorly); the smooth factor
     # varies negligibly on [0, 2^-K], so nodes above it carry that mass as well
     cand = grid == :graded ? collect(ngj+1:length(xq)) : collect(eachindex(xq))
+    cand = filter(i -> xq[i] >= floor, cand)
     nodeinds = sort(cand[qr(U[cand, :]', ColumnNorm()).p[1:r]])
     x = xq[nodeinds]
     Is = vec(sum(sqrt.(ωq) .* U, dims = 1))
@@ -191,6 +203,25 @@ end
 
 edge_gcq_rule(eps_in::Real, eps_out::Real; angle::Real = pi / 2, kw...) =
     edge_gcq_rule(edge_density_powers(eps_in, eps_out; angle); kw...)
+
+"""
+    universal_gcq_rule(pmin; qmax = 20.0, h = 0.01, tol = 1e-10, floor = 1e-10)
+
+Universal weighted GCQ rule: one rule for every density power in [pmin, qmax], for edges whose powers vary
+along the curve (sector angles changing) or are not known. The family is {s^q : q ∈ pmin:h:qmax} ∪ {s^n},
+refined to the step h/10 on [pmin, pmin + 10h] (the step h alone leaves ~1e-11 at exponents just above pmin),
+built by `edge_gcq_rule` with the weight s^pmin. A continuous band of exponents also spans s^q log^k s, the
+terms a varying power generates. Left free, the nodes reach much closer to s = 0 than a dedicated rule's (~1e-17 of
+the panel at tol 1e-12, pmin = -0.3), below the rounding of absolute positions; `floor` keeps them at s ≥ floor. For
+pmin ≳ -0.5 the default 1e-10 costs nothing (tol 1e-12: exponents in [pmin, 10] to ~1e-13, s^q log s to ~2e-12);
+as pmin → -1 a floor costs accuracy.
+"""
+function universal_gcq_rule(pmin::Real; qmax::Real = 20.0, h::Real = 0.01, tol::Real = 1e-10, floor::Real = 1e-10)
+    pmin > -1 || throw(ArgumentError("density power $pmin is not integrable"))
+    0 < h < 1 || throw(ArgumentError("the step h must be in (0, 1)"))
+    dpows = pmin .+ unique(vcat(collect(0:h:1-h/2), collect(0:h/10:10h)))
+    return edge_gcq_rule(dpows; tol, qmax, floor)
+end
 
 "Largest relative error of the rule over its own family (∫₀¹ x^p = 1/(p+1))."
 edge_gcq_family_error(r::EdgeGCQRule) =

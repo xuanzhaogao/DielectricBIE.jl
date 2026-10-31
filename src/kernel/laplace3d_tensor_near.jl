@@ -15,6 +15,10 @@
 # whole configuration, so rows are keyed by the target position and normal in
 # the source panel's normalized frame and computed once per distinct key; on
 # vertex-graded box meshes only a few percent of the near rows are distinct.
+#
+# The columns of Gauss-Legendre × Gauss-Legendre source panels in laplace3d_DT_tensor_corrections are SCTL's
+# (sctl_gl_corrections), and so are their single-layer corrections in potential_tensor (sctl_gl_potential_corrections);
+# the product integration serves the GCQ edge and corner panels.
 
 const TENSOR_NEAR_M = 12
 const TENSOR_NEAR_GL = gausslegendre(TENSOR_NEAR_M)
@@ -409,20 +413,28 @@ end
 
 Sparse correction C such that `laplace3d_DT_fmm3d(interface, tol) + C` is the
 near-corrected D^T operator in DielectricBIE's sign convention
-(entries laplace3d_grad(y_j, x_i, n_i) w_j). Pairs that `tensor_isfar` rejects at
-`quad_tol` (and `η_gcq`, `gcq_far`) get the product-integration row. With `sources` (panel indices) only the
-columns of those source panels are computed, the others are zero. Returns (C, stats).
+(entries laplace3d_grad(y_j, x_i, n_i) w_j). The columns of the GCQ source panels (edge and corner panels): pairs
+that `tensor_isfar` rejects at `quad_tol` (and `η_gcq`, `gcq_far`) get the product-integration row. The columns of
+the Gauss-Legendre × Gauss-Legendre source panels ([`is_gl_panel`](@ref)) are SCTL's,
+[`sctl_gl_corrections`](@ref)`(interface, panels; tol = quad_tol)`, so an interface with such panels needs
+`using SCTL`. With `sources` (panel indices) only the columns of those source panels are computed, the others are
+zero. Returns (C, stats), `stats = (pairs, unique)` the near pairs and distinct rows of the GCQ source panels.
 """
 function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPanel{T}, T};
                                          reuse::Bool = true, quad_tol = 1e-12, η_gcq = 2.0,
                                          gcq_far::Symbol = :max, sources = nothing) where T
     panels = interface.panels
+    srcs = sources === nothing ? collect(eachindex(panels)) : collect(sources)
+    # GL×GL source panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
+    gl = unique(filter(k -> is_gl_panel(panels[k]), srcs))
+    Cgl = isempty(gl) ? nothing : sctl_gl_corrections(interface, gl; tol = quad_tol)
     counts = num_points.(panels)
     offs = cumsum([0; counts])
     rng = [offs[k]+1:offs[k+1] for k in eachindex(panels)]
     Yl = [tensor_local_points(p) for p in panels]
     near = [Tuple{Int, Int, NTuple{3, T}, NTuple{3, T}}[] for _ in panels]
-    is_src = sources === nothing ? trues(length(panels)) : (b = falses(length(panels)); b[collect(sources)] .= true; b)
+    # the GCQ source panels: product integration
+    is_src = falses(length(panels)); is_src[srcs] .= true; is_src[gl] .= false
     Threads.@threads :dynamic for it in eachindex(panels)
         pt = panels[it]
         for (i, xo) in zip(rng[it], Yl[it])
@@ -487,16 +499,49 @@ function laplace3d_DT_tensor_corrections(interface::DielectricInterface{TensorPa
         end
     end
     ambiguous[] > 0 && @warn "$(ambiguous[]) near pairs closer than 2^-48 × box size: FMM3D may or may not skip them"
-    return SparseMatrixCSC(N, N, colptr, rowval, nzval), (pairs = length(pairs), unique = length(reps))
+    C = SparseMatrixCSC(N, N, colptr, rowval, nzval)
+    return Cgl === nothing ? C : _add_corrections(C, Cgl), (pairs = length(pairs), unique = length(reps))
+end
+
+# The targets (3 × Nt) with every target within max(1e-13 × (node diameter), 2^-48 × box) of a node of a GL×GL panel
+# `gl` moved onto that node (its `points` entry: SCTL's node coordinates when the panel is its own SCTL element); box is
+# the largest coordinate extent of all interface nodes and the targets. The node rule of the single layer is skipped at
+# r = 0 by the direct sums, below ~2^-51 × box by FMM3D, and at r² = 0 by the subtraction in
+# sctl_gl_potential_corrections: a target a rounding error off a node would keep an uncancelled ~1/r term in one of
+# them (2^-48 × box covers FMM3D's band on panels smaller than ~4e-3 × box). On the node all of them skip it, and
+# SCTL's correction is the Duffy self row. `node(k, j)`: the coordinates that node j of panel k is moved to
+# (SCTLPotential passes its SCTL elements' node coordinates).
+function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix; node = (k, j) -> panels[k].points[j])
+    Xs = Matrix{Float64}(targets)
+    (isempty(gl) || size(Xs, 2) == 0) && return Xs
+    lo = vec(minimum(Xs; dims = 2)); hi = vec(maximum(Xs; dims = 2))
+    for P in panels, y in P.points
+        lo .= min.(lo, y); hi .= max.(hi, y)
+    end
+    hbox = 2.0^-48 * maximum(hi .- lo)
+    tree = KDTree(Matrix{Float64}(targets))
+    for k in gl
+        P = panels[k]
+        h = max(1e-13 * _gl_diam(P), hbox)
+        for (j, y) in enumerate(P.points), t in inrange(tree, collect(y), h)
+            Xs[:, t] .= node(k, j)
+        end
+    end
+    return Xs
 end
 
 """
     potential_tensor(interface, σ, targets; quad_tol=1e-12, η_gcq=2.0, gcq_far=:max)
 
-Single-layer potential u(x) = ∫ σ(y) / (4π|x - y|) dA(y) at off-surface `targets`
-(absolute coordinates). Panels that `tensor_isfar` accepts use their own rule; the
-others the product-integration row of `tensor_near_row` (accurate for targets close
-to edges and corners, down to the floating-point resolution of the target position).
+Single-layer potential u(x) = ∫ σ(y) / (4π|x - y|) dA(y) at `targets` (absolute coordinates), off or on the surface,
+summed directly over all panels. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)): their node rule
+plus SCTL's correction, [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (near-singular
+rows, and SCTL's Duffy self row for a target on a node), so an interface with such panels needs `using SCTL`. A target
+within max(1e-13 × the GL panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes is moved onto the
+node first. On a node of a GL panel whose `n_quad` is not one of SCTL's orders (4, 8, 12, 16, 20) there is no self
+row: an `ArgumentError`. The GCQ edge and corner panels: their own rule where `tensor_isfar` accepts the pair, else
+the product-integration row of `tensor_near_row` (accurate for targets close to edges and corners, down to the
+floating-point resolution of the target position).
 """
 function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ::AbstractVector,
                           targets::AbstractVector; quad_tol = 1e-12, η_gcq = 2.0,
@@ -504,12 +549,29 @@ function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ:
     panels = interface.panels
     offs = cumsum([0; num_points.(panels)])
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
-    u = zeros(T, length(targets))
-    Threads.@threads :dynamic for it in eachindex(targets)
-        x = targets[it]
+    gl = findall(is_gl_panel, panels)
+    isgl = falses(length(panels)); isgl[gl] .= true
+    X0 = Matrix{Float64}(undef, 3, length(targets))
+    for (t, x) in enumerate(targets)
+        X0[:, t] .= x
+    end
+    # a new name: X is captured by the threaded loop below, and a reassigned captured variable is boxed (type-unstable)
+    X = _snap_to_gl_nodes(panels, gl, X0)
+    # the GL×GL panels' correction (first, so that a missing SCTL fails before the sums)
+    u = isempty(gl) ? zeros(T, size(X, 2)) : Vector{T}(sctl_gl_potential_corrections(interface, gl, X; tol = quad_tol) * σ)
+    Threads.@threads :dynamic for it in axes(X, 2)
+        x = (X[1, it], X[2, it], X[3, it])
         acc = zero(T)
         for (k, ps) in enumerate(panels)
             σk = view(σ, offs[k]+1:offs[k+1])
+            if isgl[k]
+                # the node rule without the node the target is on (r = 0), as in SCTL's correction
+                for (j, y) in enumerate(ps.points)
+                    r2 = (x[1] - y[1])^2 + (x[2] - y[2])^2 + (x[3] - y[3])^2
+                    r2 == 0 || (acc += ps.weights[j] * σk[j] / (4π * sqrt(r2)))
+                end
+                continue
+            end
             xl = x .- ps.anchor
             if tensor_isfar(ps, xl; quad_tol, η_gcq, gcq_far)
                 for (j, y) in enumerate(ps.points)
@@ -519,7 +581,7 @@ function potential_tensor(interface::DielectricInterface{TensorPanel{T}, T}, σ:
                 acc += dot(tensor_near_row(G, ps, xl), σk)
             end
         end
-        u[it] = acc
+        u[it] += acc
     end
     return u
 end

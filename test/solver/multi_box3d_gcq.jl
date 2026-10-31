@@ -2,6 +2,8 @@ using DielectricBIE
 import DielectricBIE as DB
 using LinearAlgebra
 using Test
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+using SCTL
 
 cube(c; L = 1.0) = (center = c, Lx = L, Ly = L, Lz = L)
 # nodes, weights, normals and (eps_in, eps_out) of every quadrature node
@@ -76,22 +78,22 @@ end
 @testset "multi_dielectric_box3d_gcq: solve" begin
     # one box: the same system as single_dielectric_box3d_gcq (same iterations and flux)
     src1 = PointSource((0.1, 0.15, 0.2), 1.0)
-    m1 = multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0))], [2.0]; nlev = 1, n_quad = 4, tol = 1e-4)
-    s1 = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 2.0, 1.0; nlev = 1, n_quad = 4, tol = 1e-4)
+    m1 = multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0))], [2.0]; nlev = 1, n_quad = 3, tol = 1e-3)
+    s1 = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 2.0, 1.0; nlev = 1, n_quad = 3, tol = 1e-3)
     a = solve_dielectric_boxes_gcq(m1, src1; deflate = false, rtol = 1e-12)
     b = solve_dielectric_boxes_gcq([s1], src1; deflate = false, rtol = 1e-12)
     @test a.stats.niter == b.stats.niter
     @test dot(DB.all_weights(a.interface), a.σ) ≈ dot(DB.all_weights(b.interface), b.σ) rtol = 1e-12
     # two cubes sharing a face, charge in A: Gauss's law ∫σ = 1 - 1/ε_A, improving with nlev;
-    # the cluster constraint is consistent with it
+    # the cluster constraint is consistent with it (rule tol 1e-4: errs ≈ [9e-7, 6e-7], deflated vs plain ≈ 2e-6)
     boxes = [cube((-0.5, 0.0, 0.0)), cube((0.5, 0.0, 0.0))]
     src = PointSource((-0.4, 0.1, 0.15), 1.0)
     errs = map((0, 1)) do nlev
-        m = multi_dielectric_box3d_gcq(boxes, [2.0, 10.0]; nlev, n_quad = 4, tol = 1e-6)
-        sol = solve_dielectric_boxes_gcq(m, src; deflate = false, rtol = 1e-12)
+        m = multi_dielectric_box3d_gcq(boxes, [2.0, 10.0]; nlev, n_quad = 4, tol = 1e-4)
+        sol = solve_dielectric_boxes_gcq(m, src; deflate = false, rtol = 1e-8)
         @test sol.stats.solved
-        if nlev == 1
-            sd = solve_dielectric_boxes_gcq(m, src; rtol = 1e-12)
+        if nlev == 0
+            sd = solve_dielectric_boxes_gcq(m, src; rtol = 1e-8)
             @test sd.stats.solved && maximum(abs.(sd.σ .- sol.σ)) / maximum(abs.(sol.σ)) < 1e-4
         end
         abs(dot(DB.all_weights(sol.interface), sol.σ) - (1 - 1 / 2))

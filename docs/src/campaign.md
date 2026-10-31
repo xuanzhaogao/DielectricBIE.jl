@@ -55,7 +55,6 @@ lhs_tol = 1e-5
 gmres_rtol = 1e-5
 support_rtol = 1e-4
 volume_tol = 1e-5
-max_order = 8
 max_depth = 128
 
 [batching]
@@ -68,7 +67,7 @@ far_pad_steps = 2.0
 ## Running serially
 
 ```julia
-using DielectricBIE
+using DielectricBIE, SCTL    # both phases need SCTL: the solve's near corrections, the eval phase's SCTLPotential
 
 c = load_campaign("campaign.toml")
 prepare(c)

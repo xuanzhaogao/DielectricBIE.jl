@@ -1,6 +1,7 @@
 using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays, Random
+using SCTL
 using Test
 
 @testset "BlockCorrection" begin
@@ -30,7 +31,7 @@ using Test
     @test_throws DimensionMismatch BI.BlockCorrection(C, [1:4, 5:9])
     # from an interface: one block per panel
     itf = BI.single_dielectric_box3d(1.0, 1.0, 1.0, 4, 0.5, 4.0, 1.0, Float64)
-    Cd = BI.near_corrections(UpsampledNearQuad(up_tol = 1e-8, max_order = 12), itf)
+    Cd = BI.near_corrections(SCTLNearCorrection(tol = 1e-8), itf)
     Bd = BlockCorrection(Cd, itf)
     xd = randn(rng, BI.num_points(itf))
     @test Bd * xd ≈ Cd * xd

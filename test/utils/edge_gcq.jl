@@ -52,6 +52,12 @@ using Test
         @test γ[1] ≈ 1 - q rtol = 1e-6
         @test length(γ) == length(classes(1 - q, 5.9)) && maximum(abs.(γ .- classes(1 - q, 5.9))) < 1e-9
     end
+    # a repeated junction comes from the cache (one solve is ~0.5 s), as the caller's own copy
+    jp() = junction_powers([π, π / 2, π / 2], [1.0, 2.0, 7.0]; gmax = 6.0)
+    ja = jp(); t = @elapsed jb = jp()
+    @test jb == ja && jb !== ja && t < 0.05
+    jb[1] = 0.0
+    @test jp()[1] == ja[1]
     γn = filter(<=(5.9), junction_powers([π, π / 2, π / 2], [1.0, 10.0, 10.001]; gmax = 6.0))
     @test 1 - 1e-4 < γn[1] < 1
     @test length(γn) == length(classes(γn[1], 5.9)) && maximum(abs.(γn .- classes(γn[1], 5.9))) < 1e-9
@@ -62,4 +68,20 @@ using Test
     @test_throws ArgumentError edge_gcq_rule([-0.5]; grid = :nope)
     ra2 = edge_gcq_rule(d2; tol = 1e-12, qmax = 10.3, grid = :adaptive)
     @test length(ra2.x) == length(ra.x) && edge_gcq_family_error(ra2) < 1e-11
+end
+
+@testset "universal GCQ rule" begin
+    pmin = -0.3
+    ru = universal_gcq_rule(pmin; qmax = 12.0, tol = 1e-12)
+    @test ru.pw == pmin && sum(abs, ru.w) < 1.01      # a few small negative weights, no cancellation
+    # exponents off the family's grid, anywhere in [pmin, 10], and the log terms of a varying power
+    qs = range(pmin + 0.00037, 10 - 0.0037, length = 97)
+    @test maximum(abs(sum(ru.w .* ru.x .^ q) * (q + 1) - 1) for q in qs) < 1e-10
+    for q in (pmin, pmin + 0.123, 0.4567)       # ∫₀¹ s^q log s = -1/(q+1)², ∫₀¹ s^q log² s = 2/(q+1)³
+        @test sum(ru.w .* ru.x .^ q .* log.(ru.x)) * (q + 1)^2 ≈ -1 atol = 1e-9
+        @test sum(ru.w .* ru.x .^ q .* log.(ru.x) .^ 2) * (q + 1)^3 / 2 ≈ 1 atol = 1e-8
+    end
+    @test minimum(ru.x) >= 1e-10                       # the default node floor
+    @test minimum(universal_gcq_rule(pmin; qmax = 12.0, tol = 1e-12, floor = 0.0).x) < 1e-15
+    @test_throws ArgumentError universal_gcq_rule(-1.0)
 end

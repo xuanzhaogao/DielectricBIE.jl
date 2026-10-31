@@ -86,8 +86,11 @@ target-driven refinement after the RHS one: every panel that a target is near (`
 up to `target_depth` levels and down to sides of `target_min_size`. For many targets (e.g. millions of
 density points), `target_skin = δ` refines for the targets closest to the interface planes only (per cell of side
 δ across each plane, the nearest one on each side): a target left near is corrected exactly by `GCQPotential`. Every target is then far from every
-panel, so `GCQPotential` with the same three parameters needs no near corrections (the node rule, i.e. the
-FMM, is the potential).
+panel, so `GCQPotential` with the same three parameters needs no near corrections for the GCQ panels (their node
+rule, i.e. the FMM, is their potential); its Gauss-Legendre × Gauss-Legendre panels still get SCTL's corrections,
+whose near radius is not `tensor_isfar`'s, of the size of `target_tol`.
+
+Last, Gauss-Legendre × Gauss-Legendre panels are cut along their longer side to aspect ratio ≤ `GL_MAX_ASPECT`.
 """
 function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector{<:Real},
                                     eps_out::Real = 1.0; nlev::Int = 2, n_quad = 8,
@@ -246,6 +249,8 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                                    quad_tol = target_tol, η_gcq = target_eta, gcq_far = target_far,
                                    max_depth = target_depth, min_size = target_min_size, skin = target_skin)
     end
+    # GL×GL panels cut to the aspect limit after all refinement, before the per-panel permittivities and the bodies
+    quads = map(_split_gl_aspect, quads)
     for ((c, em, ep, _, _), quad) in zip(pending, quads)
         append!(cpanels[c], quad)
         append!(ceps_in[c], fill(em, length(quad)))

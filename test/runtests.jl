@@ -1,4 +1,19 @@
+# FMM3D, FMM2D and FINUFFT are OpenMP codes: unset, every call starts one OpenMP thread per core on top of Julia's
+# threads, and an FMM of a few hundred points takes a second instead of milliseconds. Set before the libraries load.
+haskey(ENV, "OMP_NUM_THREADS") || (ENV["OMP_NUM_THREADS"] = string(Threads.nthreads()))
+
+# SCTL.jl is not registered, so it cannot be a test dependency and Pkg.test() cannot install it: the tests run from
+# an environment that holds it, as in CI (docs/src/development.md)
+Base.find_package("SCTL") === nothing &&
+    error("""the tests need SCTL.jl, which this environment lacks (it is not registered: Pkg.test() cannot install it).
+             Run test/runtests.jl from an environment with DielectricBIE, SCTL.jl and the test dependencies, as CI does:
+                 using Pkg; Pkg.develop(path = "."); Pkg.develop(url = "https://github.com/xuanzhaogao/SCTL.jl")
+                 Pkg.add([...the test dependencies in .github/workflows/CI.yml...]); Pkg.build("SCTL")
+             then `OMP_NUM_THREADS=8 julia --project=<that environment> -t 8 test/runtests.jl`
+             (docs/src/development.md).""")
+
 using DielectricBIE
+using SCTL       # the near and self corrections of Gauss-Legendre panels, SCTLPotential: SCTL's (DielectricBIESCTLExt)
 using LinearAlgebra
 using Test
 
@@ -12,6 +27,7 @@ using Test
     include("utils/quad_order.jl")
     include("utils/best_grid.jl")
     include("utils/edge_gcq.jl")
+    include("utils/fftw_threads.jl")
     # visualization helpers
     include("visualization/extensions.jl")
 
@@ -21,22 +37,18 @@ using Test
     include("core/sources.jl")
     include("core/source_geometry.jl")
     include("core/tensor_panels.jl")
+    include("core/curved_panels.jl")
+    include("core/gl_panels.jl")
+    include("shape/curved_geometry.jl")
     include("shape/volume_field.jl")
     include("shape/volume_field_window.jl")
 
     # kernel functions
     include("kernel/laplace2d.jl")
     include("kernel/laplace3d.jl")
-    include("kernel/laplace3d_near_smoke.jl")
-    include("kernel/laplace3d_pottrg_near_targets.jl")
 
     # shape functions
     if run_full
-        include("kernel/laplace3d_near.jl")
-        include("kernel/laplace3d_near_adaptive.jl")
-        include("kernel/laplace3d_near_source_cache.jl")
-        include("kernel/laplace3d_near_corner_pairs.jl")
-        include("kernel/laplace3d_near_touching.jl")
         include("shape/box3d.jl")
     end
 
@@ -57,9 +69,14 @@ using Test
     include("solver/multi_rhs_vector.jl")
     include("solver/lattice_batch.jl")
     include("solver/batch_io.jl")
+    include("solver/deprecated_wrappers.jl")
 
-    # operator backends (far field x near quadrature); the SCTL ones when SCTL.jl is installed
+    # operator backends (far field x near quadrature)
     include("ext/sctl.jl")
+    include("ext/sctl_curved.jl")
+    include("ext/sctl_far_close.jl")
+    include("ext/sctl_gl.jl")
+    include("ext/sctl_rounding.jl")
 
     # campaign
     include("campaign/toml_input.jl")

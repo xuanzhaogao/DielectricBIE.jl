@@ -13,18 +13,19 @@
 #   3. growth of N_iter with ε₂ (the |γ|→1 conductor limit) -> essentially UNCHANGED slope,
 #      because that growth is ‖(Dᵀ+Cᵀ)P‖ → 1, which no diagonal can fix.
 #
-# Usage (quick, a workstation; prints N so you can see the problem size):
-#   julia --project -t 16 examples/diag_precond_experiment.jl
+# Usage (quick, a workstation; prints N so you can see the problem size), in an environment with DielectricBIE and
+# SCTL.jl (installed as in the user guide, "Operator backends"):
+#   julia --project=<env> -t 16 examples/diag_precond_experiment.jl
 #
 # Paper-scale (§6.1 uses p=6, τ=1e-4); tighten via env vars, e.g. on one node:
 #   BI_PC_NQUAD=6 BI_PC_RHS_TOL=1e-4 BI_PC_LEC=0.3125 BI_PC_MAXDEPTH=16 \
 #   OMP_NUM_THREADS=96 OMP_PROC_BIND=spread OPENBLAS_NUM_THREADS=1 \
-#   julia --project -t 96 examples/diag_precond_experiment.jl
+#   julia --project=<env> -t 96 examples/diag_precond_experiment.jl
 #
 # Only N_iter is being compared, so the two runs of a case always share one interface and
 # one RHS; nothing but the preconditioner changes between them.
 
-using DielectricBIE
+using DielectricBIE, SCTL         # SCTL: the near corrections of the operator
 using LinearAlgebra
 using Printf
 
@@ -34,14 +35,9 @@ const LEC         = parse(Float64, get(ENV, "BI_PC_LEC",         "2.5"))
 const LHS_TOL     = parse(Float64, get(ENV, "BI_PC_LHS_TOL",     "1e-6"))
 const GMRES_RTOL  = parse(Float64, get(ENV, "BI_PC_GMRES_RTOL",  "1e-8"))
 const MAXDEPTH    = parse(Int,     get(ENV, "BI_PC_MAXDEPTH",    "8"))
-const MAX_ORDER   = parse(Int,     get(ENV, "BI_PC_MAX_ORDER",   "8"))
 const ITMAX       = parse(Int,     get(ENV, "BI_PC_ITMAX",       "1000"))
 const SRC_WIDTH   = parse(Float64, get(ENV, "BI_PC_SRC_WIDTH",   "0.3"))
 const SRC_N       = parse(Int,     get(ENV, "BI_PC_SRC_N",       "9"))
-# With the default (false), rim panels get NO near correction and the conditioning of A
-# degrades as the edges are refined — so N_it is NOT mesh-independent. Set to 1 to measure
-# the properly corrected operator.
-const CORRECT_EDGES = get(ENV, "BI_PC_CORRECT_EDGES", "0") in ("1", "true")
 
 "Normalized Gaussian of width `width` on a uniform (SRC_N)³ grid spanning ±3σ."
 function gaussian_source(center::NTuple{3, Float64}, width::Float64;
@@ -85,9 +81,8 @@ function run_case(label, boxes, epses, src_center; eps_out = 1.0)
     out = Dict{Bool, NamedTuple}()
     for pc in (false, true)
         t = @elapsed ((Σ, stats) = solve_dielectric_box3d_block(interface, [vs];
-            fmm_tol = LHS_TOL, up_tol = LHS_TOL, max_order = MAX_ORDER,
+            fmm_tol = LHS_TOL, up_tol = LHS_TOL,
             rtol = GMRES_RTOL, itmax = ITMAX, precondition = pc,
-            correct_edges = CORRECT_EDGES,
             screen_boxes = boxes, screen_epses = epses, screen_eps_out = eps_out))
         out[pc] = (; niter = stats.niter, solved = stats.solved, time = t, sigma = Σ[:, 1])
     end
@@ -123,7 +118,7 @@ sweep = [run_case(@sprintf("three-material, ε₂=%g", e2),
 # --- Report -------------------------------------------------------------------------
 println()
 println("p = $NQUAD, τ_rhs = $RHS_TOL, τ_lhs = $LHS_TOL, l_ec = $LEC, ",
-        "gmres_rtol = $GMRES_RTOL, correct_edges = $CORRECT_EDGES")
+        "gmres_rtol = $GMRES_RTOL")
 println()
 @printf("%-28s %9s %8s %8s %8s %9s %9s %10s\n",
     "case", "N", "|γ|spread", "N_it", "N_it(P)", "t (s)", "t(P) (s)", "‖Δσ‖/‖σ‖")

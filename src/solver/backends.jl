@@ -22,26 +22,41 @@ implements `far_field_operator(far, interface)`, returning an object `F` with
 abstract type FarField end
 
 """
-    FMM3DFarField(tol)
+    FMM3DFarField(tol; close = 0.0)
 
 Far field by FMM3D's `lfmm3d` at tolerance `tol`; a block of `K` densities is one vectorized FMM (`nd = K`).
+FMM3D's direct sum between two points a distance r apart carries a relative error ~1e-17/r (its tree shifts and
+scales the coordinates), far above rounding for the node pairs a GCQ rule puts on both sides of an edge (r ~ 1e-13:
+1e-4), where the near correction must cancel that term to many digits. With `close` > 0 the nodes that have another
+node closer than `close` are no FMM sources: their contributions are summed directly, with the same arithmetic as the
+node-rule term the near corrections subtract (`dt_node_rule_block`), so the cancellation is exact up to rounding.
 """
 struct FMM3DFarField <: FarField
     tol::Float64
+    close::Float64
 end
+FMM3DFarField(tol::Real; close::Real = 0.0) = FMM3DFarField(Float64(tol), Float64(close))
 
 """
-    SCTLFarField(; tol = 1e-10)
+    SCTLFarField(; tol = 1e-10, close = nothing)
 
 Far field by SCTL.jl's `ParticleFMM` (PVFMM, OpenMP, no MPI) at relative accuracy `tol`, keeping the octree across
 applications; with fewer than 40000 nodes it is an exact direct sum. PVFMM's gradients lose about 1.5 digits, so it
 runs with `-log10(tol) + 2` digits (at most 15; PVFMM reaches about 1e-11 at best). Needs `using SCTL` (the
 `DielectricBIESCTLExt` extension). A block of `K` densities is `K` evaluations on the same tree.
+
+Like FMM3D (see [`FMM3DFarField`](@ref)), PVFMM's sum between two points a distance r apart is off by ~1e-16/r
+relative (3e-5 at r = 1e-11), so the nodes with a neighbour closer than `close` are summed directly instead, with
+the arithmetic of the node-rule term the near corrections subtract. `close = nothing` (default): 1e-4 times the
+diameter of the node set; `close = 0`: everything through PVFMM.
 """
 struct SCTLFarField <: FarField
     tol::Float64
+    close::Union{Nothing, Float64}
 end
-SCTLFarField(; tol::Real = 1e-10) = SCTLFarField(Float64(tol))
+SCTLFarField(; tol::Real = 1e-10, close::Union{Nothing, Real} = nothing) =
+    SCTLFarField(Float64(tol), close === nothing ? nothing : Float64(close))
+SCTLFarField(tol::Real) = SCTLFarField(; tol)
 
 """
     point_charge_field(far::FarField, sources, charges, targets; grad = false, hess = false)
@@ -108,12 +123,44 @@ struct FMM3DDTFar
     weights::Vector{Float64}
     norms::Matrix{Float64}
     tol::Float64
+    close::Vector{Int}          # nodes summed directly instead of by the FMM (FMM3DFarField's `close`)
 end
 
 function far_field_operator(far::FMM3DFarField, interface::DielectricInterface)
     sources, norms = _interface_targets_normals(interface)
-    return FMM3DDTFar(Matrix{Float64}(sources), Vector{Float64}(all_weights(interface)),
-                      Matrix{Float64}(norms), far.tol)
+    S = Matrix{Float64}(sources)
+    return FMM3DDTFar(S, Vector{Float64}(all_weights(interface)), Matrix{Float64}(norms), far.tol,
+                      _close_nodes(S, far.close))
+end
+
+# the nodes (columns of X) with another node closer than `close` (none for close <= 0); `nothing`: 1e-4 times the
+# diameter of the node set
+function _close_nodes(X::AbstractMatrix, close)
+    c = close === nothing ? 1e-4 * norm(vec(maximum(X, dims = 2) .- minimum(X, dims = 2))) : close
+    c > 0 || return Int[]
+    return [i for (i, nb) in enumerate(inrange(KDTree(X), X, c)) if length(nb) > 1]
+end
+
+# Y += the node-rule D^T of the `close` nodes as sources, at every node (the arithmetic of dt_node_rule_block)
+function _close_direct!(Y::AbstractMatrix, X::AbstractMatrix, sources::AbstractMatrix, norms::AbstractMatrix,
+                        weights::AbstractVector, close::AbstractVector{Int})
+    isempty(close) && return Y
+    Threads.@threads for i in axes(sources, 2)
+        @inbounds begin
+            x1 = sources[1, i]; x2 = sources[2, i]; x3 = sources[3, i]
+            n1 = norms[1, i]; n2 = norms[2, i]; n3 = norms[3, i]
+            for j in close
+                d1, d2, d3 = x1 - sources[1, j], x2 - sources[2, j], x3 - sources[3, j]
+                r2 = d1^2 + d2^2 + d3^2
+                r2 == 0 && continue
+                b = weights[j] * (n1 * d1 + n2 * d2 + n3 * d3) / (4π * r2 * sqrt(r2))
+                for k in axes(X, 2)
+                    Y[i, k] += b * X[j, k]
+                end
+            end
+        end
+    end
+    return Y
 end
 
 function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
@@ -124,6 +171,7 @@ function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
             charges[k, i] = F.weights[i] * X[i, k]
         end
     end
+    charges[:, F.close] .= 0
     vals = lfmm3d(F.tol, F.sources, charges = charges, pg = 2, nd = K)
     grad = reshape(vals.grad, K, 3, n)    # (K, 3, n); also for nd == 1
     Threads.@threads for i in 1:n
@@ -134,7 +182,7 @@ function apply_far!(Y::AbstractMatrix, F::FMM3DDTFar, X::AbstractMatrix)
             end
         end
     end
-    return Y
+    return _close_direct!(Y, X, F.sources, F.norms, F.weights, F.close)
 end
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -148,10 +196,14 @@ Near-field quadrature of the dielectric operator: [`near_corrections`](@ref)`(q,
 `N × N` correction `C` = (accurate `D^T`) - (node-rule `D^T`), so that `D^T_nodes + C` is the corrected operator.
 
 Built in:
-- [`UpsampledNearQuad`](@ref): upsampling plus adaptive quadtrees for `FlatPanel` interfaces (the default there);
-- [`GCQNearQuad`](@ref): the product-integration rules of the GCQ edge panels (`TensorPanel` interfaces, default);
-- [`SCTLNearQuad`](@ref): SCTL's singular quadrature of `QuadElemList` (needs `SCTLFarField` and `using SCTL`);
-- [`SCTLNearCorrection`](@ref): the same quadrature as a sparse correction, with any far field (`using SCTL`);
+- [`SCTLNearCorrection`](@ref): SCTL's near and singular quadrature of Gauss-Legendre × Gauss-Legendre panels
+  ([`sctl_gl_corrections`](@ref)) as a sparse correction, with any far field (`FlatPanel` interfaces, default;
+  `using SCTL`);
+- [`GCQNearQuad`](@ref): the product-integration rules of the GCQ edge and corner panels, SCTL's for the
+  Gauss-Legendre ones (`TensorPanel` interfaces, default);
+- [`SCTLCurvedNearQuad`](@ref): `CurvedPanel` interfaces, GCQ edge panels included (default; `using SCTL`);
+- [`SCTLNearQuad`](@ref): SCTL's singular quadrature of `QuadElemList` as its whole operator (needs `SCTLFarField`
+  and `using SCTL`);
 - [`CorrectionMatrix`](@ref) (a precomputed `C`) and [`FunctionNearQuad`](@ref) (`C = f(interface)`).
 
 A self-defined quadrature is a subtype with a `near_corrections` method:
@@ -173,9 +225,9 @@ abstract type NearQuadrature end
     near_corrections(q::NearQuadrature, interface, sources) -> SparseMatrixCSC
 
 The sparse near correction `C` of `q` (see [`NearQuadrature`](@ref)). With `sources` (panel indices) only the
-columns of those source panels, the others zero: what a combination of quadratures (e.g.
-[`SCTLProxyNearQuad`](@ref)'s fallback) asks for. The default computes all columns and drops the others; a
-quadrature that can do less work implements the three-argument method (as [`GCQNearQuad`](@ref) does).
+columns of those source panels, the others zero: what a combination of quadratures asks for. The default computes
+all columns and drops the others; a quadrature that can do less work implements the three-argument method (as
+[`GCQNearQuad`](@ref) and [`SCTLNearCorrection`](@ref) do).
 """
 function near_corrections end
 
@@ -195,35 +247,13 @@ function _keep_source_columns(C::SparseMatrixCSC, interface::DielectricInterface
 end
 
 """
-    UpsampledNearQuad(; up_tol = 1e-9, max_order = 8, correct_edges = true, adaptive_atol = up_tol,
-                      adaptive_rtol = sqrt(eps()), adaptive_n_GL = 0, adaptive_max_depth = 20)
-
-Near corrections of `laplace3d_DT_fmm3d_corrected` for `FlatPanel` interfaces: Bernstein-radius neighbor
-lists, upsampled quadrature for near pairs and adaptive quadtrees for touching pairs.
-"""
-Base.@kwdef struct UpsampledNearQuad <: NearQuadrature
-    up_tol::Float64 = 1e-9
-    max_order::Int = 8
-    correct_edges::Bool = true
-    adaptive_atol::Float64 = up_tol
-    adaptive_rtol::Float64 = sqrt(eps(Float64))
-    adaptive_n_GL::Int = 0
-    adaptive_max_depth::Int = 20
-end
-
-function near_corrections(q::UpsampledNearQuad, interface::DielectricInterface)
-    cfg = AdaptiveConfig(q.adaptive_atol, q.adaptive_rtol, q.adaptive_n_GL, q.adaptive_max_depth)
-    (; upsample, adaptive) = build_neighbor_list(interface, q.max_order, q.up_tol;
-        correct_edges = q.correct_edges, adaptive_cfg = cfg)
-    return SparseMatrixCSC{Float64, Int}(laplace3d_DT_corrections(interface, upsample, adaptive))
-end
-
-"""
     GCQNearQuad(; quad_tol = 1e-12, η_gcq = 2.0, reuse = true, gcq_far = :max)
 
-Near corrections of `TensorPanel` (GCQ) interfaces, from [`laplace3d_DT_tensor_corrections`](@ref).
-`gcq_far = :direction` measures the near distance of edge panels against their GCQ direction instead of their
-larger side (see `tensor_isfar`).
+Near corrections of `TensorPanel` (GCQ) interfaces, from [`laplace3d_DT_tensor_corrections`](@ref): DielectricBIE's
+product integration for the GCQ edge and corner panels, SCTL's quadrature ([`sctl_gl_corrections`](@ref) at
+`quad_tol`) for the Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)), which needs `using SCTL` when the
+interface has any. `η_gcq`, `reuse` and `gcq_far` concern the GCQ panels: `gcq_far = :direction` measures the near
+distance of edge panels against their GCQ direction instead of their larger side (see `tensor_isfar`).
 """
 Base.@kwdef struct GCQNearQuad <: NearQuadrature
     quad_tol::Float64 = 1e-12
@@ -257,10 +287,12 @@ near_corrections(::SCTLNearQuad, interface) =
 """
     SCTLNearCorrection(; tol = 1e-10)
 
-SCTL's near correction as a sparse matrix: SCTL's near test (which targets are near which panel) and the singular /
-near-singular quadrature of its `QuadElemList`, minus the node rule (SCTL.jl's `near_correction`). For `FlatPanel`
-interfaces with `n_quad` in 4, 8, 12, 16, 20; unlike [`SCTLNearQuad`](@ref) it combines with any far field
-(`FMM3DFarField` too). Needs `using SCTL`.
+SCTL's near correction as a sparse matrix, for interfaces of Gauss-Legendre × Gauss-Legendre panels
+([`is_gl_panel`](@ref): `FlatPanel`s of any `n_quad` up to 20, GL `TensorPanel`s, GL `CurvedPanel`s with 4, 8, 12, 16
+or 20 nodes per direction): [`sctl_gl_corrections`](@ref)`(interface, panels; tol)`, SCTL's near test and singular /
+near-singular quadrature, each panel one SCTL element (a proxy element of the next SCTL order when its node count is
+not one), minus the node rule. A GCQ panel throws an `ArgumentError`. The default for `FlatPanel` interfaces; unlike
+[`SCTLNearQuad`](@ref) it combines with any far field (`FMM3DFarField` too). Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLNearCorrection <: NearQuadrature
     tol::Float64 = 1e-10
@@ -270,41 +302,39 @@ near_corrections(::SCTLNearCorrection, interface) =
     error("SCTLNearCorrection needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """
-    SCTLProxyNearQuad(; tol = 1e-12, fallback = GCQNearQuad(), polynomial = default_polynomial_panel, order = nothing)
+    SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9)
 
-SCTL's near quadrature for any panels whose density is a polynomial, through proxy elements, and `fallback` for the
-others. For each panel `k` with `polynomial(panel)` true:
+SCTL's near and on-surface quadrature for `CurvedPanel` interfaces (the default there), GCQ edge panels included.
+The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)) get [`sctl_gl_corrections`](@ref) at `tol`: each
+one SCTL element of its own order (4, 8, 12, 16 or 20 nodes per direction; the element's geometry is SCTL's
+interpolant of the map at that order, which bounds the accuracy on large panels). `order`, `η` and `ε_rel` concern
+the GCQ edge panels, as follows.
 
-1. a proxy `QuadElemList` element of order `order` (default: the smallest of 4, 8, 12, 16, 20 at least the panels'
-   node counts per direction) with the panel's geometry;
-2. SCTL's classification (near radius at `tol`) of all interface nodes against it;
-3. SCTL's near-singular rule for the near targets (off the panel's plane; `Dᵀ` vanishes in it), times the
-   interpolation from the panel's nodes to the proxy's, which is exact for the panel's polynomial density;
-4. minus the node rule ([`dt_node_rule_block`](@ref)).
+A GCQ panel's u-segments (the fine segments of its GCQ rule) of aspect ratio (v-length / width) up to 4 are proxy
+`QuadElemList` elements of order `order` (default: the smallest of 16, 20 at least the segments' node counts: the
+proxies carry the curved geometry too, which order 8 resolves only to ~1e-4 on a 45° sphere panel), in the panel's
+own frame, the density on each interpolated from the panel's nodes (`tensor_rule_interp`). Thinner segments (next to
+an edge: GCQ fine segments down to 2^-K of the panel), on which SCTL's rule is inaccurate, are integrated row by row:
+by their fine Gauss nodes in u (the weight s^pw included; the segments below half the target's distance from the
+edge merged into one 20-point rule) and adaptive quadrature in v when the target is at least a segment width away,
+and by square SCTL elements in a small window about the target in v otherwise. For a panel's own nodes x - y is
+formed from tangent integrals, never by subtracting positions (near an edge n·(x - y) is below their rounding); other
+targets are measured from their nearest node of the panel.
 
-The other panels' columns come from `near_corrections(fallback, interface, sources)`, so only those are computed.
-The defaults suit GCQ boxes: SCTL for the Gauss-Legendre panels (`kind == :gl`), the GCQ rules for the edge and
-corner panels, whose densities are singular. For `FlatPanel` interfaces every panel is polynomial and the fallback
-is unused. Combines with any far field. Needs `using SCTL`.
+A target is near a GCQ panel when it lies within `η` times the panel's diameter of one of its nodes. On the panel
+itself SCTL's rule returns a one-sided limit, so a target on its own element gets the principal value from the two
+sides, x ± εn and x ± 2εn (ε = `ε_rel` × the element's diameter), Richardson-extrapolated. The correction is the
+accurate block minus the node rule ([`dt_node_rule_block`](@ref)); combines with any far field. Needs `using SCTL`.
 """
-Base.@kwdef struct SCTLProxyNearQuad{Q, F} <: NearQuadrature
-    tol::Float64 = 1e-12
-    fallback::Q = GCQNearQuad()
-    polynomial::F = default_polynomial_panel
+Base.@kwdef struct SCTLCurvedNearQuad <: NearQuadrature
+    tol::Float64 = 1e-10
     order::Union{Nothing, Int} = nothing
+    η::Float64 = 1.5
+    ε_rel::Float64 = 1e-9
 end
 
-"""
-    default_polynomial_panel(panel) -> Bool
-
-Whether a panel's density is a tensor polynomial through its nodes (so SCTL's quadrature applies): every `FlatPanel`,
-and `TensorPanel`s with Gauss-Legendre rules in both directions (`kind == :gl`).
-"""
-default_polynomial_panel(::FlatPanel) = true
-default_polynomial_panel(p::TensorPanel) = p.kind == :gl
-
-near_corrections(::SCTLProxyNearQuad, interface) =
-    error("SCTLProxyNearQuad needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+near_corrections(::SCTLCurvedNearQuad, interface) =
+    error("SCTLCurvedNearQuad needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """
     sctl_near_list(interface; tol = 1e-10, radius = nothing, targets = nothing) -> SCTL.NearList
@@ -351,6 +381,49 @@ function dt_node_rule_block(interface::DielectricInterface, k::Integer, targets:
 end
 
 """
+    sctl_gl_corrections(interface, sources; tol, kernel = :DT) -> SparseMatrixCSC{Float64, Int}
+
+SCTL's near correction of the GL×GL panels `sources` (panel indices, [`is_gl_panel`](@ref)): the `N × N` matrix,
+rows = interface nodes, nonzero only in the columns of `sources`, of (SCTL's accurate block) − (DielectricBIE's node
+rule) for every target near a source panel. `kernel = :DT` is `Dᵀ` (`w_j n_i·(x_i − y_j) / (4π r³)`, the node rule
+[`dt_node_rule_block`](@ref)); `kernel = :D` the double layer with the sign of `laplace3d_D_fmm3d`
+(`w_j n_j·(y_j − x_i) / (4π r³)`). Added to the node rule (the far field) it gives the accurate operator.
+
+Each source panel is one SCTL element (`QuadElemList`) over its parameter square, with the panel's map:
+- order `n`, the panel's node count per direction, when `n` is one of SCTL's orders 4, 8, 12, 16, 20 (the same in u
+  and v): its nodes are the panel's (checked to 1e-13 of the panel's size). An interface node of such a panel is
+  passed to SCTL with the element node's exact coordinates, so that it gets SCTL's Duffy self row;
+- otherwise (`FlatPanel`, `TensorPanel`) a proxy element of the next SCTL order, the density interpolated from the
+  panel's nodes (exact: it is a polynomial of lower degree). A `CurvedPanel` must have an SCTL order.
+The element's geometry is SCTL's order-`p` interpolant of the map, which bounds the accuracy on curved panels (unit
+sphere, 40 panels: `Dᵀ1` off by 2e-4 at `n = 8`, 5e-9 at 16, 9e-12 at 20). A target is near a panel within the
+near radius at `tol` of the panel's own node rule, which the far field sums: SCTL's (`far_field_nodes`) when the
+element is the panel; for a proxy, SCTL's formula (the accuracy ellipse of the panel's `n`-point rule, at the proxy's
+nodes) evaluated in Julia. On a flat panel, `Dᵀ` vanishes for targets in its plane with its normal and `D` for all
+targets in its plane: those rows are zero.
+
+Throws an `ArgumentError` for a non-GL panel in `sources`, a GL panel above [`GL_MAX_ASPECT`](@ref)
+([`check_gl_aspect`](@ref)), a `CurvedPanel` whose node counts differ in u and v or are not an SCTL order (or whose
+nodes are not SCTL's), and more than 20 nodes per direction. Needs `using SCTL`.
+"""
+sctl_gl_corrections(interface, sources; kwargs...) =
+    error("sctl_gl_corrections needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
+    sctl_gl_potential_corrections(interface, sources, targets; tol) -> SparseMatrixCSC{Float64, Int}
+
+SCTL's near correction of the single-layer potential `∫ σ(y) / (4π |x − y|) dS_y` of the GL×GL panels `sources` at
+the points `targets` (`3 × Nt`): the `Nt × N` matrix of (SCTL's accurate block) − (the node rule
+`w_j / (4π |x − y_j|)`, zero where `x = y_j`), nonzero only in the columns of `sources`. Elements, proxies and near
+radii as for [`sctl_gl_corrections`](@ref); a target within 1e-13 of a panel's size of a node of a non-proxied panel
+is passed with the node's exact SCTL coordinates and gets SCTL's Duffy self row. A target on a node of a proxied
+panel throws an `ArgumentError` (SCTL has no self row there), as do the cases listed for `sctl_gl_corrections`.
+Needs `using SCTL`.
+"""
+sctl_gl_potential_corrections(interface, sources, targets; kwargs...) =
+    error("sctl_gl_potential_corrections needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
+
+"""
     CorrectionMatrix(C)
 
 A precomputed near correction `C` (sparse `N × N`), e.g. from a quadrature computed elsewhere.
@@ -386,10 +459,22 @@ _near_quadrature(f::Function) = FunctionNearQuad(f)
 """
     default_near_quadrature(interface) -> NearQuadrature
 
-[`UpsampledNearQuad`](@ref)`()` for `FlatPanel` interfaces, [`GCQNearQuad`](@ref)`()` for `TensorPanel` ones.
+[`SCTLNearCorrection`](@ref)`()` for `FlatPanel` interfaces, [`GCQNearQuad`](@ref)`()` for `TensorPanel` ones,
+[`SCTLCurvedNearQuad`](@ref)`()` for `CurvedPanel` ones. The Gauss-Legendre × Gauss-Legendre panels' corrections are
+SCTL's in all three ([`sctl_gl_corrections`](@ref)): they need `using SCTL`.
 """
-default_near_quadrature(::DielectricInterface{<:FlatPanel}) = UpsampledNearQuad()
+default_near_quadrature(::DielectricInterface{<:FlatPanel}) = SCTLNearCorrection()
 default_near_quadrature(::DielectricInterface{<:TensorPanel}) = GCQNearQuad()
+default_near_quadrature(::DielectricInterface{<:CurvedPanel}) = SCTLCurvedNearQuad()
+
+"""
+    default_far_field() -> FarField
+
+`SCTLFarField()` (PVFMM, tol 1e-10, close node pairs summed directly) when SCTL is loaded (`using SCTL`), else
+`FMM3DFarField(1e-9)`.
+"""
+default_far_field() =
+    Base.get_extension(@__MODULE__, :DielectricBIESCTLExt) === nothing ? FMM3DFarField(1e-9) : SCTLFarField()
 
 # The two operator parts (far-field evaluator, correction or `nothing`); a backend that computes the whole D^T
 # (SCTL's operator for SCTLNearQuad) overrides this for its (far, near) pair.
@@ -414,21 +499,21 @@ struct DielectricOperator{F}
 end
 
 """
-    dielectric_operator(interface; far = FMM3DFarField(1e-9), near = default_near_quadrature(interface))
+    dielectric_operator(interface; far = default_far_field(), near = default_near_quadrature(interface))
 
 The dielectric BIE operator `τ I + D^T` of `interface` from a far-field backend ([`FarField`](@ref)) and a near
 quadrature ([`NearQuadrature`](@ref), or a sparse correction matrix, or a function `interface -> C`). Examples:
 
 ```julia
-A = dielectric_operator(interface)                                     # FMM3D + DielectricBIE's quadrature
-A = dielectric_operator(interface; far = SCTLFarField(tol = 1e-10))    # SCTL's FMM (using SCTL)
+A = dielectric_operator(interface)                                     # default far field and near quadrature
+A = dielectric_operator(interface; far = FMM3DFarField(1e-12; close = 1e-4))    # FMM3D
 A = dielectric_operator(interface; far = SCTLFarField(), near = SCTLNearQuad())  # all SCTL (FlatPanel)
 A = dielectric_operator(gcq_interface; far = SCTLFarField(), near = GCQNearQuad(quad_tol = 1e-12))
 A = dielectric_operator(gcq_interface; near = MyQuad(...))             # a self-defined quadrature
 ```
 """
 function dielectric_operator(interface::DielectricInterface;
-                             far::FarField = FMM3DFarField(1e-9), near = default_near_quadrature(interface))
+                             far::FarField = default_far_field(), near = default_near_quadrature(interface))
     F, C = _dt_parts(far, _near_quadrature(near), interface)
     C === nothing || (C = BlockCorrection(C, interface))
     diag = reduce(vcat, [fill(dielectric_tau(interface.eps_in[i], interface.eps_out[i]), num_points(p))
@@ -462,35 +547,29 @@ Base.:*(op::DielectricOperator, x::AbstractVector) = mul!(Vector{Float64}(undef,
 
 How the single-layer potential `u(x) = ∫ G(x - y) σ(y) dS_y` of a solved density is evaluated at targets off (or
 near) the interface: [`potential_operator`](@ref)`(ev, interface, targets)` returns a `LinearMap` `P` (`Nt × N`),
-applied to one density at a time (`P * σ`). Available: [`HCubaturePotential`](@ref) (default) and
-[`SCTLPotential`](@ref) (needs `using SCTL`).
+applied to one density at a time (`P * σ`). Available: [`SCTLPotential`](@ref) (the default of
+`evaluate_batch_potential`, `four_index_matrix` and the campaign's eval phase) for Gauss-Legendre × Gauss-Legendre
+interfaces, and [`GCQPotential`](@ref) for `TensorPanel` (GCQ) interfaces. `SCTLPotential` needs `using SCTL`, and so
+does `GCQPotential` on an interface with GL×GL panels.
 """
 abstract type PotentialEvaluator end
 
 """
-    HCubaturePotential(tol; range_factor = 5.0)
-
-`laplace3d_pottrg_fmm3d_corrected_hcubature`: panels near targets are refined, FMM3D evaluates the node rule, and
-targets within `range_factor × (panel size) / n_quad` of a panel's centre get an adaptive cubature (HCubature)
-correction. Targets near the edges or corners of panels can fall outside that range and get no correction (errors
-up to 1e-3 at distances 1e-4 from the surface were measured); see [`SCTLPotential`](@ref).
-"""
-struct HCubaturePotential <: PotentialEvaluator
-    tol::Float64
-    range_factor::Float64
-end
-HCubaturePotential(tol::Real; range_factor::Real = 5.0) = HCubaturePotential(Float64(tol), Float64(range_factor))
-
-"""
     SCTLPotential(; tol = 1e-10)
 
-SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein radius at `tol`), its near-singular rule (each target's
-closest point on the panel, dyadic refinement toward it) and PVFMM for the far field, the octree kept for all
-densities. Accurate to about `tol` at any distance from the surface, except for rounding: the near correction
-cancels the node rule's term of the nearest node, which for a target at distance `d` from a node costs about
-`1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Any panels with polynomial densities ([`default_polynomial_panel`](@ref):
-`FlatPanel`s of any `n_quad` ≤ 20, Gauss-Legendre `TensorPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or
-20 with the panel's geometry, the density interpolated to its nodes (exact). Needs `using SCTL`.
+SCTL's `BoundaryIntegralOp` for the Laplace single layer with the targets set: SCTL's near test (per-node Bernstein
+radius at `tol`), its near-singular rule (each target's closest point on the panel, dyadic refinement toward it) and
+PVFMM for the far field, the octree kept for all densities. Accurate to about `tol` at any distance from the surface,
+except for rounding: the near correction cancels the node rule's term of the nearest node, which for a target at
+distance `d` from a node costs about `1e-16 × (node spacing) / d` (1e-9 at `d = 5e-9`). Gauss-Legendre ×
+Gauss-Legendre panels ([`is_gl_panel`](@ref): `FlatPanel`s of any `n_quad` ≤ 20, GL `TensorPanel`s and
+`CurvedPanel`s): each is a proxy SCTL element of order 4, 8, 12, 16 or 20 with the panel's geometry, the density
+interpolated to its nodes (exact); an interface with GCQ edge or corner panels is an `ArgumentError` (use
+[`GCQPotential`](@ref)). On the surface: a target within max(1e-13 × the panel's size, 2^-48 × the extent of nodes
+and targets) of a node of a panel with 4, 8, 12, 16 or 20 nodes per direction (its own element) is moved onto the
+element's node, where SCTL's row is the Duffy self row; elsewhere, the proxies' nodes included, the near-singular rule
+(the single layer is continuous). The default evaluator of `evaluate_batch_potential`, `four_index_matrix` (both with
+`tol = lhs_tol`) and the campaign's eval phase. Needs `using SCTL`.
 """
 Base.@kwdef struct SCTLPotential <: PotentialEvaluator
     tol::Float64 = 1e-10
@@ -502,9 +581,6 @@ end
 The off-surface single-layer potential operator, a `LinearMap` of size `size(targets, 2) × num_points(interface)`, for
 densities in the interface's node order: `P * σ` (for a block apply it per column; `P * Σ` is a lazy map).
 """
-potential_operator(ev::HCubaturePotential, interface::DielectricInterface, targets::AbstractMatrix) =
-    laplace3d_pottrg_fmm3d_corrected_hcubature(interface, Matrix{Float64}(targets), ev.tol, ev.tol, ev.range_factor)
-
 potential_operator(::SCTLPotential, interface, targets) =
     error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
@@ -512,10 +588,15 @@ potential_operator(::SCTLPotential, interface, targets) =
     GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, far = FMM3DFarField(1e-12))
 
 Off-surface single-layer potential for `TensorPanel` (GCQ) interfaces, accurate near edges and corners: the node
-rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus, for
-every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration row of
-`tensor_near_row` minus the node rule. The same quadrature as `potential_tensor`, which sums directly over all
-pairs; candidate pairs are found with a KD tree. `gcq_far` as for [`GCQNearQuad`](@ref).
+rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus near
+corrections. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)): SCTL's,
+[`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). The GCQ edge
+and corner panels: for every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration
+row of `tensor_near_row` minus the node rule; candidate pairs are found with a KD tree, `gcq_far` as for
+[`GCQNearQuad`](@ref). A target within max(1e-13 × a GL panel's size, 2^-48 × the extent of nodes and targets) of one
+of its nodes is moved onto the node first, so that the far field and SCTL's correction skip the same pair: a target on
+a node gets SCTL's Duffy self row (on a node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`).
+The same quadrature as [`potential_tensor`](@ref), which sums directly over all pairs.
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
@@ -533,23 +614,28 @@ _pottrg_far(far::SCTLFarField, interface, targets) =
 function potential_operator(ev::GCQPotential, interface::DielectricInterface{TensorPanel{T}, T},
                             targets::AbstractMatrix) where T
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
-    Xt = Matrix{Float64}(targets)
-    nt = size(Xt, 2)
     panels = interface.panels
+    gl = findall(is_gl_panel, panels)
+    Xt = _snap_to_gl_nodes(panels, gl, targets)
+    nt = size(Xt, 2)
     offs = cumsum([0; num_points.(panels)])
+    # the GL×GL panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
+    Cgl = isempty(gl) ? nothing : sctl_gl_potential_corrections(interface, gl, Xt; tol = ev.quad_tol)
+    # the GCQ panels: product integration
+    gcq = findall(!is_gl_panel, panels)
     G(d) = 1 / (4π * sqrt(d[1]^2 + d[2]^2 + d[3]^2))
     tree = KDTree(Xt)
     rows = [Int[] for _ in panels]; cols = [Int[] for _ in panels]; vals = [T[] for _ in panels]
-    foreach(p -> (_tensor_near_tables(p.ru); _tensor_near_tables(p.rv)), panels)
+    foreach(k -> (_tensor_near_tables(panels[k].ru); _tensor_near_tables(panels[k].rv)), gcq)
     _blas_single() do
-    Threads.@threads :dynamic for k in eachindex(panels)
+    Threads.@threads :dynamic for k in gcq
         ps = panels[k]
         ws = _TensorRowWS([ps])
         L = max(ps.Lu, ps.Lv)
         cc = ps.anchor .+ ps.o .+ (ps.Lu / 2) .* ps.eu .+ (ps.Lv / 2) .* ps.ev
         half_diag = hypot(ps.Lu, ps.Lv) / 2
         # every target that tensor_isfar can reject: within η L of a GCQ panel, or inside the Bernstein ellipse of
-        # the Gauss-Legendre directions (semi-axes A⋆, B⋆ in units of L/2, as in build_neighbor_list)
+        # the Gauss-Legendre directions at quad_tol (ρ = quad_tol^(-1/2n), semi-axes A⋆, B⋆ in units of L/2)
         n = min(length(ps.ru.x), length(ps.rv.x))
         ρs = ev.quad_tol^(-1 / (2n))
         As = (ρs + 1 / ρs) / 2; Bs = (ρs - 1 / ρs) / 2
@@ -566,7 +652,8 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
         end
     end
     end
-    C = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
+    Cgcq = sparse(reduce(vcat, rows), reduce(vcat, cols), reduce(vcat, vals), nt, offs[end])
+    C = Cgl === nothing ? Cgcq : _add_corrections(Cgcq, Cgl)     # (not reassigned: the closure below captures it)
     F = _pottrg_far(ev.far, interface, Xt)
     return LinearMap{Float64}(σ -> F * σ .+ C * σ, nt, offs[end])
 end

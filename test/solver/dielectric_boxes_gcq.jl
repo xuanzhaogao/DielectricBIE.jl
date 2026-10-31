@@ -2,6 +2,8 @@ using DielectricBIE
 import DielectricBIE as DB
 using LinearAlgebra
 using Test
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+using SCTL
 
 @testset "dielectric_tau and conductor edge powers" begin
     @test dielectric_tau(10.0, 1.0) ≈ 0.5 * (1.0 + 10.0) / (1.0 - 10.0)
@@ -36,17 +38,18 @@ end
     src = PointSource((0.0, 0.9, 0.1), 1.0)                       # outside: the cube is neutral
     qerr(sol) = abs(dot(DB.all_weights(sol.interface), sol.σ)) / dot(DB.all_weights(sol.interface), abs.(sol.σ))
     # R = 2: a constraint shift of +1 would make the deflated system singular here
+    # (nlev = 0, rule tol 1e-6: qerr(sd) ≈ 2e-7 for R = 1e6 and Inf; the plain system ≈ 7e-2 at R = 1e6)
     for R in (2.0, 1e6, Inf)
-        r = edge_gcq_rule(R, 1.0; tol = 1e-8)
-        parts = [single_dielectric_box3d_gcq(1.0, 1.0, 1.0, R, 1.0; nlev = 1, n_quad = 4, rule = r)]
-        sd = solve_dielectric_boxes_gcq(parts, src; rtol = 1e-12)
+        r = edge_gcq_rule(R, 1.0; tol = 1e-6)
+        parts = [single_dielectric_box3d_gcq(1.0, 1.0, 1.0, R, 1.0; nlev = 0, n_quad = 4, rule = r)]
+        sd = solve_dielectric_boxes_gcq(parts, src; rtol = 1e-10)
         @test sd.stats.solved
         @test qerr(sd) < 1e-6
         if R == 2.0
-            sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-12)
+            sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-10)
             @test qerr(sd) < 10 * qerr(sp)                         # low contrast: no worse than the plain system
         elseif isfinite(R)
-            sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-12)
+            sp = solve_dielectric_boxes_gcq(parts, src; deflate = false, rtol = 1e-10)
             @test qerr(sp) > 100 * qerr(sd)                        # the plain system's charge error grows ~ R
         else
             # perfect conductor: the total potential inside is constant
@@ -60,7 +63,7 @@ end
 
 @testset "GCQ solve: right contrast preconditioner" begin
     boxes = [(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0), (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)]
-    m = multi_dielectric_box3d_gcq(boxes, [12.0, 3.0], 1.0; nlev = 1, n_quad = 4, tol = 1e-6)
+    m = multi_dielectric_box3d_gcq(boxes, [12.0, 3.0], 1.0; nlev = 0, n_quad = 3, tol = 1e-3)
     itf = m.interface
     src = DielectricBIE.PointSource((0.3, 0.1, 0.8), 1.0)
     A = first(DielectricBIE.lhs_dielectric_box3d_gcq_fmm3d(itf, 1e-12; quad_tol = 1e-8))

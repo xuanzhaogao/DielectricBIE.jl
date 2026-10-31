@@ -8,7 +8,7 @@
 
 ## Build, Test, and Development Commands
 - Instantiate deps: `julia --project -e 'using Pkg; Pkg.instantiate()'`
-- Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
+- Run tests: `OMP_NUM_THREADS=8 julia --project=@sctl -t 8 test/runtests.jl`, from an environment holding the package, the unregistered SCTL.jl and the test dependencies (`Pkg.test()` cannot install SCTL.jl; see `docs/src/development.md` and `.github/workflows/CI.yml`)
 - Build docs locally: `julia --project=docs docs/make.jl`
 
 ## Coding Style & Naming Conventions
@@ -20,7 +20,7 @@
 ## Testing Guidelines
 - Tests use Julia’s `Test` stdlib; group new tests in `test/` and include them from `test/runtests.jl`.
 - Name test files by feature area (e.g., `test/kernel/laplace3d.jl`).
-- When adding functionality, add or extend a targeted test file and ensure `Pkg.test()` passes.
+- When adding functionality, add or extend a targeted test file and ensure `test/runtests.jl` passes (run as above).
 
 ## Commit & Pull Request Guidelines
 - Commit messages follow an imperative, sentence-style summary (e.g., “Add quad_order utility”).

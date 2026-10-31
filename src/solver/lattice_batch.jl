@@ -177,12 +177,14 @@ end
 
 """
     evaluate_batch_potential(interface, Σ, sources, targets;
-        lhs_tol, volume_tol, c_pad=5.0, range_factor=5.0) -> Φ (n_targets × K)
+        lhs_tol, volume_tol, c_pad=5.0, potential=nothing) -> Φ (n_targets × K)
 
 Total potential `Φ_a = u_inc[ρ_a] + u[σ_a]` of a solved batch at arbitrary targets.
 
-- `u[σ_a]`: corrected layer-potential map (FMM + hcubature near correction) built ONCE
-  for the target set, applied per column of Σ.
+- `u[σ_a]`: the layer-potential map of `potential`, a [`PotentialEvaluator`](@ref), by
+  default [`SCTLPotential`](@ref)`(tol = lhs_tol)` (needs `using SCTL`), built ONCE for the
+  target set, applied per column of Σ. `range_factor` (of the former HCubature evaluator) is
+  accepted and ignored.
 - `u_inc[rho_a]`: batch-level near/far split on the Section 3 padded near region
   B_pad (Eq. 3.9), `h_n = c_pad * ||A_rho||_2`. Near targets: TKM via
   PrecomputedVolumeField per source, on the paper's Fourier geometry
@@ -194,9 +196,8 @@ Total potential `Φ_a = u_inc[ρ_a] + u[σ_a]` of a solved batch at arbitrary ta
 All `sources` must share identical grid points (the batch convention); this is checked.
 
 Conventions match `four_index_matrix`: TKM returns the `1/(4π|r|)`-normalised potential
-and is used without further scaling; the scattered layer potential is the output of
-`laplace3d_pottrg_fmm3d_corrected_hcubature` applied to each column of Σ (or that of `potential`,
-a [`PotentialEvaluator`](@ref), e.g. `SCTLPotential(tol = lhs_tol)`).
+and is used without further scaling; the scattered layer potential is the map of `potential`
+applied to each column of Σ.
 """
 function evaluate_batch_potential(interface, Σ::AbstractMatrix,
         sources::Vector{<:VolumeSource{Float64, 3}}, targets::Matrix{Float64};
@@ -225,7 +226,7 @@ function evaluate_batch_potential(interface, Σ::AbstractMatrix,
     Φ = Matrix{Float64}(undef, nt, K)
 
     # scattered part: build the corrected map once, apply per column
-    pottrg = potential_operator(something(potential, HCubaturePotential(lhs_tol; range_factor)), interface, targets)
+    pottrg = potential_operator(something(potential, SCTLPotential(tol = lhs_tol)), interface, targets)
     for a in 1:K
         Φ[:, a] = pottrg * Σ[:, a]
     end
@@ -282,7 +283,8 @@ end
 
 Solve an explicit-pair batch: ONE shared interface refined on the batch envelope,
 then block GMRES over all pair densities. `far` / `near` select the operator backends as in
-[`solve_dielectric_box3d_block`](@ref).
+[`solve_dielectric_box3d_block`](@ref). `max_order` and `correct_edges`, of the former upsampling quadrature, are
+accepted for compatibility and ignored (SCTL corrects every panel, edges included).
 """
 function solve_dielectric_lattice_batch(boxes::Vector{BoxGeom}, epses::Vector{Float64},
         eps_out::Float64, b::LatticeBatch;

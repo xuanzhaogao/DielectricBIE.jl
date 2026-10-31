@@ -1,5 +1,7 @@
 using DielectricBIE, Test, LinearAlgebra, HCubature, SpecialFunctions
 import DielectricBIE as BI
+# the near corrections of GL×GL panels are SCTL's (sctl_gl_corrections): they need SCTL.jl
+using SCTL
 include(joinpath(@__DIR__, "fixture_cut.jl"))
 
 @testset "GCQ campaign mode: densities cut by a face" begin
@@ -19,14 +21,16 @@ include(joinpath(@__DIR__, "fixture_cut.jl"))
 
     # dz N[chi rho] on the plane and above it, chi = [z < 0], on a hexagonal lattice with a tilted third vector,
     # against adaptive cubature: depth u of the source, polar angle α about the vertical through y,
-    # dz N[chi rho](y) = -int du dα dφ sin(α) / (4π) rho
+    # dz N[chi rho](y) = -int du dα dφ sin(α) / (4π) rho  (to 7e-9 relative here; 5e-11 at maxevals = 10^7)
     ref(y) = -hcubature(v -> begin
             u, α, ϕ = v; r = (y[3] + u) * tan(α)
             sin(α) / (4π) * ρ((y[1] + r * cos(ϕ), y[2] + r * sin(ϕ), -u))
-        end, (0.0, 0.0, 0.0), (8σ, π / 2, 2π); rtol = 1e-10, atol = 1e-14, maxevals = 10^7)[1]
-    ea = [h, 0.0, 0.0]; eb = [-h / 2, h * sqrt(3) / 2, 0.0]; ec = [0.07h, -0.04h, 0.9h]
-    R = 7σ; n = ceil(Int, 2R / h) + 1; nz = ceil(Int, 2R / ec[3]) + 1
-    o = [xc[1] - R + (n ÷ 2) * h / 2, xc[2] - R, xc[3] - R - 0.37 * ec[3]]
+        end, (0.0, 0.0, 0.0), (8σ, π / 2, 2π); rtol = 1e-8, atol = 1e-14, maxevals = 3 * 10^5)[1]
+    # the in-plane spacing 2h (the in-plane rule is spectral; the levels along z, spacing 0.9h, set the error)
+    hp = 2h
+    ea = [hp, 0.0, 0.0]; eb = [-hp / 2, hp * sqrt(3) / 2, 0.0]; ec = [0.07h, -0.04h, 0.9h]
+    R = 7σ; n = ceil(Int, 2R / hp) + 1; nz = ceil(Int, 2R / ec[3]) + 1
+    o = [xc[1] - R + (n ÷ 2) * hp / 2, xc[2] - R, xc[3] - R - 0.37 * ec[3]]
     Fd = [ρ(o .+ (i - 1) .* ea .+ (j - 1) .* eb .+ (k - 1) .* ec) for i in 1:n, j in 1:n, k in 1:nz]
     Y = [0.2 -0.4 0.3; -0.1 0.3 -0.6; 0.0 0.0 0.6]
     A = BI._gcq_halfspace_dz(Fd, o, ea, eb, ec, 0.0, -1, Y)
@@ -60,7 +64,9 @@ include(joinpath(@__DIR__, "fixture_cut.jl"))
     # a campaign whose substrate face cuts three orbitals (a fourth above it): V converges with the grid, the same
     # Gaussian blob (to 6 sigma) sampled at h = 0.2 and 0.133 (TKM on the screened samples rho / eps is off by 2e-2 to
     # 6e-2 at any h here)
-    kw = (; far = :fmm3d, nlev = 1, quad_tol = 1e-8, edge_tol = 1e-8, tau = 1e-10, fg_tol = 1e-10, verbose = false)
+    # (the solver tolerances change V by 4e-8 relative from quad_tol = edge_tol = 1e-8, gmres_rtol = tau = fg_tol = 1e-10)
+    kw = (; far = :fmm3d, nlev = 1, quad_tol = 1e-6, edge_tol = 1e-5, rhs_tol = 1e-3, lhs_tol = 1e-6, gmres_rtol = 1e-6,
+            tau = 1e-6, fg_tol = 1e-8, verbose = false)
     rs = map((31, 46)) do n
         gcq_four_index(load_campaign(write_cut_campaign(mktempdir(), n; L = 6.0)); kw...)
     end

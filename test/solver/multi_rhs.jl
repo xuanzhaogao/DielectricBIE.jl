@@ -1,4 +1,5 @@
 using DielectricBIE
+using SCTL       # the near corrections of the operator (sctl_gl_corrections)
 using Test
 using Krylov
 
@@ -11,8 +12,8 @@ using Krylov
 
     # coarse agreement-test parameters
     NQ, RTOL_REFINE, LEC = 4, 1e-2, 2.0      # n_quad, rhs_atol, l_ec
-    FT, UT, MO = 1e-6, 1e-6, 8               # fmm_tol, up_tol, max_order
-    GTOL = 1e-8                              # gmres rtol
+    FT, UT, MO = 1e-6, 1e-6, 8               # fmm_tol, up_tol (SCTL's), max_order (ignored)
+    GTOL = 1e-6                              # gmres rtol (block vs looped agree to roundoff)
 
     # ---- fast tests that need no interface ----
     @testset "pair_density_source shared grid" begin
@@ -26,13 +27,15 @@ using Krylov
 
     # ---- K=1 system: build the interface / operator / RHS ONCE via .toml ----
     # system_small.toml: orb_a.xsf at (0,0,0), single on-site pair (1,1)
+    # The interface is refined on the batch envelope exactly as
+    # solve_dielectric_lattice_batch does; that solver itself (and its block GMRES) is
+    # tested in lattice_batch.jl, so it is not re-run here just to get the interface.
     c = load_campaign(joinpath(fixdir, "system_small.toml"))
     st1, dg1 = DielectricBIE.read_xsf(c.templates[1])
     insts = Dict(1 => OrbitalInstance(1, 1, (0, 0, 0)))
     b = assemble_lattice_batch([dg1], insts, [(1, 1)]; support_rtol = 1e-6)
-    res = solve_dielectric_lattice_batch(c.boxes, c.epses, c.eps_out, b;
-        n_quad = NQ, rhs_atol = RTOL_REFINE, l_ec = LEC, fmm_tol = FT, gmres_rtol = GTOL)
-    interface = res.interface
+    interface = multi_dielectric_box3d_rhs_adaptive(NQ, LEC, c.boxes, c.epses,
+        DielectricBIE.envelope_volume_source(b), RTOL_REFINE; eps_out = c.eps_out)
     vss = DielectricBIE.batch_volume_sources(b)
     Np = DielectricBIE.num_points(interface)
     op = batched_lhs_dielectric_box3d_fmm3d_corrected(interface, FT, UT, MO)
@@ -45,14 +48,16 @@ using Krylov
     end
 
     @testset "batched matvec == columnwise (Unit 5)" begin
-        ref = lhs_dielectric_box3d_fmm3d_corrected(interface, FT, UT, MO)
+        ref = dielectric_operator(interface; far = FMM3DFarField(FT), near = SCTLNearCorrection(tol = UT))
         x = collect(range(0.1, 1.0; length = Np))
-        @test maximum(abs.(op * x .- ref * x)) < 1e-9
+        ref_x = ref * x                      # reused for column 1 below (X[:, 1] == x)
+        @test maximum(abs.(op * x .- ref_x)) < 1e-9
         X = hcat(x, reverse(x), fill(0.5, Np))
         Y = op * X
         @test size(Y) == size(X)
         for c in 1:size(X, 2)
-            @test maximum(abs.(Y[:, c] .- ref * X[:, c])) < 1e-8
+            ref_c = c == 1 ? ref_x : ref * X[:, c]
+            @test maximum(abs.(Y[:, c] .- ref_c)) < 1e-8
         end
     end
 

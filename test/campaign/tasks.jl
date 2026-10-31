@@ -1,4 +1,6 @@
 using DielectricBIE, Test, LinearAlgebra
+# the default potential evaluator (SCTLPotential) needs SCTL.jl
+using SCTL
 
 @testset "eval_batch_core propagates lattice_basis on a skewed grid" begin
     # Regression guard for tasks.jl's `lb = ((At[1]/nx, ...), ...)` /

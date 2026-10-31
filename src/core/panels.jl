@@ -118,7 +118,7 @@ function Base.iterate(it::DielectricInterfaceIterator{P, T}, state = (1, nothing
     end
     
     panel_point, next_panel_state = result
-    D = length(panel.normal)
+    D = length(panel_point.normal)
     info = DielectricPointInfo{T, D}(
         panel_point,
         it.d.eps_in[panel_idx],

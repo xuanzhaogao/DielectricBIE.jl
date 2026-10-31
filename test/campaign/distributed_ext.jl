@@ -8,7 +8,7 @@ include("fixture_campaign.jl")
         run_phase(c, :solve; workers = 2)         # local addprocs(2)
         @test isempty(pending_batches(c, :solve))
         consolidate(c)
-        run_phase(c, :eval; workers = 2)
+        run_phase(c, :eval)                        # on the two workers already up (workers = 0 adds none)
         @test isempty(pending_batches(c, :eval))
         rmprocs(workers())                         # clean up
     end

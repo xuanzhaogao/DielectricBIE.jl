@@ -50,9 +50,10 @@ import DielectricBIE as BI
     Hy = reduce(hcat, hrow.(eachcol(Y)))
     @test maximum(abs, Ht(Y) - Hy) < 1e-9 * maximum(abs, Hy)
 
-    for (lohi, epses) in (([((-2.0, -2.0, -2.0), (xe, 2.0, 0.0))], [4.0]),
-                          ([((-2.0, -2.0, -2.0), (xe, 2.0, 0.0)), ((xe, -2.0, -2.0), (3.0, 2.0, 0.0)),
-                            ((-2.0, -2.0, 0.0), (xe, 2.0, 2.0)), ((xe, -2.0, 0.0), (3.0, 2.0, 2.0))], [4.0, 12.0, 2.0, 3.0]))
+    # four boxes meeting along the edge x = 0.8, z = 0 (a single box, whose faces z = 0 and x = 0.8 are among
+    # theirs, gives the same errors: 2.3e-12 exact, 2.1e-12 TKM)
+    for (lohi, epses) in (([((-2.0, -2.0, -2.0), (xe, 2.0, 0.0)), ((xe, -2.0, -2.0), (3.0, 2.0, 0.0)),
+                            ((-2.0, -2.0, 0.0), (xe, 2.0, 2.0)), ((xe, -2.0, 0.0), (3.0, 2.0, 2.0))], [4.0, 12.0, 2.0, 3.0]),)
         boxes = [box(l...) for l in lohi]; eps_out = 1.0
         Fref = [dot(ψex(Y[:, j]) .+ sum((1 / e - 1 / eps_out) .* gradN(Y[:, j], l...) for (l, e) in zip(lohi, epses)), Nn[:, j])
                 for j in 1:nt]
@@ -75,7 +76,9 @@ end
 include(joinpath(@__DIR__, "..", "campaign", "fixture_cut.jl"))
 @testset "GCQ campaign mode: cut densities, :surface (SCTL)" begin
     # four of the pairs (cut ones and the uncut onsite pair of the orbital above the face), to keep the solves few
-    kw = (; far = :fmm3d, nlev = 1, quad_tol = 1e-8, edge_tol = 1e-8, tau = 1e-10, fg_tol = 1e-10, verbose = false,
+    # (SCTL's far field: the FMM3D one is covered by test/campaign/gcq*.jl; at these tolerances the checks below
+    # measure 3.8e-5, 1.5e-6 and 2.4e-11, with either far field)
+    kw = (; far = :sctl, nlev = 1, quad_tol = 1e-6, edge_tol = 1e-6, tau = 1e-8, fg_tol = 1e-9, verbose = false,
           pairs = [(1, 1), (1, 2), (2, 4), (4, 4)])
     # one horizontal face cutting the orbitals: the surface corrections and the half-space formula agree
     c = load_campaign(write_cut_campaign(mktempdir(), 21))

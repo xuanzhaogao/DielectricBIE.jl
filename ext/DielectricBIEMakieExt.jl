@@ -3,7 +3,7 @@ module DielectricBIEMakieExt
 using Makie
 using DielectricBIE
 using DielectricBIE: VolumeSource
-using DielectricBIE: AbstractPanel, DielectricInterface, build_neighbor_list
+using DielectricBIE: AbstractPanel, DielectricInterface
 
 import DielectricBIE: viz_2d, viz_3d, viz_3d_surface, viz_3d_interface_solution, viz_3d_zslice, num_points, eachpoint
 import DielectricBIE: plot_campaign_geometry
@@ -95,8 +95,6 @@ function viz_3d!(
     show_points::Bool = true,
     highlight_panel::Union{Nothing, Int} = nothing,
     neighbor_list::Union{Nothing, Dict{Tuple{Int, Int}, Int}} = nothing,
-    neighbor_max_order::Union{Nothing, Int} = nothing,
-    neighbor_atol::Union{Nothing, T} = nothing,
     highlight_edges::Bool = false,
     highlight_color = :orange,
     neighbor_color = :green,
@@ -114,13 +112,9 @@ function viz_3d!(
     if highlight_panel !== nothing
         n_panels = length(interface.panels)
         (1 <= highlight_panel <= n_panels) || throw(ArgumentError("highlight_panel must be between 1 and $(n_panels)"))
-        if neighbor_list === nothing
-            if neighbor_max_order === nothing || neighbor_atol === nothing
-                throw(ArgumentError("highlight_panel requires neighbor_list or neighbor_max_order and neighbor_atol"))
-            end
-            neighbor_list = build_neighbor_list(interface, neighbor_max_order, neighbor_atol, true, true)
-        end
-        for ((i, j), ord) in neighbor_list
+        # neighbor_list: (i, j) => value, panel j a neighbor of panel i, colored by value (e.g. from sctl_near_list,
+        # see examples/highlight_neighbors_demo.jl); without it only the panel is highlighted
+        for ((i, j), ord) in something(neighbor_list, Dict{Tuple{Int, Int}, Int}())
             i == highlight_panel || continue
             push!(neighbor_indices, j)
             neighbor_orders[j] = ord
@@ -345,8 +339,6 @@ function viz_3d(
     show_points::Bool = true,
     highlight_panel::Union{Nothing, Int} = nothing,
     neighbor_list::Union{Nothing, Dict{Tuple{Int, Int}, Int}} = nothing,
-    neighbor_max_order::Union{Nothing, Int} = nothing,
-    neighbor_atol::Union{Nothing, T} = nothing,
     highlight_edges::Bool = false,
     highlight_color = :orange,
     neighbor_color = :green,
@@ -369,8 +361,6 @@ function viz_3d(
         show_points = show_points,
         highlight_panel = highlight_panel,
         neighbor_list = neighbor_list,
-        neighbor_max_order = neighbor_max_order,
-        neighbor_atol = neighbor_atol,
         highlight_edges = highlight_edges,
         highlight_color = highlight_color,
         neighbor_color = neighbor_color,
@@ -383,7 +373,7 @@ function viz_3d(
         neighbor_colorrange = neighbor_colorrange,
     )
     if add_neighbor_colorbar && nbr_plot !== nothing
-        Colorbar(fig[1, 2], nbr_plot, label = "neighbor order")
+        Colorbar(fig[1, 2], nbr_plot, label = "neighbor value")
     end
     return fig
 end
@@ -394,8 +384,6 @@ function viz_3d(
     show_points::Bool = true,
     highlight_panel::Union{Nothing, Int} = nothing,
     neighbor_list::Union{Nothing, Dict{Tuple{Int, Int}, Int}} = nothing,
-    neighbor_max_order::Union{Nothing, Int} = nothing,
-    neighbor_atol::Union{Nothing, T} = nothing,
     highlight_edges::Bool = false,
     highlight_color = :orange,
     neighbor_color = :green,
@@ -420,8 +408,6 @@ function viz_3d(
             show_points = show_points,
             highlight_panel = highlight_panel,
             neighbor_list = neighbor_list,
-            neighbor_max_order = neighbor_max_order,
-            neighbor_atol = neighbor_atol,
             highlight_edges = highlight_edges,
             highlight_color = highlight_color,
             neighbor_color = neighbor_color,
@@ -436,7 +422,7 @@ function viz_3d(
         nbr_plot === nothing && (nbr_plot = p)
     end
     if add_neighbor_colorbar && nbr_plot !== nothing
-        Colorbar(fig[1, 2], nbr_plot, label = "neighbor order")
+        Colorbar(fig[1, 2], nbr_plot, label = "neighbor value")
     end
     return fig
 end
@@ -576,8 +562,6 @@ function viz_3d(;
     show_points::Bool = true,
     highlight_panel::Union{Nothing, Int} = nothing,
     neighbor_list::Union{Nothing, Dict{Tuple{Int, Int}, Int}} = nothing,
-    neighbor_max_order = nothing,
-    neighbor_atol = nothing,
     highlight_edges::Bool = false,
     highlight_color = :orange,
     neighbor_color = :green,
@@ -611,8 +595,6 @@ function viz_3d(;
                 show_points = show_points,
                 highlight_panel = highlight_panel,
                 neighbor_list = neighbor_list,
-                neighbor_max_order = neighbor_max_order,
-                neighbor_atol = neighbor_atol,
                 highlight_edges = highlight_edges,
                 highlight_color = highlight_color,
                 neighbor_color = neighbor_color,

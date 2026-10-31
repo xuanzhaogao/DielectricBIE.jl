@@ -57,12 +57,19 @@ Base.size(op::BatchedDielectricOperator) = (op.n, op.n)
 Base.size(op::BatchedDielectricOperator, d::Integer) = d <= 2 ? op.n : 1
 Base.eltype(::BatchedDielectricOperator) = Float64
 
+"""
+    batched_lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order; kw...)
+        -> BatchedDielectricOperator
+
+The dielectric operator `τ I + Dᵀ` for blocks of densities: one FMM3D call at `fmm_tol` (`nd = K`) for the node rule
+of all `K` columns, plus SCTL's near and self corrections of every panel,
+[`sctl_gl_corrections`](@ref)`(interface, 1:npanels; tol = up_tol)` (needs `using SCTL`). The same operator as
+`dielectric_operator(interface; far = FMM3DFarField(fmm_tol), near = SCTLNearCorrection(tol = up_tol))`. `max_order`
+and the keywords of the former upsampling quadrature (`correct_edges`, `adaptive_*`) are accepted and ignored.
+"""
 function batched_lhs_dielectric_box3d_fmm3d_corrected(
     interface::DielectricInterface{P, Float64},
-    fmm_tol::Float64, up_tol::Float64, max_order::Int;
-    correct_edges::Bool = true,
-    adaptive_atol::Float64 = up_tol, adaptive_rtol::Float64 = sqrt(eps(Float64)),
-    adaptive_n_GL::Int = 0, adaptive_max_depth::Int = 20,
+    fmm_tol::Real, up_tol::Real, max_order::Integer; kw...
 ) where {P <: AbstractPanel}
     n = num_points(interface)
     sources = zeros(Float64, 3, n)
@@ -78,10 +85,7 @@ function batched_lhs_dielectric_box3d_fmm3d_corrected(
         norms[3, i] = point.panel_point.normal[3]
     end
 
-    adaptive_cfg = AdaptiveConfig(adaptive_atol, adaptive_rtol, adaptive_n_GL, adaptive_max_depth)
-    (; upsample, adaptive) = build_neighbor_list(interface, max_order, up_tol;
-        correct_edges = correct_edges, adaptive_cfg = adaptive_cfg)
-    corrections = laplace3d_DT_corrections(interface, upsample, adaptive)
+    corrections = sctl_gl_corrections(interface, 1:length(interface.panels); tol = Float64(up_tol))
 
     diag = Vector{Float64}(undef, n)
     offset = 0
@@ -95,7 +99,7 @@ function batched_lhs_dielectric_box3d_fmm3d_corrected(
         offset += np
     end
 
-    return BatchedDielectricOperator(sources, weights, norms, fmm_tol,
+    return BatchedDielectricOperator(sources, weights, norms, Float64(fmm_tol),
         BlockCorrection(corrections, interface), diag, n)
 end
 
@@ -252,13 +256,9 @@ end
 Low-level multi-RHS solve on a prebuilt shared interface: builds the batched operator and the
 N×K RHS, then block-GMRES solves A Σ = F for the layer densities Σ (N×K).
 
-`correct_edges` forwards to [`batched_lhs_dielectric_box3d_fmm3d_corrected`] and defaults to
-`true`. Setting it `false` drops rim (`is_edge`) panels from the near list as both source and
-target and builds NO touching-pair (adaptive) corrections at all, which degrades the
-conditioning of `A` badly as the mesh is refined at the edges: on the three-material
-benchmark of `examples/diag_precond_experiment.jl` at p=6, l_ec=1.25 (N≈2.4e4), GMRES needs
-179 iterations without the edge correction versus 27 with it (828 vs 51 at ε₂=200), so the
-correction pays for its setup many times over.
+The near and self corrections are SCTL's ([`SCTLNearCorrection`](@ref)`(tol = up_tol)`, every panel, edges
+included), so the solve needs `using SCTL`. `max_order` and `correct_edges`, of the former upsampling quadrature,
+are accepted for compatibility and ignored.
 
 `precondition` (default `true`) applies the diagonal contrast scaling of
 [`dielectric_diagonal_scaling`](@ref) as a RIGHT preconditioner. Right rather than left so
@@ -268,10 +268,10 @@ post-scaling. Same solution, fewer iterations: 1.6–2.1× on the multi-material
 `examples/diag_precond_experiment.jl`, and exactly a no-op for a single-contrast geometry.
 
 `far` and `near` select other operator backends (see [`dielectric_operator`](@ref)): e.g.
-`far = SCTLFarField(tol = 1e-9)` (SCTL's FMM, after `using SCTL`) or additionally
-`near = SCTLNearQuad()` (SCTL's quadrature). Unset, `far` is `FMM3DFarField(fmm_tol)` and `near` is
-`UpsampledNearQuad(; up_tol, max_order, correct_edges)`; with both unset the operator is
-`batched_lhs_dielectric_box3d_fmm3d_corrected` as before.
+`far = SCTLFarField(tol = 1e-9)` (SCTL's FMM) or additionally `near = SCTLNearQuad()` (SCTL's whole operator).
+Unset, `far` is `FMM3DFarField(fmm_tol)` and `near` is `SCTLNearCorrection(tol = up_tol)`; with both unset the
+operator is [`batched_lhs_dielectric_box3d_fmm3d_corrected`](@ref) (the same operator, one vectorized FMM per
+iteration).
 """
 function solve_dielectric_box3d_block(
     interface::DielectricInterface{P, Float64},
@@ -285,11 +285,10 @@ function solve_dielectric_box3d_block(
     far::Union{Nothing, FarField} = nothing, near = nothing,
 ) where {P <: FlatPanel{Float64, 3}}
     op = if far === nothing && near === nothing
-        batched_lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order;
-            correct_edges = correct_edges)
+        batched_lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order)
     else
         dielectric_operator(interface; far = something(far, FMM3DFarField(fmm_tol)),
-            near = something(near, UpsampledNearQuad(; up_tol, max_order, correct_edges)))
+            near = something(near, SCTLNearCorrection(tol = up_tol)))
     end
     F = rhs_dielectric_box3d_fmm3d(interface, vss, fmm_tol;
         screen_boxes = screen_boxes, screen_epses = screen_epses, screen_eps_out = screen_eps_out)
@@ -298,16 +297,15 @@ function solve_dielectric_box3d_block(
 end
 
 """
-    four_index_matrix(interface, sources, Σ; lhs_tol, volume_tol, c_pad=5.0,
-        range_factor=5.0) -> K×K
+    four_index_matrix(interface, sources, Σ; lhs_tol, volume_tol, c_pad=5.0, potential=nothing) -> K×K
 
 Four-index contraction `V[a,b] = ∫ ρ_a (u_inc[ρ_b] + u[σ_b])` for `K` sources sharing one
 interface. `Σ` is the `N × K` density matrix from [`solve_dielectric_box3d_block`](@ref).
 The incident term `u_inc` is evaluated with a [`PrecomputedVolumeField`](@ref) of each
-screened source (tolerance `volume_tol`, padding `c_pad`); the induced term `u[σ]` with the
-near-corrected FMM target evaluation at tolerance `lhs_tol` (or `potential`, a
-[`PotentialEvaluator`](@ref), e.g. `SCTLPotential(tol = lhs_tol)`). Targets are the quadrature
-points of `sources[1]`, so all sources must share one grid.
+screened source (tolerance `volume_tol`, padding `c_pad`); the induced term `u[σ]` by
+`potential`, a [`PotentialEvaluator`](@ref), by default [`SCTLPotential`](@ref)`(tol = lhs_tol)`
+(needs `using SCTL`). `range_factor` (of the former HCubature evaluator) is accepted and
+ignored. Targets are the quadrature points of `sources[1]`, so all sources must share one grid.
 """
 function four_index_matrix(interface, sources::Vector{<:VolumeSource{Float64, 3}},
         Σ::AbstractMatrix; lhs_tol::Float64, volume_tol::Float64, c_pad::Float64 = 5.0,
@@ -315,7 +313,7 @@ function four_index_matrix(interface, sources::Vector{<:VolumeSource{Float64, 3}
     K = length(sources)
     K == 0 && return zeros(Float64, 0, 0)
     targets = sources[1].positions
-    pottrg = potential_operator(something(potential, HCubaturePotential(lhs_tol; range_factor)), interface, targets)
+    pottrg = potential_operator(something(potential, SCTLPotential(tol = lhs_tol)), interface, targets)
     u_inc = Vector{Vector{Float64}}(undef, K)
     for b in 1:K
         sb = screened_volume_source(interface, sources[b], SharpScreening())
