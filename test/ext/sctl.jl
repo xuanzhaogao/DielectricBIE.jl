@@ -90,10 +90,16 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
     @test BI.near_corrections(GCQNearQuad(), gcq, gl) + BI.near_corrections(GCQNearQuad(), gcq, other) ≈ Cg_all
     @test BI.near_corrections(CorrectionMatrix(Cg_all), gcq, other) == BI.near_corrections(GCQNearQuad(), gcq, other)
     # the default near quadratures: SCTL's for FlatPanel interfaces, the GCQ rules (and SCTL's for the GL×GL panels)
-    # for TensorPanel ones, SCTLCurvedNearQuad for CurvedPanel ones
+    # for TensorPanel and CurvedPanel ones
     @test default_near_quadrature(itf) isa SCTLNearCorrection
     @test default_near_quadrature(gcq) isa GCQNearQuad
-    @test default_near_quadrature(BI._precompile_sphere_mesh().interface) isa SCTLCurvedNearQuad
+    sph = BI._precompile_sphere_mesh().interface
+    @test default_near_quadrature(sph) === GCQNearQuad()
+    # on curved interfaces gcq_far is :max or :direction, and a GCQ panel's rule must be in u (both checked first)
+    @test_throws ArgumentError BI.near_corrections(GCQNearQuad(gcq_far = :min), sph)
+    P = sph.panels[findfirst(!is_gl_panel, sph.panels)]
+    Pv = BI.CurvedPanel(P.anchor, P.lmap, P.rv, P.ru; kind = :edge, flip = P.flip)
+    @test_throws ArgumentError BI.near_corrections(GCQNearQuad(), DielectricInterface([Pv], [4.0], [1.0]))
 
     # campaign [backend] table
     mktempdir() do dir

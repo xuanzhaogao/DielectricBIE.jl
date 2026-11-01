@@ -6,7 +6,7 @@ using QuadGK: quadgk_segbuf_count
 using Serialization
 using FastGaussQuadrature, LegendrePolynomials, SpecialFunctions
 using Krylov, LinearMaps
-import HCubature    # hquadrature: the thin rows of curved GCQ panels (SCTL extension)
+import HCubature    # (no package code uses it: the tests' adaptive references, as DielectricBIE.HCubature)
 using NearestNeighbors
 using ForwardDiff
 using TOML
@@ -82,14 +82,13 @@ export NearQuadrature, near_corrections, GCQNearQuad, SCTLNearQuad, CorrectionMa
 export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block, sctl_gl_corrections, sctl_gl_potential_corrections
-export SCTLCurvedNearQuad
 export PotentialEvaluator, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
 
 # kept for old scripts: thin wrappers over the operators above (src/deprecated.jl)
 export lhs_dielectric_box3d_fmm3d_corrected, Lhs_dielectric_box3d_fmm3d_corrected
 export laplace3d_DT_fmm3d_corrected, laplace3d_DT_fmm3d_corrected_hcubature, laplace3d_D_fmm3d_corrected
-export laplace3d_pottrg_fmm3d_corrected_hcubature, laplace3d_pottrg_near
+export laplace3d_pottrg_fmm3d_corrected_hcubature, laplace3d_pottrg_near, SCTLCurvedNearQuad
 
 # lattice batch
 export lattice_grid_steps, OrbitalInstance

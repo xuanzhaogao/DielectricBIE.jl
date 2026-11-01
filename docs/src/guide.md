@@ -259,9 +259,11 @@ The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
   nearby panel pairs:
   - [`SCTLNearCorrection`](@ref) is the default for `FlatPanel` interfaces: SCTL's near and singular quadrature
     of every panel ([`sctl_gl_corrections`](@ref)), with either far field;
-  - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` interfaces: the GCQ rules for the edge and corner
-    panels, SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones;
-  - [`SCTLCurvedNearQuad`](@ref) is the default for `CurvedPanel` interfaces;
+  - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` and `CurvedPanel` interfaces: the GCQ rules for the
+    edge and corner panels (product integration in Julia, [`gcq_curved_row`](@ref) on a curved panel's exact map),
+    SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones at its `quad_tol` (1e-12 by default; the
+    deprecated [`SCTLCurvedNearQuad`](@ref)`(tol = t)`, the former curved default at 1e-10, is
+    `GCQNearQuad(quad_tol = t)`);
   - [`SCTLNearQuad`](@ref) is SCTL's whole operator (its own FMM and singular quadrature), for `FlatPanel`
     interfaces with `n_quad` in 4, 8, 12, 16 or 20, combined with `SCTLFarField`;
   - your own quadrature works too, as described below.
@@ -428,9 +430,10 @@ tests and is a quick check of a new rule. For panels that are not `FlatPanel`s, 
 
 Every Gauss–Legendre × Gauss–Legendre panel ([`is_gl_panel`](@ref): a `FlatPanel`, or a `TensorPanel` or
 `CurvedPanel` without a GCQ rule) gets its near and self corrections from SCTL, in every near quadrature:
-[`SCTLNearCorrection`](@ref), [`GCQNearQuad`](@ref) and [`SCTLCurvedNearQuad`](@ref) all call
-[`sctl_gl_corrections`](@ref)`(interface, panels; tol)` for those panels, and keep their own rules for the GCQ edge
-and corner panels, whose densities are singular. The same holds for the single-layer potential
+[`SCTLNearCorrection`](@ref) and [`GCQNearQuad`](@ref) both call
+[`sctl_gl_corrections`](@ref)`(interface, panels; tol)` for those panels, and `GCQNearQuad` keeps its own rules,
+in Julia, for the GCQ edge and corner panels, whose densities are singular (on `TensorPanel` and `CurvedPanel`
+interfaces alike: one path per panel family). The same holds for the single-layer potential
 ([`sctl_gl_potential_corrections`](@ref), used by [`SCTLPotential`](@ref), [`GCQPotential`](@ref) and
 [`potential_tensor`](@ref)). So SCTL is required for any interface with such panels: without `using SCTL` these
 calls throw an error naming the package.
