@@ -289,45 +289,79 @@ end
     # (a) the split sphere's thin GCQ edge panel (as in test/ext/sctl_curved.jl): on the unit sphere n_x = ±x, so
     # n_x·(x - y) = ±|x - y|²/2 and K_dt = ±K_sl/2 pointwise. The Dᵀ row takes n·(x - y) from the second derivatives
     # (the Duffy region and leaf points near the target) or from x - y, the single layer only |x - y|: the two rows,
-    # from the same points, check that n·(x - y). Own nodes nearest the edge and farthest from it, at both v-ends
+    # from the same points, check that n·(x - y). Own nodes nearest the edge and farthest from it, at both v-ends, and
+    # points of the panel that are not nodes: in fine segment 2 (next to the weighted edge segment), on the boundary of
+    # segments 1 and 2 (u0 = s1), on that of segments 5 and 6 at v0 = 0, and 1e-5 from v = 0 in the last segment
     gs = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
     ms = curved_gcq_mesh(gs; nlev = 3, n_quad = 8, tol = 1e-12)
     pss = ms.interface.panels
     S = pss[findfirst(k -> ms.panel_patch[k] <= 5 && pss[k].kind == :edge, eachindex(pss))]       # upper cap
-    nus, nvs = length(S.ru.x), length(S.rv.x)
-    sph = [(a, b) for a in (1, nus) for b in (1, nvs)]
-    @test all(((a, b),) -> abs(dot(S.normals[(a - 1) * nvs + b], S.points[(a - 1) * nvs + b])) ≈ 1, sph)
-    err_sphere = zeros(length(sph))
-    Threads.@threads for q in eachindex(sph)                           # (a Dᵀ row nearest the edge takes 2 s)
-        a, b = sph[q]
-        i = (a - 1) * nvs + b
-        sgn = sign(dot(S.normals[i], S.points[i]))                     # outward (+1) or inward (-1)
-        rd = BI.gcq_curved_row(:dt, S, S.lpoints[i]; n = S.normals[i], on = (S.ru.x[a], S.rv.x[b]))
-        rs = BI.gcq_curved_row(:sl, S, S.lpoints[i]; on = (S.ru.x[a], S.rv.x[b]))
-        err_sphere[q] = maximum(abs, rd .- sgn .* rs ./ 2) / maximum(abs, rs)
+    nus, nvs, ss = length(S.ru.x), length(S.rv.x), S.ru.segs
+    sph = [[(S.ru.x[a], S.rv.x[b]) for a in (1, nus) for b in (1, nvs)];
+           [(1.5 * ss[1][2], 0.37), (ss[1][2], 0.37), (ss[5][2], 0.0), (0.77, 1e-5)]]
+    err_sphere = zeros(length(sph)); nx = zeros(length(sph))
+    Threads.@threads for q in eachindex(sph)                           # (a Dᵀ row nearest the edge takes 0.7 s)
+        on = sph[q]
+        x = BI.curved_lpoint(S, on...); n = BI.curved_frame(S, on...)[3]
+        nx[q] = dot(n, S.anchor .+ x)
+        rd = BI.gcq_curved_row(:dt, S, x; n, on)
+        rs = BI.gcq_curved_row(:sl, S, x; on)
+        err_sphere[q] = maximum(abs, rd .- sign(nx[q]) .* rs ./ 2) / maximum(abs, rs)     # outward (+1) or inward (-1)
     end
-    @test maximum(err_sphere) <= 5e-14                                 # 4.3e-15 measured (4.6e-13: hess cutoff 1e-2)
+    @test all(t -> abs(t) ≈ 1, nx)
+    @test maximum(err_sphere) <= 7e-14                                 # 6.5e-15 measured (4.6e-13: hess cutoff 1e-2)
 
     # (c) the affine CurvedPanel of (off-panel targets, a) on the box's GCQ edge TensorPanel: single-layer rows of own
     # nodes against tensor_near_row, whose quadtree recurses toward a target on the panel to maxdepth. Nodes: the
     # innermost (in v's middle and at its end), the u-nodes nearest their fine segment's end (0.7 % and 8.6 % of its
     # width), one in the middle, and one whose Duffy square is clipped at v = 0
-    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8,
-                                      rule = edge_gcq_rule(10.0, 1.0; tol = 1e-8))
-    Pt = first(p for p in itf.panels if p.kind == :edge)
-    o, eu, ev, Lu, Lv, nP = Pt.o, Pt.eu, Pt.ev, Pt.Lu, Pt.Lv, Pt.normal
-    Pc = BI.CurvedPanel(Pt.anchor, (u, v) -> o .+ (u * Lu) .* eu .+ (v * Lv) .* ev, Pt.ru, Pt.rv; kind = :edge,
-                        flip = dot(cross(collect(eu), collect(ev)), collect(nP)) < 0, dmap = (u, v) -> (Lu .* eu, Lv .* ev))
-    nvc = length(Pc.rv.x)
+    affine(T) = BI.CurvedPanel(T.anchor, (u, v) -> T.o .+ (u * T.Lu) .* T.eu .+ (v * T.Lv) .* T.ev, T.ru, T.rv;
+                               kind = T.kind, flip = dot(cross(collect(T.eu), collect(T.ev)), collect(T.normal)) < 0,
+                               dmap = (u, v) -> (T.Lu .* T.eu, T.Lv .* T.ev))
+    boxpanels(nq) = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = nq,
+                                                rule = edge_gcq_rule(10.0, 1.0; tol = 1e-8)).panels
     ksl(d) = 1 / (4π * norm(d))
-    worst_flat = 0.0
-    for (a, b) in ((1, 4), (1, 1), (20, 5), (8, 8), (13, 4), (11, 1))
-        i = (a - 1) * nvc + b
-        rt = tensor_near_row(ksl, Pt, Pc.lpoints[i])
-        rc = BI.gcq_curved_row(:sl, Pc, Pc.lpoints[i]; on = (Pc.ru.x[a], Pc.rv.x[b]))
-        worst_flat = max(worst_flat, maximum(abs, rc .- rt) / maximum(abs, rt))
+    function flat_err(T, C, on; ref = nothing)                         # C's single-layer row against tensor_near_row's
+        x = BI.curved_lpoint(C, on...)
+        r = BI.gcq_curved_row(:sl, C, x; on)
+        rt = ref === nothing ? tensor_near_row(ksl, T, x) : ref
+        return maximum(abs, r .- rt) / maximum(abs, rt)
     end
-    @test worst_flat <= 3e-14                                           # 3.1e-15 measured
+    Pt = first(p for p in boxpanels(8) if p.kind == :edge)
+    Pc = affine(Pt)
+    worst_flat = maximum(((a, b),) -> flat_err(Pt, Pc, (Pc.ru.x[a], Pc.rv.x[b])),
+                         ((1, 4), (1, 1), (20, 5), (8, 8), (13, 4), (11, 1)))
+    @test worst_flat <= 4e-14                                           # 3.3e-15 measured
+    # points that are not nodes: 1e-5 from v = 0 in the last segment (R's v = 0 side next to the target gets
+    # 2 DUFFY_NSIDE points; 1.6e-9 with DUFFY_NSIDE), on the boundary of segments 5 and 6 at v0 = 0
+    e_flat2 = maximum(on -> flat_err(Pt, Pc, on), ((0.77, 1e-5), (Pc.ru.segs[5][2], 0.0)))
+    @test e_flat2 <= 6e-14                                              # 6.3e-15 measured
+    # next to the weighted edge segment: in segment 2, and on its boundary with segment 1 (u0 = s1). tensor_near_row
+    # takes that segment whole as a leaf (its interpolatory rule; 1.6e-12 … 1.9e-12 off here, moving with η), so the
+    # reference is the curved row at η = 6
+    s1 = Pc.ru.segs[1][2]
+    e_flat3 = maximum(((1.5 * s1, 0.37), (s1, 0.37))) do on
+        flat_err(Pt, Pc, on; ref = BI.gcq_curved_row(:sl, Pc, BI.curved_lpoint(Pc, on...); on, η = 6.0))
+    end
+    @test e_flat3 <= 2e-13                                              # 1.8e-14 measured
+    # n_quad 16: a v-end own node of the last segment and a point near its corner (u0, v0) = (0.501, 0.001), where 16
+    # Gauss points in ρ left 6.9e-14 and 1.4e-12 (now 20, from the basis' degree)
+    Pt16 = first(p for p in boxpanels(16) if p.kind == :edge); Pc16 = affine(Pt16)
+    e_flat4 = maximum(on -> flat_err(Pt16, Pc16, on), ((Pc16.ru.x[11], Pc16.rv.x[1]), (0.501, 0.001)))
+    @test e_flat4 <= 1e-13                                              # 9.7e-15 measured
+    # panels of a 1 × 2 × 0.5 box, where |y_u| ≠ |y_v|, so that R takes the cuts of the quadtree's boxes in all its
+    # forms: Gauss-Legendre × Gauss-Legendre panels (one segment in u: k = 1, pw = 0) with Lu/Lv = 1/2 (R strictly
+    # inside the root box in v: it keeps a piece below and one above) and 4 (Δv ≥ 1: R is the whole panel), and the
+    # last segment of GCQ edge panels with Lu/Lv = 4 (R is all of segment k) and 1/4 (cut from the box peeled off
+    # the cluster)
+    pbox = single_dielectric_box3d_gcq(1.0, 2.0, 0.5, 10.0, 1.0; nlev = 2, n_quad = 8,
+                                       rule = edge_gcq_rule(10.0, 1.0; tol = 1e-8)).panels
+    e_flat5 = maximum(((:gl, 0.5), (:gl, 4.0), (:edge, 4.0), (:edge, 0.25))) do (kind, ratio)
+        T = first(p for p in pbox if p.kind == kind && p.Lu / p.Lv ≈ ratio)
+        C = affine(T)
+        flat_err(T, C, (C.ru.x[kind === :gl ? 4 : end], C.rv.x[4]))
+    end
+    @test e_flat5 <= 1.2e-13                                            # 1.1e-14 measured
 
     # (d) the lens edge panel of (off-panel targets, b) (n_quad 8): Dᵀ rows of own nodes against the adaptive reference
     # above at rtol 1e-13. Nodes: the innermost u-node (fine segment 11, [3.1e-5, 6.1e-5]); the u-node nearest its
@@ -357,9 +391,11 @@ end
         rd = BI.gcq_curved_row(:dt, P, x; n, on = (P.ru.x[a], P.rv.x[b]))
         err_lens[q] = maximum(abs, rd .- ref) / maximum(abs, ref)
     end
-    # measured: 4.9e-14 (innermost; 8.2e-13 with the hess cutoff at 1e-2), 1.4e-13 (segment-extreme: the Duffy rule's
-    # order, 4.4e-15 at 32 × 64), 1.6e-14 (clipped), 7.9e-15 (middle)
-    @test maximum(err_lens) <= 1.5e-12
+    # measured: 4.9e-14 (innermost; 8.2e-13 with the hess cutoff at 1e-2), 6.3e-15 (segment-extreme; 1.4e-13 before its
+    # near side got 2 DUFFY_NSIDE points), 1.7e-14 (clipped), 7.5e-15 (middle). The single layer, against the same
+    # reference with its kernel (not in the test: 6-17 s more per row): 4.9e-14, 6.2e-15, 3.9e-15, 4.1e-15 (-t 8). The
+    # reference itself, at rtol 1e-13 against 1e-14 on the innermost row: 2.0e-14 (Dᵀ), 2.4e-14 (single layer)
+    @test maximum(err_lens) <= 5e-13
 
     # (e) Review Focus 3: a target on the panel within the weighted edge segment [0, 2^-K] (and exactly on the edge,
     # u = 0) throws, naming the segment
@@ -373,4 +409,20 @@ end
         end
         @test err isa ArgumentError && occursin("edge segment", err.msg)
     end
+
+    # (f) a box of the quadtree overlapping R splits whatever its distance (Hazard H4): at (0.375, 0.45), with η = 0.05,
+    # a cluster box overlapping R is not near; against η = 1.5 the row moves by 9.5e-9 (coarse leaves), by 0.18 when
+    # that box is a leaf (R counted twice; measured with the forced split taken out). x within 1e-13 × diam of
+    # curved_lpoint(P, on) is replaced by it (the row is the same); x farther, or n not normal to P at `on`, throws
+    xh = BI.curved_lpoint(Pc, 0.375, 0.45)
+    rh = BI.gcq_curved_row(:sl, Pc, xh; on = (0.375, 0.45))
+    e_eta = maximum(abs, BI.gcq_curved_row(:sl, Pc, xh; on = (0.375, 0.45), η = 0.05) .- rh) / maximum(abs, rh)
+    @test e_eta <= 1e-7                                                 # 9.5e-9 measured
+    on14 = (Pc.ru.x[1], Pc.rv.x[4]); x14 = BI.curved_lpoint(Pc, on14...)
+    r14 = BI.gcq_curved_row(:sl, Pc, x14; on = on14)
+    @test BI.gcq_curved_row(:sl, Pc, x14 .+ (1e-15, -1e-15, 1e-15); on = on14) == r14
+    @test_throws ArgumentError BI.gcq_curved_row(:sl, Pc, x14 .+ (1e-9, 0.0, 0.0); on = on14)
+    on84 = (P.ru.x[8], P.rv.x[4]); n84 = P.normals[(8 - 1) * nv + 4]
+    @test_throws ArgumentError BI.gcq_curved_row(:dt, P, P.lpoints[(8 - 1) * nv + 4]; on = on84,
+                                                 n = normalize(collect(n84) .+ 1e-6))
 end

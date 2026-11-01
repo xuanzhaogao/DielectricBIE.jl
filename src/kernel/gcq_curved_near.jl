@@ -27,8 +27,11 @@
 # (physical width h) × a v-interval of physical length h centred on it, clipped to [0, 1], integrated by the
 # sinh-mapped polar rule (duffy_rule, kernel/duffy.jl). The density is smooth there (the segment's Lagrange basis
 # times u^pw, the edge singularity at least a segment away), and a wider region is worse (2h: 4.4e-11, 3h: 9.8e-11 of
-# max|row| in spike curved3d/53). The rest of the panel, [0, 1]² minus R, goes through the quadtree above, from root
-# boxes that tile it, with the target as its own reference point. Dᵀ needs n·(x - y) ~ κ|x - y|²/2 there, which the
+# max|row| in spike curved3d/53). The rest of the panel, [0, 1]² minus R, goes through the quadtree above from its
+# usual root, with the target as its own reference point: when segment k appears whole (a cluster peels it off), the
+# part of it in R is cut out, and a cluster box overlapping R always splits, whatever its distance and depth. (Root
+# boxes tiling [0, 1]² \ R instead, segments k+1.. each a strip of full length, took 1.6-2.4× the time on the innermost
+# rows: each strip was refined toward the target on its own.) Dᵀ needs n·(x - y) ~ κ|x - y|²/2 there, which the
 # path integral of x - y gives only to ~1e-16 |x - y| (the innermost rows floor at 1e-12 … 1e-11) and plain
 # differences of positions only to ~1e-16 × the diameter: in R and at leaf points within GCQ_CURVED_HESS × the
 # diameter of the target it comes from the map's second derivatives instead (_curved_nd_hess). That cutoff is 1e-1:
@@ -53,13 +56,15 @@ _norm3(a) = sqrt(_dot3(a, a))
 # n·(y(c + Δ) - y(c)) for n normal to P at c, from the second derivatives of the map along the parameter segment:
 # Taylor's remainder ∫₀¹ (1 - σ) n·y''(σ) dσ of y(σ) = y(c + σΔ), whose first-order term n·y'(0) vanishes. It is
 # accurate relative to itself (~κ|Δy|²/2), where differences of positions or of the tangents' path integral are
-# accurate only relative to |Δy|. 8-point Gauss-Legendre in σ; y'' from ForwardDiff of P.dmap, or of lmap twice
-const _HESS_GL = _gl01(8)
+# accurate only relative to |Δy|. Gauss-Legendre in σ with 2/4/8/16 points by the parameter length λ = |Δ|, as
+# _curved_step (8 points at λ = 0.9√2 were 6e-11 … 4e-8 off); y'' from ForwardDiff of P.dmap, or of lmap twice
 function _curved_nd_hess(P, c::NTuple{2, Float64}, Δ::NTuple{2, Float64}, n)
-    σs, ws = _HESS_GL
+    λ = hypot(Δ[1], Δ[2])
+    t, w = _DIFF_GL[λ < 1e-4 ? 2 : λ < 1e-2 ? 4 : λ < 0.1 ? 8 : 16]
     s = 0.0
-    for q in eachindex(σs)
-        s += ws[q] * (1 - σs[q]) * _curved_nd2(P, c, Δ, n, σs[q])
+    for q in eachindex(t)
+        σ = (1 + t[q]) / 2
+        s += w[q] / 2 * (1 - σ) * _curved_nd2(P, c, Δ, n, σ)
     end
     return s
 end
@@ -91,7 +96,8 @@ A target on the panel: `on = (u0, v0)`, its parameters, with `x = curved_lpoint(
 `(P.ru.x[a], P.rv.x[b])` and `P.lpoints[(a - 1) n_v + b]`) and, for `:dt`, `n` P's normal there. The sinh-mapped polar
 rule on the Duffy region around the target (its fine u-segment × a v-interval as long physically, clipped to [0, 1])
 and the quadtree on the rest of the panel. A target in the weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`) throws an
-`ArgumentError`, and so does a v-rule of more than one segment.
+`ArgumentError`, and so do `x` farther than 1e-13 × P's diameter from `curved_lpoint(P, u0, v0)` (which is then used
+in its place), an `n` not normal to P at `on`, and a v-rule of more than one segment.
 """
 function gcq_curved_row(kind::Symbol, P::CurvedPanel, x::NTuple{3, Float64}; n = nothing, on = nothing,
                         η::Real = 1.5, maxdepth::Int = 120)
@@ -129,22 +135,33 @@ function _gcq_curved_row(kern::F, P::CurvedPanel, x, η, maxdepth) where F
         throw(ArgumentError("gcq_curved_row: the target lies on the panel; pass its parameters as `on`"))
     w = (x .- P.lpoints[i]) .+ _curved_diff(P, (us, vs), (ru.x[(i - 1) ÷ nvn + 1], rv.x[(i - 1) % nvn + 1]))
     # leaves are carried as offsets from (u*, v*), as tensor_near_row's from the target's projection
-    root(r, tb, c) = isempty(tb.clu) ? (1, -c, 1 - c) : (-length(r.segs), -c, 1 - c)
-    ku0, a0u, b0u = root(ru, tu_, us); kv0, a0v, b0v = root(rv, tv_, vs)
-    push!(ws.stack, (ku0, a0u, b0u, kv0, a0v, b0v, 0))
-    _gcq_curved_tree!(M, (d, ou, ov) -> kern(d), P, tu_, tv_, ws, x, (us, vs), w, GCQ_CURVED_PLAIN * diam, η, maxdepth)
+    push!(ws.stack, (_gcq_root(ru, tu_, us)..., _gcq_root(rv, tv_, vs)..., 0))
+    _gcq_curved_tree!(M, (d, ou, ov) -> kern(d), P, tu_, tv_, ws, x, (us, vs), w, GCQ_CURVED_PLAIN * diam, η, maxdepth,
+                      0, 0.0, 0.0)
     return vec(permutedims(M))
 end
 
+# tensor_near_row's root of one direction, as offsets from c: the cluster of all fine segments, or the one segment
+_gcq_root(r, tb, c) = isempty(tb.clu) ? (1, -c, 1 - c) : (-length(r.segs), -c, 1 - c)
+
 # M += the quadtree's integrals from the root boxes on ws.stack: offsets (ou, ov) from the reference point c = (u*, v*),
-# w = x - y(c); kern(x - y, ou, ov) (the offsets for the on-panel kernels' second derivatives)
-function _gcq_curved_tree!(M, kern::F, P::CurvedPanel, tu_, tv_, ws, x, c, w, plain, η, maxdepth) where F
+# w = x - y(c); kern(x - y, ou, ov) (the offsets for the on-panel kernels' second derivatives). For a target on the
+# panel, the Duffy region R = segment kR × (vaR, vbR) (offsets) is left out: kR = 0 for none
+function _gcq_curved_tree!(M, kern::F, P::CurvedPanel, tu_, tv_, ws, x, c, w, plain, η, maxdepth, kR, vaR, vbR) where F
     ru, rv = P.ru, P.rv
     us, vs = c
     Kb = ws.K; Tb = view(ws.T, 1:size(M, 1), :)
     stack = ws.stack
     while !isempty(stack)
         ku, ua, ub, kv, va, vb, depth = pop!(stack)
+        # a box overlapping R (open intervals): segment kR itself, whole (it is never split while it overlaps R), keeps
+        # its parts below and above R in v; a cluster of segments 1..j ⊇ kR splits, whatever its distance and depth
+        inR = kR > 0 && va < vbR && vb > vaR && (ku == kR || ku < 0 && -ku >= kR)
+        if inR && ku == kR
+            va < vaR && push!(stack, (ku, ua, ub, kv, va, vaR, depth))
+            vb > vbR && push!(stack, (ku, ua, ub, kv, vbR, vb, depth))
+            continue
+        end
         pu = clamp(0.0, ua, ub); pv = clamp(0.0, va, vb)              # p̂
         yu, yv = _tangents(P, us + pu, vs + pv)
         du = (ub - ua) * _norm3(yu); dv = (vb - va) * _norm3(yv)
@@ -152,10 +169,10 @@ function _gcq_curved_tree!(M, kern::F, P::CurvedPanel, tu_, tv_, ws, x, c, w, pl
         # split while near, and the whole weighted edge segment always (in its direction; see above)
         eu = _gcq_whole_edge_seg(ru, ku, us, ua, ub); ev = _gcq_whole_edge_seg(rv, kv, vs, va, vb)
         near = d <= η * max(du, dv)
-        if (near || eu || ev) && depth < maxdepth
-            su, sv = eu, ev
+        if inR || (near || eu || ev) && depth < maxdepth
+            su, sv = eu || inR, ev
             if near
-                su = du > dv / 2 && η * du >= d
+                su = du > dv / 2 && η * du >= d || inR
                 sv = dv > du / 2 && η * dv >= d
                 !su && !sv && (du >= dv ? (su = true) : (sv = true))
             end
@@ -202,36 +219,38 @@ function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth)
     sa == 0 && ru.pw != 0 &&
         throw(ArgumentError("gcq_curved_row: target within the edge segment [0, 2^-K] of a GCQ panel"))
     diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
-    _norm3(x .- curved_lpoint(P, u0, v0)) <= GCQ_CURVED_ON * diam ||
+    y0 = curved_lpoint(P, u0, v0)
+    _norm3(x .- y0) <= GCQ_CURVED_ON * diam ||
         throw(ArgumentError("gcq_curved_row: x is not the point of the panel at `on`"))
+    x = y0                         # far leaves subtract positions from the point that R and the near leaves start from
+    yu, yv = _tangents(P, u0, v0)
+    # the second-derivative n·(x - y) drops n·y'(0): n must be the normal
+    n === nothing || abs(_dot3(n, yu)) <= 1e-12 * _norm3(n) * _norm3(yu) &&
+                     abs(_dot3(n, yv)) <= 1e-12 * _norm3(n) * _norm3(yv) ||
+        throw(ArgumentError("gcq_curved_row: n is not the normal of the panel at `on`"))
     tu_, tv_, ws, M = _gcq_curved_setup(P)
     # the Duffy region R = [sa, sb] × [va, vb], the first fundamental form G at the target
-    yu, yv = _tangents(P, u0, v0)
     G = (_dot3(yu, yu), _dot3(yu, yv), _dot3(yv, yv))
     Δv = (sb - sa) * sqrt(G[1] / G[3])
     va = max(0.0, v0 - Δv / 2); vb = min(1.0, v0 + Δv / 2)
     _gcq_duffy!(M, (d, ou, ov) -> _gcq_on_kern(K, P, c, n, d, ou, ov, true), P, tu_, tv_, k, c, (sa, sb, va, vb), G)
-    # the rest, from root boxes tiling [0, 1]² \ R (offsets from the target): the cluster of segments 1..k-1, segment k
-    # below and above R in v, and the segments k+1.. one by one
-    stack = ws.stack
-    k > 1 && push!(stack, (k - 1 == 1 ? 1 : -(k - 1), -u0, sa - u0, 1, -v0, 1 - v0, 0))
-    va > 0 && push!(stack, (k, sa - u0, sb - u0, 1, -v0, va - v0, 0))
-    vb < 1 && push!(stack, (k, sa - u0, sb - u0, 1, vb - v0, 1 - v0, 0))
-    for kk in k+1:length(ru.segs)
-        push!(stack, (kk, ru.segs[kk][1] - u0, ru.segs[kk][2] - u0, 1, -v0, 1 - v0, 0))
-    end
+    # the rest: the quadtree from its usual root (offsets from the target), R cut out of segment k (the same va, vb)
+    push!(ws.stack, (_gcq_root(ru, tu_, u0)..., _gcq_root(rv, tv_, v0)..., 0))
     hc2 = (GCQ_CURVED_HESS * diam)^2
     _gcq_curved_tree!(M, (d, ou, ov) -> _gcq_on_kern(K, P, c, n, d, ou, ov, _dot3(d, d) < hc2), P, tu_, tv_, ws, x, c,
-                      (0.0, 0.0, 0.0), GCQ_CURVED_PLAIN * diam, η, maxdepth)
+                      (0.0, 0.0, 0.0), GCQ_CURVED_PLAIN * diam, η, maxdepth, k, va - v0, vb - v0)
     return vec(permutedims(M))
 end
 
 # M += ∫_R K φ_ab dA on the Duffy region R = (sa, sb, va, vb) of fine u-segment k around the target c, by duffy_rule
 # in the first fundamental form G at c: φ_ab is segment k's Lagrange basis through P (times u^pw) in u, as
-# tensor_rule_interp, times v's Lagrange basis; x - y from the tangents (_curved_step), kern(x - y, ou, ov)
+# tensor_rule_interp, times v's Lagrange basis; x - y from the tangents (_curved_step), kern(x - y, ou, ov). Along a ray
+# φ_ab has degree (nz - 1) + (nv - 1), times u^pw: Gauss in ρ is exact to 2nρ - 1 ≥ that + 10. With nz = 14 that is
+# DUFFY_NRHO = 16 at n_quad 8, 18 at 12 and 20 at 16, where 16 left 3e-14 and 1.5e-12 of max|row| for targets near the
+# last segment's corner (u0 = 0.501, v0 = 0.001) and 6.9e-14 for an own v-end node (18 and 20: ≤ 4e-15)
 function _gcq_duffy!(M, kern::F, P::CurvedPanel, tu_, tv_, k, c, R, G) where F
     ru, rv = P.ru, P.rv
-    du, dv, w = duffy_rule(c, R, G)
+    du, dv, w = duffy_rule(c, R, G; nρ = max(DUFFY_NRHO, cld(length(ru.z0) + length(rv.z0) + 9, 2)))
     sa, sb = ru.segs[k]
     tq = similar(w); τu = similar(w); τv = similar(w)
     @inbounds for q in eachindex(w)
