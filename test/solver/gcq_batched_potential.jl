@@ -149,3 +149,23 @@ end
     # nodes before), and independent of the FMM's tolerance (1e-13 or 1e-15); 1.9e-14 with a smooth σ
     @test maximum(abs, u - uref) / maximum(abs, uref) < 3e-13
 end
+
+@testset "GCQPotential: targets within the snap radius of GCQ nodes (box)" begin
+    # a target within max(1e-13 × the panel's size, 2^-48 × the extent of nodes and targets) of a node of a GCQ edge or
+    # corner panel is moved onto the node, as onto GL nodes, so that the far field and the node rule skip the same pair:
+    # the node's own value. Left where it is, it would keep FMM3D's term of that node, off by ~3e-18 wσ / δ² (δ the
+    # distance), against the node rule's exact one
+    ε = 10.0
+    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, ε, 1.0; nlev = 1, n_quad = 4, rule = edge_gcq_rule(ε, 1.0; tol = 1e-4))
+    ps = itf.panels
+    σ = randn(MersenneTwister(13), BI.num_points(itf))
+    for kd in (:edge, :corner)
+        P = ps[findfirst(p -> p.kind == kd, ps)]
+        @test 1e-14 < 1e-13 * BI._gl_diam(P)
+        y = collect(P.points[cld(BI.num_points(P), 2)])
+        T = reduce(hcat, [[y]; [y .+ s * 1e-14 .* (1:3 .== i) for i in 1:3 for s in (-1, 1)]])
+        @test all(t -> T[:, t] != y, 2:7)
+        u = potential_operator(GCQPotential(far = FMM3DFarField(1e-13)), itf, T) * σ
+        @test all(isfinite, u) && all(==(u[1]), u)
+    end
+end

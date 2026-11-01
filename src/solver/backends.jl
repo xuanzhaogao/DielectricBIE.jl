@@ -285,8 +285,7 @@ function near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:Curve
     ps = interface.panels
     q.gcq_far in (:max, :direction) || throw(ArgumentError("gcq_far must be :max or :direction, got :$(q.gcq_far)"))
     gcq = filter(k -> !is_gl_panel(ps[k]), unique(sources))
-    any(k -> is_gcq(ps[k].rv), gcq) &&
-        throw(ArgumentError("GCQNearQuad: a CurvedPanel's GCQ rule must be in u (GCQ rules in v are not supported)"))
+    foreach(k -> _gcq_check_vrule(ps[k], "GCQNearQuad"), gcq)          # (own nodes are targets on the panel)
     # the GL×GL source panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
     gl = intersect(findall(is_gl_panel, ps), sources)
     Cgl = isempty(gl) ? nothing : sctl_gl_corrections(interface, gl; tol = q.quad_tol)
@@ -673,20 +672,20 @@ edges and corners: the node rule over all nodes by the far-field backend `far` (
 [`SCTLFarField`](@ref)), plus near corrections, (accurate row) − (node rule). The node rule skips a target's pair with
 a node it lies on (r = 0), as the far field does. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)):
 SCTL's, [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). A
-target within max(1e-13 × a GL panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes is moved
-onto the node first, so that the far field and SCTL's correction skip the same pair: a target on a node gets SCTL's
-Duffy self row (on a node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`).
+target within max(1e-13 × a panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes, of any panel,
+is moved onto the node first, so that the far field, SCTL's correction and the node rule skip the same pair: a target
+on a node of a GL panel gets SCTL's Duffy self row (on one whose `n_quad` is not an SCTL order, an `ArgumentError`).
 
 - `TensorPanel`s: the GCQ edge and corner panels' rows are `tensor_near_row`'s product integration, for every
   (panel, target) pair that `tensor_isfar` rejects at `quad_tol`; candidate pairs are found with a KD tree, `gcq_far`
   as for [`GCQNearQuad`](@ref). The same quadrature as [`potential_tensor`](@ref), which sums directly over all pairs.
 - `CurvedPanel`s (GCQ rule in u, the edge at u = 0): the GCQ panels' rows are [`gcq_curved_row`](@ref)'s on the
   panel's exact map, for the targets within `η_gcq` × L of one of a panel's nodes (L and `gcq_far` as for
-  [`GCQNearQuad`](@ref)) and those on it. A target is moved onto the nodes of GCQ panels as onto those of GL ones, and
-  it lies on a GCQ panel within max(1e-13 × the panel's diameter, 2^-48 × the extent of nodes and targets) of its
-  closest point there: it gets the panel's on-surface row at those parameters (the Duffy region around it), from every
-  panel it lies on (a boundary shared by panels). A target on a GCQ panel in its weighted edge segment [0, 2^-K]
-  (`ru.pw ≠ 0`; the edge u = 0 included) is an `ArgumentError`, raised before any row is computed.
+  [`GCQNearQuad`](@ref)) and those on it. A target lies on a GCQ panel within max(1e-13 × the panel's diameter,
+  2^-48 × the extent of nodes and targets) of its closest point there: it gets the panel's on-surface row at those
+  parameters (the Duffy region around it), from every panel it lies on (a boundary shared by panels). A target on a
+  GCQ panel in its weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`; the edge u = 0 included) is an `ArgumentError`,
+  raised before any row is computed.
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
@@ -706,7 +705,9 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
     panels = interface.panels
     gl = findall(is_gl_panel, panels)
-    Xt = _snap_to_gl_nodes(panels, gl, targets)
+    # every target within the snap radius of a node, GL or GCQ, moved onto it: the far field, SCTL's correction and the
+    # node rule subtracted below all skip that pair (r = 0)
+    Xt = _snap_to_gl_nodes(panels, eachindex(panels), targets)
     nt = size(Xt, 2)
     offs = cumsum([0; num_points.(panels)])
     # the GL×GL panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
@@ -754,13 +755,13 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{<:C
     ev.gcq_far in (:max, :direction) || throw(ArgumentError("gcq_far must be :max or :direction, got :$(ev.gcq_far)"))
     ps = interface.panels
     gl = findall(is_gl_panel, ps); gcq = findall(!is_gl_panel, ps)
-    any(k -> is_gcq(ps[k].rv), gcq) &&
-        throw(ArgumentError("GCQPotential: a CurvedPanel's GCQ rule must be in u (GCQ rules in v are not supported)"))
+    foreach(k -> _gcq_check_vrule(ps[k], "GCQPotential"), gcq)
     # every target within the snap radius of a node, of any panel, moved onto it (`hit`: which), so that the far field,
     # SCTL's correction and the node rule subtracted below all skip that pair (r = 0)
-    hit = fill((0, 0), size(targets, 2))
-    Xt = _snap_to_gl_nodes(ps, eachindex(ps), targets; hit)
-    hbox = size(Xt, 2) == 0 ? 0.0 : 2.0^-48 * _node_target_extent(ps, targets)
+    X0 = Matrix{Float64}(targets)
+    hbox = _snap_hbox(ps, X0)
+    hit = fill((0, 0), size(X0, 2))
+    Xt = _snap_to_gl_nodes(ps, eachindex(ps), X0; hit, hbox)
     # the GCQ panels' near targets and the targets on them, before any rows (one in a weighted edge segment throws)
     near = _gcq_curved_sl_targets(ps, gcq, Xt, hit; η_gcq = ev.η_gcq, gcq_far = ev.gcq_far, hbox)
     # the GL×GL panels: SCTL (before the GCQ rows, so that a missing SCTL fails first)
@@ -779,27 +780,28 @@ _gcq_target_frame(ps, P, Xt, hit, t) =
 
 # GCQPotential's targets of the curved GCQ panels `gcq` (Xt: 3 × Nt, moved onto nodes as `hit` records): per panel P,
 # (ts, on), the targets within η_gcq × L of one of its nodes (_gcq_curved_radius) and those on P, with their parameters
-# on P, (NaN, NaN) for the others. A target lies on P on node j of P (its parameters), or within
-# max(GCQ_CURVED_ON × P's diameter, hbox) of its closest point (u*, v*) on P (_curved_closest), so one on a boundary
-# shared by panels lies on each. Threaded over the panels; then an ArgumentError for a target on P in its weighted edge
-# segment [0, 2^-K], where gcq_curved_row would throw from the threaded rows
+# on P, (NaN, NaN) for the others. A target lies on P on node j of P (its parameters), or within _gcq_on_tol(P's
+# diameter, hbox) of its closest point (u*, v*) on P (_curved_closest; at least the rows' own test, on the same x), so
+# one on a boundary shared by panels lies on each. Threaded over the panels; then the ArgumentErrors of the on-panel
+# rows (_gcq_check_edge_segment: a target on P in its weighted edge segment), which would come from the threaded rows
 function _gcq_curved_sl_targets(ps, gcq, Xt::Matrix{Float64}, hit; η_gcq::Real, gcq_far::Symbol, hbox::Real)
     tree = KDTree(Xt)
     near = Vector{Tuple{Vector{Int}, Vector{NTuple{2, Float64}}}}(undef, length(ps))
     Threads.@threads :dynamic for k in gcq
         P = ps[k]; nv = length(P.rv.x)
         R = _gcq_curved_radius(P, η_gcq, gcq_far)
-        diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
-        hon = max(GCQ_CURVED_ON * diam, hbox)
-        # (a point of P is within P's diameter of P's nearest node)
-        cand, dmin = _gcq_curved_nearest(P, Xt, tree, max(R, diam))
+        diam = _gcq_curved_diam(P)
+        hon = _gcq_on_tol(diam, hbox)
+        # every target that may be a row: within R of P's nearest node, or on P (a point of P is within its diameter)
+        rad = max(R, diam)
+        cand, dmin = _gcq_curved_nearest(P, Xt, tree, rad)
         ts = Int[]; on = NTuple{2, Float64}[]
         for (i, t) in enumerate(cand)
             uv = (NaN, NaN)
             if hit[t][1] == k
                 j = hit[t][2]
                 uv = (P.ru.x[(j - 1) ÷ nv + 1], P.rv.x[(j - 1) % nv + 1])
-            elseif dmin[i] <= diam
+            elseif dmin[i] <= rad
                 us, vs, d = _curved_closest(P, _gcq_target_frame(ps, P, Xt, hit, t))
                 d <= hon && (uv = (us, vs))
             end
@@ -810,11 +812,7 @@ function _gcq_curved_sl_targets(ps, gcq, Xt::Matrix{Float64}, hit; η_gcq::Real,
         near[k] = (ts[p], on[p])
     end
     for k in gcq, (t, uv) in zip(near[k]...)
-        ru = ps[k].ru
-        isnan(uv[1]) || !_gcq_edge_segment(ru, _gcq_on_segment(ru, uv[1])) ||
-            throw(ArgumentError("GCQPotential: target $t lies on GCQ panel $k at u = $(uv[1]), within its weighted " *
-                                "edge segment [0, 2^-K] = [0, $(ru.segs[1][2])], where the density's factor u^pw is " *
-                                "singular: no on-surface rule there (move the target off the surface or past the segment)"))
+        isnan(uv[1]) || _gcq_check_edge_segment(ps[k].ru, uv[1], "GCQPotential", "target $t (panel $k)")
     end
     return near
 end

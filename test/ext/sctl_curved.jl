@@ -214,7 +214,15 @@ end
     itf = m.interface; ps = itf.panels
     X = nodes_of(itf); σ = [x[3] for x in X]
     gcq = findall(!is_gl_panel, ps)
+    oncap(k) = any(y -> y[3] != 0, ps[k].points)            # a panel of the caps; the disk's nodes have z = 0
     pt(P, u, v) = P.anchor .+ BI.curved_lpoint(P, u, v)
+    # node targets (all 3840 take ~37 s at 8 threads): every node of an upper-cap GCQ panel, of a disk GCQ panel and of
+    # a cap GL panel, and every 5th node
+    cols = panel_column_ranges(itf)
+    full = [gcq[2], gcq[23], findfirst(k -> is_gl_panel(ps[k]) && oncap(k), eachindex(ps))]
+    @test all(y -> y[3] > 0, ps[gcq[2]].points) && !oncap(gcq[23])
+    inX = sort(unique([reduce(vcat, [collect(cols[k]) for k in full]); 1:5:length(X)]))
+    XN = X[inX]
     rng = MersenneTwister(6)
     # 20 surface points that are not nodes (Review Focus 1): random (u, v) on random GCQ panels, u log-uniform for half
     # of them, all past the weighted edge segment [0, 2^-K] (where a target on the panel throws: below)
@@ -243,12 +251,12 @@ end
     Y = [S; B[gg]]; nY = [nS; nB[gg]]
     Yp = [y .+ δ .* n for (y, n) in zip(Y, nY)]; Ym = [y .- δ .* n for (y, n) in zip(Y, nY)]
     I9 = fib(0.9, 10); I99 = fib(0.99, 10)
-    T = [X; S; B; I9; I99; Yp; Ym]
+    T = [XN; S; B; I9; I99; Yp; Ym]
     t0 = time()
     u = potential_operator(GCQPotential(), itf, reduce(hcat, collect.(T))) * σ
     @info "GCQPotential (curved): $(length(T)) targets in $(round(time() - t0, digits = 1)) s"
     @test all(isfinite, u)
-    part(r) = (o = 0; for A in (X, S, B, I9, I99, Yp, Ym)
+    part(r) = (o = 0; for A in (XN, S, B, I9, I99, Yp, Ym)
                           r === A && return o .+ eachindex(A); o += length(A)
                       end)
     e = abs.(u .- [x[3] / 3 for x in T])
@@ -256,10 +264,9 @@ end
     # against z/3 (|u| ≤ 1/3), set by the GL panels' geometry: largest next to the caps' GL panels (u → 1 on the GCQ
     # panels), ≤ 3e-15 on the disk (z = 0, by symmetry). The GCQ nodes at the first u-node (4e-5 from the equator) are
     # farthest from them
-    cols = panel_column_ranges(itf)
-    first_u = [cols[k][b] for k in gcq if m.panel_patch[k] <= 10 for b in 1:length(ps[k].rv.x)]
-    @test maximum(e[first_u]) < 1e-9                  # 4.1e-10 measured
-    @test err(X) < 2.5e-6                             # all nodes: 1.17e-6 (a GL node)
+    first_u = Set(cols[k][b] for k in gcq if oncap(k) for b in 1:length(ps[k].rv.x))
+    @test maximum(e[findall(in(first_u), inX)]) < 1e-9          # 4.1e-10 measured
+    @test err(XN) < 2.5e-6                            # nodes: 1.17e-6 (a GL node)
     @test err(S) < 1.5e-7                             # non-node points: 6.6e-8
     @test err(B) < 2e-6                               # shared boundaries: 9.5e-7 (u = 1, on a GL panel)
     @test err(I9) < 2.5e-7                            # r = 0.9: 1.14e-7
@@ -269,10 +276,11 @@ end
     @test maximum(cons[1:20]) < 1.5e-14               # non-node points: 1.35e-15 measured
     @test maximum(cons[21:end]) < 2e-14               # GCQ-GCQ boundaries: 1.7e-15
     # a target within 1e-13 of a GCQ panel's diameter of one of its nodes is moved onto the node, as onto GL nodes: the
-    # far field and the node rule skip the same pair
+    # far field and the node rule skip the same pair. The value on the node is the one above, but for the far field's
+    # rounding on a different set of targets
     y = ps[gcq[2]].points[20]; ny = ps[gcq[2]].normals[20]
     u2 = potential_operator(GCQPotential(), itf, [collect(y) collect(y .+ 1e-14 .* ny)]) * σ
-    @test u2[2] == u2[1] && abs(u2[1] - u[findfirst(==(y), X)]) < 1e-12
+    @test u2[2] == u2[1] && abs(u2[1] - u[findfirst(==(y), XN)]) < 3e-16      # 2.5e-17 (1 ulp) measured
 
     # an on-surface target in a GCQ panel's weighted edge segment (u < 2^-K; u = 0 is the equator, on three GCQ panels):
     # an ArgumentError naming the segment, raised before the threaded rows (not a TaskFailedException)

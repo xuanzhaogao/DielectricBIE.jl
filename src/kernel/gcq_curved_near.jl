@@ -44,6 +44,13 @@ const GCQ_CURVED_PLAIN = 1e-3   # leaves this far from the target (× the panel'
 const GCQ_CURVED_ON = 1e-13     # a target this close (× the diameter) to the panel's interior lies on it
 const GCQ_CURVED_HESS = 1e-1    # on-panel targets: n·(x - y) by _curved_nd_hess this close (× the diameter)
 
+# P's diameter, the largest distance between its corners: the scale of the on-panel test and of the leaves' cutoffs
+_gcq_curved_diam(P::CurvedPanel) = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
+# the distance from P (of diameter `diam`) within which a target lies on P: GCQ_CURVED_ON × diam, or `hbox` when larger
+# (GCQPotential classifies its targets with the floor of its snap radius, 2^-48 × the extent of nodes and targets, at
+# least the rows' own test)
+_gcq_on_tol(diam::Real, hbox::Real = 0.0) = max(GCQ_CURVED_ON * diam, hbox)
+
 # whether the part (kseg, a, b) of one direction of a quadtree node is the whole weighted edge segment, which
 # _tensor_leaf_map! would integrate with the segment's own rule (its condition, for the segment at the edge)
 _gcq_whole_edge_seg(r::TensorRule1D, kseg, c, a, b) =
@@ -95,7 +102,7 @@ function _GCQCurvedWS(P::CurvedPanel)
     (isempty(tu_.clu) && length(ru.segs) > 1 || isempty(tv_.clu) && length(rv.segs) > 1) &&
         throw(ArgumentError("gcq_curved_row: the fine segments of a rule must tile [0, 1] from 0"))
     ws = _TensorRowWS(max(length(ru.z0), length(rv.z0)), max(size(ru.P, 2), size(rv.P, 2)))
-    return _GCQCurvedWS(tu_, tv_, ws, _curved_diam(P, 0.0, 1.0, 0.0, 1.0))
+    return _GCQCurvedWS(tu_, tv_, ws, _gcq_curved_diam(P))
 end
 
 """
@@ -115,7 +122,7 @@ A target on the panel: `on = (u0, v0)`, its parameters, with `x = curved_lpoint(
 rule on the Duffy region around the target (its fine u-segment × a v-interval as long physically, clipped to [0, 1])
 and the quadtree on the rest of the panel. A target in the weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`) throws an
 `ArgumentError`, and so do `x` farther than 1e-13 × P's diameter from `curved_lpoint(P, u0, v0)` (which is then used
-in its place), an `n` not normal to P at `on`, and a v-rule of more than one segment.
+in its place), an `n` not normal to P at `on`, and a v-rule other than one unweighted segment.
 """
 function gcq_curved_row(kind::Symbol, P::CurvedPanel, x::NTuple{3, Float64}; n = nothing, on = nothing,
                         η::Real = 1.5, maxdepth::Int = 120, ws::Union{Nothing, _GCQCurvedWS} = nothing)
@@ -147,7 +154,7 @@ function _gcq_curved_row(kern::F, P::CurvedPanel, x, η, maxdepth, pws) where F
     i = argmin(k -> sum(abs2, x .- P.lpoints[k]), eachindex(P.lpoints))
     us, vs, dist = _curved_closest(P, x)
     diam = pws.diam
-    dist <= GCQ_CURVED_ON * diam && 0 < us < 1 && 0 < vs < 1 &&
+    dist <= _gcq_on_tol(diam) && 0 < us < 1 && 0 < vs < 1 &&
         throw(ArgumentError("gcq_curved_row: the target lies on the panel; pass its parameters as `on`"))
     w = (x .- P.lpoints[i]) .+ _curved_diff(P, (us, vs), (ru.x[(i - 1) ÷ nvn + 1], rv.x[(i - 1) % nvn + 1]))
     # leaves are carried as offsets from (u*, v*), as tensor_near_row's from the target's projection
@@ -223,25 +230,35 @@ _gcq_on_kern(::Val{:dt}, P, c, n, d, ou, ov, hess) =
     (r2 = _dot3(d, d); (hess ? -_curved_nd_hess(P, c, (ou, ov), n) : _dot3(n, d)) / (4π * r2 * sqrt(r2)))
 _gcq_on_kern(::Val{:sl}, P, c, n, d, ou, ov, hess) = 1 / (4π * sqrt(_dot3(d, d)))
 
-# the fine u-segment of a target on the panel at u0 (taken from `on`, never from x: a target at u0 = 0 is in the edge
-# segment), and whether it is the weighted edge segment [0, 2^-K], where the density's u^pw is singular in the Duffy
-# region and a target on the panel throws (GCQPotential checks its targets with these before computing rows)
-_gcq_on_segment(ru::TensorRule1D, u0) = clamp(searchsortedlast(ru.segs, (u0, Inf)), 1, length(ru.segs))
-_gcq_edge_segment(ru::TensorRule1D, k) = ru.segs[k][1] == 0 && ru.pw != 0
+# The conditions of a target on the panel, checked by the on-panel rows and, before their threaded rows, by GCQNearQuad
+# and GCQPotential (`who`, the caller named in the ArgumentError). The panel's rule in v must have one segment and no
+# weight (the Duffy region's v-basis; its GCQ rule is in u)
+_gcq_check_vrule(P::CurvedPanel, who::AbstractString) =
+    length(P.rv.segs) == 1 && P.rv.pw == 0 ||
+    throw(ArgumentError("$who: a CurvedPanel's GCQ rule must be in u, its rule in v of one unweighted segment (GCQ " *
+                        "rules in v are not supported)"))
+# and the target's parameter u0 must lie past the weighted edge segment [0, 2^-K] (ru.pw ≠ 0), where the density's u^pw
+# is singular in the Duffy region: the target's fine u-segment k, taken from u0, never from x (a target at u0 = 0 is in
+# the edge segment); `what` names the target
+function _gcq_check_edge_segment(ru::TensorRule1D, u0, who::AbstractString, what::AbstractString)
+    k = clamp(searchsortedlast(ru.segs, (u0, Inf)), 1, length(ru.segs))
+    ru.segs[k][1] == 0 && ru.pw != 0 &&
+        throw(ArgumentError("$who: $what lies on a GCQ panel at u = $u0, within its weighted edge segment " *
+                            "[0, 2^-K] = [0, $(ru.segs[k][2])], where the density's factor u^pw is singular: no " *
+                            "on-surface rule there"))
+    return k
+end
 
 function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth, pws)
     ru, rv = P.ru, P.rv
     u0, v0 = c
     (0 <= u0 <= 1 && 0 <= v0 <= 1) || throw(ArgumentError("gcq_curved_row: `on` must lie in [0, 1]², got $c"))
-    (length(rv.segs) == 1 && rv.pw == 0) ||
-        throw(ArgumentError("gcq_curved_row: targets on the panel need a one-segment unweighted rule in v"))
-    k = _gcq_on_segment(ru, u0)
+    _gcq_check_vrule(P, "gcq_curved_row")
+    k = _gcq_check_edge_segment(ru, u0, "gcq_curved_row", "the target")
     sa, sb = ru.segs[k]
-    _gcq_edge_segment(ru, k) &&
-        throw(ArgumentError("gcq_curved_row: target within the edge segment [0, 2^-K] of a GCQ panel"))
     diam = pws.diam
     y0 = curved_lpoint(P, u0, v0)
-    _norm3(x .- y0) <= GCQ_CURVED_ON * diam ||
+    _norm3(x .- y0) <= _gcq_on_tol(diam) ||
         throw(ArgumentError("gcq_curved_row: x is not the point of the panel at `on`"))
     x = y0                         # far leaves subtract positions from the point that R and the near leaves start from
     yu, yv = _tangents(P, u0, v0)
