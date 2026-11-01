@@ -1,6 +1,7 @@
-# The curved GCQ row engine (src/kernel/gcq_curved_near.jl) for targets off the panel: tensor_near_row's quadtree on the
-# exact map of a `CurvedPanel`. Checked against tensor_near_row on an affine panel and against brute-force Gauss on the
-# lens. No SCTL.
+# The curved GCQ row engine (src/kernel/gcq_curved_near.jl): tensor_near_row's quadtree on the exact map of a
+# `CurvedPanel` for targets off the panel, checked against tensor_near_row on an affine panel and against brute-force
+# Gauss on the lens; for targets on it (own nodes), the Duffy region plus the quadtree, checked against an exact
+# identity on the sphere, tensor_near_row on an affine panel and an adaptive reference on the lens. No SCTL.
 using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra
@@ -159,4 +160,217 @@ end
     end
     worst_edge = maximum(err_edge)
     @test worst_edge <= 7e-14                                           # 7.3e-15 measured (2.3e-7 before the split)
+end
+
+# An adaptive reference for the Dᵀ rows of targets on a curved GCQ panel P (its nodes), independent of the engine's
+# fixed rules and of the panel's lmap and dmap: the map is the patch's, f ∘ pa (absolute), with its tangents and second
+# derivatives by dual numbers; y - x is the tangents' path integral (4 … 24 Gauss points by length) below a physical
+# distance of 0.2, and n·(y - x) the second-derivative integral ∫₀¹ (1 - σ) n·y''(σ) dσ below 1e-2. The target's whole
+# fine segment [sa, sb] × [0, 1] is integrated by nested adaptive Gauss-Kronrod (HCubature.hquadrature) in polar
+# coordinates about the target (along each side, split at the foot of the perpendicular), every other segment by
+# HCubature.hcubature on v-strips graded toward the target (the weighted edge segment after u = δ w^(1/(1 + pw)), which
+# takes out the weight). Ported from the spike scripts/curved3d/53_gcq_duffy_spike.jl (ref_c, polar_adaptive) of the
+# study repository. Dᵀ only (the operator's self rows): the single layer, at about twice the cost, would not fit the
+# testset's CI budget; its rows share every rule but the kernel with the Dᵀ rows and are checked in (a) and (c).
+const GCQ_REF_GL = Dict(n => ((t, w) = gausslegendre(n); ((1 .+ t) ./ 2, w ./ 2)) for n in (4, 8, 12, 24))
+gcq_ref_nsel(λ) = λ < 1e-4 ? 4 : λ < 1e-2 ? 8 : λ < 0.1 ? 12 : 24
+struct GCQRefTarget{F, PA, PP}
+    f::F; pa::PA; P::PP
+    c::NTuple{2, Float64}; k0::Int                       # the target's parameters and fine u-segment
+    x::NTuple{3, Float64}; n::NTuple{3, Float64}         # its position (f ∘ pa) and normal
+    su::Float64; sv::Float64; FF::NTuple{3, Float64}     # |y_u|, |y_v| and the first fundamental form there
+end
+function gcq_ref_geo(f, pa, u, v)
+    du = BI.ForwardDiff.Dual{Nothing}(u, 1.0, 0.0); dv = BI.ForwardDiff.Dual{Nothing}(v, 0.0, 1.0)
+    y = f(pa(du, dv)...)
+    val(k) = BI.ForwardDiff.value(y[k]); part(k, j) = BI.ForwardDiff.partials(y[k], j)
+    return (val(1), val(2), val(3)), (part(1, 1), part(2, 1), part(3, 1)), (part(1, 2), part(2, 2), part(3, 2))
+end
+function GCQRefTarget(f, pa, P, a, b)
+    c = (P.ru.x[a], P.rv.x[b])
+    k0 = clamp(searchsortedlast([sa for (sa, _) in P.ru.segs], c[1]), 1, length(P.ru.segs))
+    x, yu, yv = gcq_ref_geo(f, pa, c...)
+    return GCQRefTarget(f, pa, P, c, k0, x, P.normals[(a - 1) * length(P.rv.x) + b], sqrt(dot(yu, yu)),
+                        sqrt(dot(yv, yv)), (dot(yu, yu), dot(yu, yv), dot(yv, yv)))
+end
+# y(c + Δ) - y(c), and n·(y(c + Δ) - y(c))
+function gcq_ref_pdiff(T, Δ)
+    σs, ws = GCQ_REF_GL[gcq_ref_nsel(hypot(Δ...))]
+    s = (0.0, 0.0, 0.0)
+    for (σ, w) in zip(σs, ws)
+        _, yu, yv = gcq_ref_geo(T.f, T.pa, T.c[1] + σ * Δ[1], T.c[2] + σ * Δ[2])
+        s = s .+ w .* (yu .* Δ[1] .+ yv .* Δ[2])
+    end
+    return s
+end
+function gcq_ref_nd(T, Δ)
+    σs, ws = GCQ_REF_GL[gcq_ref_nsel(hypot(Δ...))]
+    nf(t) = dot(T.n, T.f(T.pa(T.c[1] + t * Δ[1], T.c[2] + t * Δ[2])...))
+    d2(σ) = BI.ForwardDiff.derivative(t -> BI.ForwardDiff.derivative(nf, t), σ)
+    return sum(w * (1 - σ) * d2(σ) for (σ, w) in zip(σs, ws))
+end
+# K_dt J φ at c + Δ (φ flattened nu × nv), φ_u on fine segment k (the weight u^pw left out if !weight)
+function gcq_ref_f(T, Δ, k; weight = true)
+    P = T.P; ru, rv = P.ru, P.rv
+    z = (T.c[1] + Δ[1], T.c[2] + Δ[2])
+    y, yu, yv = gcq_ref_geo(T.f, T.pa, z...)
+    J = norm(cross(collect(yu), collect(yv)))
+    λ = hypot(Δ[1] * T.su, Δ[2] * T.sv)
+    d = λ >= 0.2 ? y .- T.x : gcq_ref_pdiff(T, Δ)                          # y - x
+    r2 = dot(d, d)
+    nd = λ < 1e-2 ? gcq_ref_nd(T, Δ) : dot(T.n, d)
+    sa, sb = ru.segs[k]; nz = length(ru.z0)
+    ℓ = ru.bw ./ ((2 * (z[1] - sa) / (sb - sa) - 1) .- ru.z0)
+    eu = view(ru.P, (k - 1) * nz .+ (1:nz), :)' * (ℓ ./ sum(ℓ))
+    weight && ru.pw != 0 && (eu .*= z[1]^ru.pw)
+    ℓv = rv.bw ./ ((2 * z[2] - 1) .- rv.z0); ev = rv.P' * (ℓv ./ sum(ℓv))
+    return vec((-J * nd / (4π * r2 * sqrt(r2))) .* eu .* ev')
+end
+function gcq_ref_polar(T, R, tol, atol; maxevals = 10^6)
+    ua, ub, va, vb = R; c = T.c
+    corners = ((ua, va), (ub, va), (ub, vb), (ua, vb))
+    I = zeros(length(T.P.ru.x) * length(T.P.rv.x))
+    for i in 1:4
+        p = corners[i]; q = corners[mod1(i + 1, 4)]
+        p0 = (p[1] - c[1], p[2] - c[2]); e = (q[1] - p[1], q[2] - p[2])
+        det = abs(p0[1] * e[2] - p0[2] * e[1])
+        det == 0 && continue
+        g11, g12, g22 = T.FF
+        A = g11 * e[1]^2 + 2g12 * e[1] * e[2] + g22 * e[2]^2
+        B = g11 * p0[1] * e[1] + g12 * (p0[1] * e[2] + p0[2] * e[1]) + g22 * p0[2] * e[2]
+        tst = -B / A
+        brk = 0 < tst < 1 ? (0.0, tst, 1.0) : (0.0, 1.0)
+        inner = t -> begin
+            dz = (p0[1] + t * e[1], p0[2] + t * e[2])
+            BI.HCubature.hquadrature(ρ -> (ρ * det) .* gcq_ref_f(T, (ρ * dz[1], ρ * dz[2]), T.k0), 0.0, 1.0;
+                                     rtol = tol / 10, atol = atol / 10, maxevals)[1]
+        end
+        for j in 1:length(brk)-1
+            I .+= BI.HCubature.hquadrature(inner, brk[j], brk[j+1]; rtol = tol, atol, maxevals)[1]
+        end
+    end
+    return I
+end
+# the reference Dᵀ row of the node (a, b) of P, in P's node order
+function gcq_ref_row(T::GCQRefTarget, tol, atol; maxevals = 2 * 10^6)
+    P = T.P; ru = P.ru; c = T.c
+    sa, sb = ru.segs[T.k0]
+    I = gcq_ref_polar(T, (sa, sb, 0.0, 1.0), tol, atol)
+    for k in eachindex(ru.segs)
+        k == T.k0 && continue
+        sa, sb = ru.segs[k]
+        # v-breakpoints graded toward v0 (v0 ± ℓ 4^j, ℓ the segment's width or u-distance, whichever is larger), so that
+        # hcubature starts from boxes of moderate aspect ratio along these long strips
+        ℓ = max(sb - sa, max(sa - c[1], c[1] - sb, 0.0)) * T.su / T.sv
+        vbr = [c[2]]
+        for sgn in (-1, 1), j in 0:40
+            v = c[2] + sgn * ℓ * 4.0^j
+            0 < v < 1 || break
+            push!(vbr, v)
+        end
+        vbr = sort(vcat(vbr, 0.0, 1.0))
+        for (va, vb) in zip(vbr[1:end-1], vbr[2:end])
+            if sa == 0 && ru.pw != 0
+                δ = sb; γ = 1 / (1 + ru.pw)                                   # u = δ w^γ: u^pw du = δ^(1+pw) γ dw
+                f = x -> (δ^(1 + ru.pw) * γ) .* gcq_ref_f(T, (δ * x[1]^γ - c[1], x[2] - c[2]), k; weight = false)
+                I .+= BI.HCubature.hcubature(f, (0.0, va), (1.0, vb); rtol = tol, atol, maxevals)[1]
+            else
+                f = x -> gcq_ref_f(T, (x[1] - c[1], x[2] - c[2]), k)
+                I .+= BI.HCubature.hcubature(f, (sa, va), (sb, vb); rtol = tol, atol, maxevals)[1]
+            end
+        end
+    end
+    return vec(permutedims(reshape(I, length(ru.x), length(P.rv.x))))
+end
+
+@testset "gcq_curved_row: targets on the panel" begin
+    # bounds: about 10× the largest value measured at -t 1, 2 and 8 (OMP_NUM_THREADS alike), below the plan's 1e-12 (a),
+    # 1e-13 (c) and 2e-12 (d)
+    # (a) the split sphere's thin GCQ edge panel (as in test/ext/sctl_curved.jl): on the unit sphere n_x = ±x, so
+    # n_x·(x - y) = ±|x - y|²/2 and K_dt = ±K_sl/2 pointwise. The Dᵀ row takes n·(x - y) from the second derivatives
+    # (the Duffy region and leaf points near the target) or from x - y, the single layer only |x - y|: the two rows,
+    # from the same points, check that n·(x - y). Own nodes nearest the edge and farthest from it, at both v-ends
+    gs = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+    ms = curved_gcq_mesh(gs; nlev = 3, n_quad = 8, tol = 1e-12)
+    pss = ms.interface.panels
+    S = pss[findfirst(k -> ms.panel_patch[k] <= 5 && pss[k].kind == :edge, eachindex(pss))]       # upper cap
+    nus, nvs = length(S.ru.x), length(S.rv.x)
+    sph = [(a, b) for a in (1, nus) for b in (1, nvs)]
+    @test all(((a, b),) -> abs(dot(S.normals[(a - 1) * nvs + b], S.points[(a - 1) * nvs + b])) ≈ 1, sph)
+    err_sphere = zeros(length(sph))
+    Threads.@threads for q in eachindex(sph)                           # (a Dᵀ row nearest the edge takes 2 s)
+        a, b = sph[q]
+        i = (a - 1) * nvs + b
+        sgn = sign(dot(S.normals[i], S.points[i]))                     # outward (+1) or inward (-1)
+        rd = BI.gcq_curved_row(:dt, S, S.lpoints[i]; n = S.normals[i], on = (S.ru.x[a], S.rv.x[b]))
+        rs = BI.gcq_curved_row(:sl, S, S.lpoints[i]; on = (S.ru.x[a], S.rv.x[b]))
+        err_sphere[q] = maximum(abs, rd .- sgn .* rs ./ 2) / maximum(abs, rs)
+    end
+    @test maximum(err_sphere) <= 5e-14                                 # 4.3e-15 measured (4.6e-13: hess cutoff 1e-2)
+
+    # (c) the affine CurvedPanel of (off-panel targets, a) on the box's GCQ edge TensorPanel: single-layer rows of own
+    # nodes against tensor_near_row, whose quadtree recurses toward a target on the panel to maxdepth. Nodes: the
+    # innermost (in v's middle and at its end), the u-nodes nearest their fine segment's end (0.7 % and 8.6 % of its
+    # width), one in the middle, and one whose Duffy square is clipped at v = 0
+    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8,
+                                      rule = edge_gcq_rule(10.0, 1.0; tol = 1e-8))
+    Pt = first(p for p in itf.panels if p.kind == :edge)
+    o, eu, ev, Lu, Lv, nP = Pt.o, Pt.eu, Pt.ev, Pt.Lu, Pt.Lv, Pt.normal
+    Pc = BI.CurvedPanel(Pt.anchor, (u, v) -> o .+ (u * Lu) .* eu .+ (v * Lv) .* ev, Pt.ru, Pt.rv; kind = :edge,
+                        flip = dot(cross(collect(eu), collect(ev)), collect(nP)) < 0, dmap = (u, v) -> (Lu .* eu, Lv .* ev))
+    nvc = length(Pc.rv.x)
+    ksl(d) = 1 / (4π * norm(d))
+    worst_flat = 0.0
+    for (a, b) in ((1, 4), (1, 1), (20, 5), (8, 8), (13, 4), (11, 1))
+        i = (a - 1) * nvc + b
+        rt = tensor_near_row(ksl, Pt, Pc.lpoints[i])
+        rc = BI.gcq_curved_row(:sl, Pc, Pc.lpoints[i]; on = (Pc.ru.x[a], Pc.rv.x[b]))
+        worst_flat = max(worst_flat, maximum(abs, rc .- rt) / maximum(abs, rt))
+    end
+    @test worst_flat <= 3e-14                                           # 3.1e-15 measured
+
+    # (d) the lens edge panel of (off-panel targets, b) (n_quad 8): Dᵀ rows of own nodes against the adaptive reference
+    # above at rtol 1e-13. Nodes: the innermost u-node (fine segment 11, [3.1e-5, 6.1e-5]); the u-node nearest its
+    # segment's end (0.7 % of its width); a node whose Duffy square is clipped at v = 0; a middle node
+    g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
+    ps = m.interface.panels
+    kP = findfirst(p -> p.kind == :edge, ps)
+    P = ps[kP]
+    f, pa = g.patches[m.panel_patch[kP]].map, m.panel_param[kP]
+    nu, nv = length(P.ru.x), length(P.rv.x)
+    nodes = [(1, 4), (nu, 5), (12, 1), (8, 4)]
+    @test nu == 16 && P.ru.segs[end] == (0.5, 1.0) && 1 - P.ru.x[nu] < 0.01 * 0.5     # the segment-extreme node
+    yu, yv = BI._tangents(P, P.ru.x[12], P.rv.x[1])
+    @test P.ru.x[12] > 0.5 && P.rv.x[1] < 0.5 * norm(collect(yu)) / norm(collect(yv)) / 2  # (12, 1)'s square: clipped
+    # _curved_nd_hess from lmap twice (a panel without dmap) and from dmap: 2.6e-16 apart at most (measured)
+    Pn = BI.CurvedPanel(P.anchor, P.lmap, P.ru, P.rv; kind = P.kind, flip = P.flip)
+    c1, n1 = (P.ru.x[1], P.rv.x[4]), P.normals[4]
+    @test all(Δ -> isapprox(BI._curved_nd_hess(Pn, c1, Δ, n1), BI._curved_nd_hess(P, c1, Δ, n1); rtol = 3e-15),
+              ((1e-7, 2e-7), (-3e-3, 1e-2), (0.2, -0.1)))
+    err_lens = zeros(length(nodes))
+    Threads.@threads for q in eachindex(nodes)                         # (the reference takes 2-13 s per row)
+        a, b = nodes[q]
+        i = (a - 1) * nv + b
+        x = P.lpoints[i]; n = P.normals[i]
+        ref = gcq_ref_row(GCQRefTarget(f, pa, P, a, b), 1e-13, 1e-13 * BI._curved_node_scale(P, x, n))
+        rd = BI.gcq_curved_row(:dt, P, x; n, on = (P.ru.x[a], P.rv.x[b]))
+        err_lens[q] = maximum(abs, rd .- ref) / maximum(abs, ref)
+    end
+    # measured: 4.9e-14 (innermost; 8.2e-13 with the hess cutoff at 1e-2), 1.4e-13 (segment-extreme: the Duffy rule's
+    # order, 4.4e-15 at 32 × 64), 1.6e-14 (clipped), 7.9e-15 (middle)
+    @test maximum(err_lens) <= 1.5e-12
+
+    # (e) Review Focus 3: a target on the panel within the weighted edge segment [0, 2^-K] (and exactly on the edge,
+    # u = 0) throws, naming the segment
+    s1 = P.ru.segs[1][2]
+    for on in ((s1 / 2, 0.5), (0.0, 0.3))
+        err = try
+            BI.gcq_curved_row(:dt, P, BI.curved_lpoint(P, on...); n = BI.curved_frame(P, on...)[3], on)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("edge segment", err.msg)
+    end
 end
