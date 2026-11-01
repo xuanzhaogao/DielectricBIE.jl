@@ -77,16 +77,23 @@ end
 end
 
 @testset "GCQNearQuad (curved): the columns of some source panels" begin
-    # with `sources` (panel indices, in any order) only their columns are computed: exactly the full call's, for the
-    # GCQ edge panels (gcq_curved_row) and the GL×GL panels (sctl_gl_corrections) alike. GCQNearQuad() has
-    # quad_tol = 1e-12, as the lens's corrections
+    # with `sources` (panel indices, in any order) only their columns are computed: the full call's, exactly for the
+    # GCQ edge panels (gcq_curved_row) and to rounding for the GL×GL panels (sctl_gl_corrections). SCTL gets the nodes
+    # of the GL panels in `sources` at its elements' coordinates, which can differ from the interface's in the last bit
+    # (on Julia 1.14, 12 to 24 of a panel's 64 nodes; none on 1.13), so the rows of the other GL panels' nodes depend on
+    # the source set: by 3.2e-16 on 1.14, 2.3e-14 of the largest GL entry. GCQNearQuad() has quad_tol = 1e-12, as the
+    # lens's corrections
     g, m, Cm = sctl_curved_lens()
     itf = m.interface
     gcq = findall(!is_gl_panel, itf.panels); gl = findall(is_gl_panel, itf.panels)
     srcs = [gcq[end], gl[1], gcq[1], gl[end], gcq[cld(length(gcq), 2)]]
     Cs = near_corrections(GCQNearQuad(), itf, srcs)
+    Ck = BI._keep_source_columns(Cm, itf, srcs)
+    cols = panel_column_ranges(itf)
+    gc = reduce(vcat, cols[intersect(srcs, gcq)]); lc = reduce(vcat, cols[intersect(srcs, gl)])
     @test Cs isa SparseMatrixCSC{Float64, Int} && nnz(Cs) > 0
-    @test Cs == BI._keep_source_columns(Cm, itf, srcs)
+    @test Cs[:, gc] == Ck[:, gc]
+    @test maximum(abs, Cs - Ck) <= 1e-13 * maximum(abs, Ck[:, lc])
 end
 
 @testset "GCQNearQuad (curved): the near test" begin

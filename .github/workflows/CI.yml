@@ -16,7 +16,8 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # lts collects coverage (below), the slowest job
+    timeout-minutes: ${{ matrix.version == 'lts' && 120 || 90 }}
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
@@ -60,11 +61,15 @@ jobs:
                    "FastGaussQuadrature", "HCubature", "Krylov", "LegendrePolynomials", "SpecialFunctions", "StaticArrays"])
           Pkg.build("SCTL")
       - name: Run the tests
-        # OpenMP codes (FMM3D, FMM2D, FINUFFT and SCTL) get as many threads as Julia: unset, each call starts one per core.
-        # Coverage makes the suite 4x slower on Julia 1.13 (74 min with it, 18 without), so it is collected on the lts
-        # job only (46 min with it): one report is enough for Codecov. The `1` job checks bounds (the @inbounds sites).
+        # OpenMP codes (FMM3D, FMM2D, FINUFFT and SCTL) get 2 threads, the runner's cores: unset, each call starts one per
+        # core. Coverage makes the suite 4x slower on Julia 1.13 (74 min with it, 18 without), so it is collected on the
+        # lts job only: one report is enough for Codecov. The lts job runs one Julia thread: the coverage counters are
+        # shared, and two threads running the same lines contend for them (the curved GCQ rows of near_corrections,
+        # threaded: over 20x slower than with one thread on Julia 1.10; 2.3x slower than without coverage with one).
+        # The `1` job checks bounds (the @inbounds sites).
         run: >-
-          julia --project=@sctl -t 2 --color=yes --code-coverage=${{ matrix.version == 'lts' && 'user' || 'none' }}
+          julia --project=@sctl -t ${{ matrix.version == 'lts' && '1' || '2' }} --color=yes
+          --code-coverage=${{ matrix.version == 'lts' && 'user' || 'none' }}
           ${{ matrix.version == '1' && '--check-bounds=yes' || '' }} test/runtests.jl
         env:
           OMP_NUM_THREADS: 2
