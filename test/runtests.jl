@@ -48,6 +48,7 @@ using Test
     include("kernel/laplace3d.jl")
     include("kernel/curved_geometry_ops.jl")
     include("kernel/duffy.jl")
+    include("kernel/gcq_curved_near.jl")
 
     # shape functions
     if run_full

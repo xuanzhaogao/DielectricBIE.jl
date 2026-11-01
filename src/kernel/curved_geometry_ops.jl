@@ -34,8 +34,12 @@ end
 # relative to its own size however small. The map is analytic over the parameter square: Gauss with n points is
 # exact to rounding for a segment of parameter length λ once λ^(2n) ≲ 1e-16 (2 points below 1e-4, 16 up to 1)
 const _DIFF_GL = Dict(n => gausslegendre(n) for n in (2, 4, 8, 16))
-function _curved_diff(P, a, b)
-    du = b[1] - a[1]; dv = b[2] - a[2]
+_curved_diff(P, a, b) = _curved_step(P, a, (b[1] - a[1], b[2] - a[2]))
+
+# y(a + Δ) - y(a), the same integral for the parameter step Δ as given (a quadrature point's offset from a reference
+# point, which (a + Δ) - a would round to the spacing of the numbers at a)
+function _curved_step(P, a, Δ)
+    du, dv = Δ
     s1 = s2 = s3 = 0.0
     (du == 0 && dv == 0) && return (s1, s2, s3)
     λ = hypot(du, dv)
