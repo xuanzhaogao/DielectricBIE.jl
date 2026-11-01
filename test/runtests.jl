@@ -46,6 +46,7 @@ using Test
     # kernel functions
     include("kernel/laplace2d.jl")
     include("kernel/laplace3d.jl")
+    include("kernel/curved_geometry_ops.jl")
 
     # shape functions
     if run_full

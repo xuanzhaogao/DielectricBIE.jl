@@ -442,34 +442,6 @@ const _CURVED_WINDOW = 1
 # the largest aspect ratio of a proxy element (SCTL: ~1e-12 up to ~30, 1e-8 at 100)
 const _CURVED_ASPECT = 4
 
-_curved_diam(P, ua, ub, va, vb) = (c = [collect(DielectricBIE.curved_lpoint(P, u, v)) for (u, v) in
-                                         ((ua, va), (ub, va), (ub, vb), (ua, vb))];
-                                   maximum(norm(c[i] - c[j]) for i in 1:4 for j in 1:4))
-
-_dot3(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
-
-_tangents(P, u, v) = P.dmap === nothing ? DielectricBIE.curved_frame(P, u, v)[1:2] : P.dmap(u, v)
-
-# the parameters (u, v) of the point of panel P closest to x (panel frame), and the distance: Gauss-Newton from the
-# nearest node, clamped to the parameter square (stopped where a map is singular, e.g. a polar chart's pole at a corner)
-function _curved_closest(P, x)
-    nv = length(P.rv.x)
-    i = argmin(k -> sum(abs2, x .- P.lpoints[k]), eachindex(P.lpoints))
-    u, v = P.ru.x[(i - 1) ÷ nv + 1], P.rv.x[(i - 1) % nv + 1]
-    for _ in 1:50
-        yu, yv = _tangents(P, u, v)
-        d = x .- DielectricBIE.curved_lpoint(P, u, v)
-        a, b, c = _dot3(yu, yu), _dot3(yu, yv), _dot3(yv, yv)
-        gu, gv = _dot3(yu, d), _dot3(yv, d)
-        det = a * c - b^2
-        un = clamp(u + (c * gu - b * gv) / det, 0.0, 1.0); vn = clamp(v + (a * gv - b * gu) / det, 0.0, 1.0)
-        (isfinite(un) && isfinite(vn) && all(isfinite, _tangents(P, un, vn)[1])) || break
-        (un, vn) == (u, v) && break
-        u, v = un, vn
-    end
-    return u, v, sqrt(sum(abs2, x .- DielectricBIE.curved_lpoint(P, u, v)))
-end
-
 # breakpoints of the window [v0 - (W + 1/2)Δ, v0 + (W + 1/2)Δ] ∩ [0, 1] into squares of side Δ, the middle one
 # centred at v0 (pieces under Δ/4 at the ends merged into their neighbours); [0, 1] in ≈ 1/Δ equal pieces when the
 # window would cover most of it
@@ -533,7 +505,7 @@ function _curved_geom_error(P, r, xn)
         yi = sum(L[i, a] * L[j, b] .* Y[i, j] for i in 1:p, j in 1:p)
         err = max(err, norm(yi .- y(s, t)))
     end
-    return err / _curved_diam(P, ua, ub, va, vb)
+    return err / DielectricBIE._curved_diam(P, ua, ub, va, vb)
 end
 
 # the accurate D^T block of P's proxy elements (panel frame) for targets Xl with normals Nt; `own[r]` = (u, v) when
@@ -551,7 +523,7 @@ function _curved_proxy_block(P, rects, Xl, Nt, own, p, xn, quad, lk; tol, ε_rel
         rows = [r for r in eachindex(own) if own[r] !== nothing && ua <= own[r][1] <= ub && va <= own[r][2] <= vb]
         if !isempty(rows)
             # principal value on the element: both sides at ε and 2ε, Richardson
-            ε = ε_rel * _curved_diam(P, ua, ub, va, vb)
+            ε = ε_rel * DielectricBIE._curved_diam(P, ua, ub, va, vb)
             Y = reduce(hcat, [Xl[:, r] .+ s * ε .* Nt[:, r] for r in rows for s in (1, -1, 2, -2)])
             N4 = reduce(hcat, [Nt[:, r] for r in rows for _ in 1:4])
             M4 = near_matrix(quad, el, e, Y; normals = N4, tol)
@@ -590,10 +562,10 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
             far = true
             u0, v0, d = P.ru.x[(i - 1) ÷ nv + 1], P.rv.x[(i - 1) % nv + 1], dn - gap   # d: a lower bound
         else
-            u0, v0, d = _curved_closest(P, x)
+            u0, v0, d = DielectricBIE._curved_closest(P, x)
         end
     end
-    yu, yv = _tangents(P, clamp(u0, 1e-8, 1 - 1e-8), clamp(v0, 1e-8, 1 - 1e-8))   # (a corner may be singular)
+    yu, yv = DielectricBIE._tangents(P, clamp(u0, 1e-8, 1 - 1e-8), clamp(v0, 1e-8, 1 - 1e-8))   # (a corner may be singular)
     su, sv = norm(collect(yu)), norm(collect(yv))
     (isfinite(su) && su > 0 && isfinite(sv) && sv > 0) || ((su, sv) = (su0, sv0))   # at a singular point: the panel scales
     # thin segments: far ones by Gauss in u × adaptive v everywhere, near ones outside their windows
@@ -618,7 +590,7 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
         # coordinates relative to the target (it sits at the origin): y - x = (y - y(base)) - w
         XE = Array{Float64}(undef, 3, p, p, length(rects))
         for (e, (ua_, ub_, va_, vb_)) in enumerate(rects), i in 1:p, j in 1:p
-            XE[:, j, i, e] .= _curved_diff(P, (ub0, vb0), (ua_ + (ub_ - ua_) * xn[i], va_ + (vb_ - va_) * xn[j])) .- w
+            XE[:, j, i, e] .= DielectricBIE._curved_diff(P, (ub0, vb0), (ua_ + (ub_ - ua_) * xn[i], va_ + (vb_ - va_) * xn[j])) .- w
         end
         el = lock(() -> QuadElemList(p, XE), lk)
         X1 = zeros(3, 1); N1 = reshape(collect(n), 3, 1)
@@ -627,7 +599,7 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
                       DielectricBIE.tensor_rule_interp(rv, va_ .+ (vb_ - va_) .* xn))
             if own !== nothing && ua_ <= own[1] <= ub_ && va_ <= own[2] <= vb_
                 # principal value on the element: both sides at ε and 2ε, Richardson
-                ε = ε_rel * _curved_diam(P, ua_, ub_, va_, vb_)
+                ε = ε_rel * DielectricBIE._curved_diam(P, ua_, ub_, va_, vb_)
                 Y = reduce(hcat, [X1[:, 1] .+ s * ε .* N1[:, 1] for s in (1, -1, 2, -2)])
                 M4 = near_matrix(quad, el, e, Y; normals = repeat(N1, 1, 4), tol)
                 M = M4[1:1, :] .+ M4[2:2, :] .- (M4[3:3, :] .+ M4[4:4, :]) ./ 2
@@ -648,10 +620,10 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
         end
         m < 2 && (m = 0)
     end
-    Ug, Cg = m == 0 ? (Float64[], zeros(0, nu)) : get!(() -> _curved_group_rule(ru, m), cache.groups, m)
+    Ug, Cg = m == 0 ? (Float64[], zeros(0, nu)) : get!(() -> DielectricBIE._curved_group_rule(ru, m), cache.groups, m)
     # Gauss in u × adaptive v, on the pieces of [0, 1] between v0 and the window ends
     brk = sort(unique(vcat(0.0, 1.0, clamp(v0, 0.0, 1.0), [s[2] for s in seg if s[2] <= s[3]], [s[3] for s in seg if s[2] <= s[3]])))
-    ref = _curved_node_scale(P, x, n)                          # scale of the row, for the absolute tolerance
+    ref = DielectricBIE._curved_node_scale(P, x, n)             # scale of the row, for the absolute tolerance
     tb = 2vb0 - 1
     for i in 1:length(brk)-1
         a, b = brk[i], brk[i+1]
@@ -660,14 +632,14 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
         isempty(ks) && m == 0 && continue
         U = vcat(Ug, reduce(vcat, [ru.fx[:, k] for k in ks]; init = Float64[]))
         C = vcat(Cg, reduce(vcat, [ru.fw[:, k] .* ru.P[(k - 1) * nz .+ (1:nz), :] for k in ks]; init = zeros(0, nu)))
-        G = [get!(() -> _curved_vgeom(P, u), cache.vgeom, u) for u in U]
+        G = [get!(() -> DielectricBIE._curved_vgeom(P, u), cache.vgeom, u) for u in U]
         # x - y(u_q, v_b) = w + (y(base) - y(u_q, v_b)), the second across the u-lines (cached per line and base)
-        A = [w .+ get!(() -> _curved_diff(P, (U[q], vb0), (ub0, vb0)), cache.adiff, (U[q], ub0, vb0)) for q in eachindex(U)]
+        A = [w .+ get!(() -> DielectricBIE._curved_diff(P, (U[q], vb0), (ub0, vb0)), cache.adiff, (U[q], ub0, vb0)) for q in eachindex(U)]
         f = v -> begin
             g = zeros(nu)
             t = 2v - 1
             for q in eachindex(U)
-                b1, b2, b3, J = _cheb_diff(G[q], tb, t)               # y(u_q, v_b) - y(u_q, v)
+                b1, b2, b3, J = DielectricBIE._cheb_diff(G[q], tb, t)        # y(u_q, v_b) - y(u_q, v)
                 d1, d2, d3 = A[q][1] + b1, A[q][2] + b2, A[q][3] + b3
                 r2 = d1^2 + d2^2 + d3^2
                 c = J * (n[1] * d1 + n[2] * d2 + n[3] * d3) / (4π * r2 * sqrt(r2))
@@ -683,88 +655,7 @@ function _curved_thin_row(P, x, n, own, thin, su0, sv0, p, xn, quad, lk, cache; 
     return row
 end
 
-# y(b) - y(a) for parameter points a, b of panel P: ∫ of the tangents along the straight segment, so accurate
-# relative to its own size however small. The map is analytic over the parameter square: Gauss with n points is
-# exact to rounding for a segment of parameter length λ once λ^(2n) ≲ 1e-16 (2 points below 1e-4, 16 up to 1)
-const _DIFF_GL = Dict(n => DielectricBIE.gausslegendre(n) for n in (2, 4, 8, 16))
-function _curved_diff(P, a, b)
-    du = b[1] - a[1]; dv = b[2] - a[2]
-    s1 = s2 = s3 = 0.0
-    (du == 0 && dv == 0) && return (s1, s2, s3)
-    λ = hypot(du, dv)
-    t, w = _DIFF_GL[λ < 1e-4 ? 2 : λ < 1e-2 ? 4 : λ < 0.1 ? 8 : 16]
-    for (ti, wi) in zip(t, w)
-        σ = (1 + ti) / 2
-        yu, yv = _tangents(P, a[1] + σ * du, a[2] + σ * dv)
-        s1 += wi / 2 * (yu[1] * du + yv[1] * dv); s2 += wi / 2 * (yu[2] * du + yv[2] * dv); s3 += wi / 2 * (yu[3] * du + yv[3] * dv)
-    end
-    return (s1, s2, s3)
-end
-
-# along the line u of panel P, as Chebyshev series in t = 2v - 1: the antiderivative (in v) of the tangent y_v
-# (columns 1-3) and the Jacobian J (column 4); an analytic map over a patch: 32 terms reach the rounding level
-const _CHEB_N = 32
-function _curved_vgeom(P, u)
-    N = _CHEB_N
-    t = [cos(π * (j + 0.5) / N) for j in 0:N-1]
-    F = zeros(N, 4)
-    for (j, tj) in enumerate(t)
-        _, yv, _, J = DielectricBIE.curved_frame(P, u, (1 + tj) / 2)
-        F[j, 1:3] .= yv; F[j, 4] = J
-    end
-    T = [cos(k * π * (j + 0.5) / N) for k in 0:N-1, j in 0:N-1]
-    c = (2 / N) .* (T * F); c[1, :] ./= 2                     # f = Σ_k c[k+1] T_k
-    G = zeros(N + 1, 4)
-    G[1:N, 4] .= c[:, 4]
-    # ∫ f dv = ½ ∫ f dt: coefficients (c_{k-1} - c_{k+1}) / (2k) (2c_0 for k = 1), halved
-    for col in 1:3, k in 1:N
-        cm = k == 1 ? 2 * c[1, col] : c[k, col]; cp = k + 1 <= N - 1 ? c[k + 2, col] : 0.0
-        G[k + 1, col] = (cm - cp) / (4k)
-    end
-    return G
-end
-
-# F(t0) - F(t) of the antiderivative series (columns 1-3 of G) as (t0 - t) Σ_k G_k (T_k(t0) - T_k(t)) / (t0 - t),
-# the divided differences by Δ_{k+1} = 2 t0 Δ_k + 2 T_k(t) - Δ_{k-1}: no cancellation for t near t0; and J(t)
-function _cheb_diff(G, t0, t)
-    h = t0 - t
-    Δm, Δ = 0.0, 1.0                                          # Δ_0, Δ_1
-    Tm, T = 1.0, t                                            # T_0(t), T_1(t)
-    s1 = G[2, 1]; s2 = G[2, 2]; s3 = G[2, 3]
-    J = G[1, 4] + G[2, 4] * t
-    @inbounds for k in 2:size(G, 1)-1
-        Δm, Δ = Δ, 2t0 * Δ + 2T - Δm                          # Δ_k
-        Tm, T = T, 2t * T - Tm                                # T_k(t)
-        s1 += G[k + 1, 1] * Δ; s2 += G[k + 1, 2] * Δ; s3 += G[k + 1, 3] * Δ
-        J += G[k + 1, 4] * T
-    end
-    return (h * s1, h * s2, h * s3, J)
-end
-
-# the first m segments of a GCQ rule [0, s] as one rule: Gauss-Legendre nodes on [0, s] and the moments
-# C[q, :] = Σ_fine fw ℓ_q(fx) P[fine, :] of the Lagrange basis at them (∫ σ g ≈ Σ_q g(u_q) C[q, :]·σ for g smooth on
-# [0, s], i.e. from a target at least s away)
-const _CURVED_GROUP_NODES = 20
-function _curved_group_rule(ru, m)
-    nz = length(ru.z0); s = ru.segs[m][2]
-    z, w = DielectricBIE.gausslegendre(_CURVED_GROUP_NODES)
-    L = DielectricBIE._tensor_lagrange_mat(z, DielectricBIE.gl_barycentric_weights(z, w), 2 .* vec(ru.fx[:, 1:m]) ./ s .- 1)
-    C = L * (vec(ru.fw[:, 1:m]) .* ru.P[1:(m * nz), :])
-    return s .* (1 .+ z) ./ 2, C
-end
-
 _strip_error() = error("SCTLCurvedNearQuad: a target lies within the width of the edge segment [0, 2^-K] of a GCQ panel")
-
-# Σ_j |node-rule entry| of the row: the row's scale
-function _curved_node_scale(P, x, n)
-    s = 0.0
-    for (y, w) in zip(P.lpoints, P.weights)
-        d = x .- y; r2 = _dot3(d, d)
-        r2 == 0 && continue
-        s += abs(w * _dot3(n, d) / (4π * r2 * sqrt(r2)))
-    end
-    return s
-end
 
 function DielectricBIE.near_corrections(q::DielectricBIE.SCTLCurvedNearQuad, interface::DielectricInterface)
     ps = interface.panels
@@ -801,7 +692,7 @@ function _curved_gcq_corrections(q::DielectricBIE.SCTLCurvedNearQuad, interface:
         p = q.order === nothing ? _SCTL_ORDERS[findfirst(>=(nmax), _SCTL_ORDERS)] : q.order
         xn = param_nodes(p)
         # near targets: within η × diameter of a node of the panel (and the panel's own nodes)
-        diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
+        diam = DielectricBIE._curved_diam(P, 0.0, 1.0, 0.0, 1.0)
         c = reduce(.+, P.points) ./ num_points(P)
         rad = maximum(norm(collect(y .- c)) for y in P.points)
         cand = DielectricBIE.NearestNeighbors.inrange(tree, collect(c), rad + q.η * diam)

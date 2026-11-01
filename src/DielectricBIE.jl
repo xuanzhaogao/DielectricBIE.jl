@@ -134,6 +134,7 @@ include("core/source_geometry.jl")
 include("kernel/laplace2d.jl")
 include("kernel/laplace3d.jl")
 include("kernel/laplace3d_tensor_near.jl")
+include("kernel/curved_geometry_ops.jl")
 
 # # geometries
 include("shape/box2d.jl")
