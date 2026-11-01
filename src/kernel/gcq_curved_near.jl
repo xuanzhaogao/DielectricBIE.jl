@@ -80,6 +80,24 @@ function _curved_nd2(P, c, Δ, n, σ)
     end
 end
 
+# the per-panel part of a row: the rules' near tables, the row buffers and P's diameter. The rows of one panel can share
+# it (gcq_curved_row's `ws`; _gcq_curved_corrections builds one per panel and task): its buffers are not thread-safe
+struct _GCQCurvedWS
+    tu::_TensorNearTables
+    tv::_TensorNearTables
+    row::_TensorRowWS
+    diam::Float64
+end
+
+function _GCQCurvedWS(P::CurvedPanel)
+    ru, rv = P.ru, P.rv
+    tu_, tv_ = _tensor_near_tables(ru), _tensor_near_tables(rv)
+    (isempty(tu_.clu) && length(ru.segs) > 1 || isempty(tv_.clu) && length(rv.segs) > 1) &&
+        throw(ArgumentError("gcq_curved_row: the fine segments of a rule must tile [0, 1] from 0"))
+    ws = _TensorRowWS(max(length(ru.z0), length(rv.z0)), max(size(ru.P, 2), size(rv.P, 2)))
+    return _GCQCurvedWS(tu_, tv_, ws, _curved_diam(P, 0.0, 1.0, 0.0, 1.0))
+end
+
 """
     gcq_curved_row(kind, P, x; n = nothing, on = nothing, η = 1.5, maxdepth = 120) -> Vector{Float64}
 
@@ -100,37 +118,35 @@ and the quadtree on the rest of the panel. A target in the weighted edge segment
 in its place), an `n` not normal to P at `on`, and a v-rule of more than one segment.
 """
 function gcq_curved_row(kind::Symbol, P::CurvedPanel, x::NTuple{3, Float64}; n = nothing, on = nothing,
-                        η::Real = 1.5, maxdepth::Int = 120)
+                        η::Real = 1.5, maxdepth::Int = 120, ws::Union{Nothing, _GCQCurvedWS} = nothing)
     kind === :dt || kind === :sl || throw(ArgumentError("gcq_curved_row: kind must be :dt or :sl, got :$kind"))
     kind === :dt && n === nothing && throw(ArgumentError("gcq_curved_row: kind = :dt needs the target normal `n`"))
     nt = kind === :dt ? NTuple{3, Float64}(n) : nothing
-    on === nothing || return _gcq_curved_row_on(Val(kind), nt, P, x, NTuple{2, Float64}(on), Float64(η), maxdepth)
+    pws = ws === nothing ? _GCQCurvedWS(P) : ws
+    on === nothing || return _gcq_curved_row_on(Val(kind), nt, P, x, NTuple{2, Float64}(on), Float64(η), maxdepth, pws)
     if kind === :dt
-        return _gcq_curved_row(d -> (r2 = _dot3(d, d); _dot3(nt, d) / (4π * r2 * sqrt(r2))), P, x, Float64(η), maxdepth)
+        return _gcq_curved_row(d -> (r2 = _dot3(d, d); _dot3(nt, d) / (4π * r2 * sqrt(r2))), P, x, Float64(η), maxdepth,
+                               pws)
     end
-    return _gcq_curved_row(d -> 1 / (4π * sqrt(_dot3(d, d))), P, x, Float64(η), maxdepth)
+    return _gcq_curved_row(d -> 1 / (4π * sqrt(_dot3(d, d))), P, x, Float64(η), maxdepth, pws)
 end
 
-# the rules' near tables, and the buffers of a row (M zeroed: nbu × nbv)
-function _gcq_curved_setup(P::CurvedPanel)
-    ru, rv = P.ru, P.rv
-    tu_, tv_ = _tensor_near_tables(ru), _tensor_near_tables(rv)
-    (isempty(tu_.clu) && length(ru.segs) > 1 || isempty(tv_.clu) && length(rv.segs) > 1) &&
-        throw(ArgumentError("gcq_curved_row: the fine segments of a rule must tile [0, 1] from 0"))
-    nbu, nbv = size(ru.P, 2), size(rv.P, 2)
-    ws = _TensorRowWS(max(length(ru.z0), length(rv.z0)), max(nbu, nbv))
-    M = view(ws.M, 1:nbu, 1:nbv); fill!(M, 0.0)
-    return tu_, tv_, ws, M
+# the buffers of a row (M zeroed: nbu × nbv; the stack emptied)
+function _gcq_curved_setup(P::CurvedPanel, pws::_GCQCurvedWS)
+    ws = pws.row
+    M = view(ws.M, 1:size(P.ru.P, 2), 1:size(P.rv.P, 2)); fill!(M, 0.0)
+    empty!(ws.stack)
+    return pws.tu, pws.tv, ws, M
 end
 
-function _gcq_curved_row(kern::F, P::CurvedPanel, x, η, maxdepth) where F
+function _gcq_curved_row(kern::F, P::CurvedPanel, x, η, maxdepth, pws) where F
     ru, rv = P.ru, P.rv
-    tu_, tv_, ws, M = _gcq_curved_setup(P)
+    tu_, tv_, ws, M = _gcq_curved_setup(P, pws)
     # the reference point: the closest point (u*, v*) of P, and w = x - y(u*, v*) from P's nearest node
     nvn = length(rv.x)
     i = argmin(k -> sum(abs2, x .- P.lpoints[k]), eachindex(P.lpoints))
     us, vs, dist = _curved_closest(P, x)
-    diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
+    diam = pws.diam
     dist <= GCQ_CURVED_ON * diam && 0 < us < 1 && 0 < vs < 1 &&
         throw(ArgumentError("gcq_curved_row: the target lies on the panel; pass its parameters as `on`"))
     w = (x .- P.lpoints[i]) .+ _curved_diff(P, (us, vs), (ru.x[(i - 1) ÷ nvn + 1], rv.x[(i - 1) % nvn + 1]))
@@ -207,7 +223,7 @@ _gcq_on_kern(::Val{:dt}, P, c, n, d, ou, ov, hess) =
     (r2 = _dot3(d, d); (hess ? -_curved_nd_hess(P, c, (ou, ov), n) : _dot3(n, d)) / (4π * r2 * sqrt(r2)))
 _gcq_on_kern(::Val{:sl}, P, c, n, d, ou, ov, hess) = 1 / (4π * sqrt(_dot3(d, d)))
 
-function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth)
+function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth, pws)
     ru, rv = P.ru, P.rv
     u0, v0 = c
     (0 <= u0 <= 1 && 0 <= v0 <= 1) || throw(ArgumentError("gcq_curved_row: `on` must lie in [0, 1]², got $c"))
@@ -218,7 +234,7 @@ function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth)
     sa, sb = ru.segs[k]
     sa == 0 && ru.pw != 0 &&
         throw(ArgumentError("gcq_curved_row: target within the edge segment [0, 2^-K] of a GCQ panel"))
-    diam = _curved_diam(P, 0.0, 1.0, 0.0, 1.0)
+    diam = pws.diam
     y0 = curved_lpoint(P, u0, v0)
     _norm3(x .- y0) <= GCQ_CURVED_ON * diam ||
         throw(ArgumentError("gcq_curved_row: x is not the point of the panel at `on`"))
@@ -228,7 +244,7 @@ function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth)
     n === nothing || abs(_dot3(n, yu)) <= 1e-12 * _norm3(n) * _norm3(yu) &&
                      abs(_dot3(n, yv)) <= 1e-12 * _norm3(n) * _norm3(yv) ||
         throw(ArgumentError("gcq_curved_row: n is not the normal of the panel at `on`"))
-    tu_, tv_, ws, M = _gcq_curved_setup(P)
+    tu_, tv_, ws, M = _gcq_curved_setup(P, pws)
     # the Duffy region R = [sa, sb] × [va, vb], the first fundamental form G at the target
     G = (_dot3(yu, yu), _dot3(yu, yv), _dot3(yv, yv))
     Δv = (sb - sa) * sqrt(G[1] / G[3])

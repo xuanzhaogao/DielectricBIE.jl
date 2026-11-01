@@ -1,7 +1,8 @@
 # The curved GCQ row engine (src/kernel/gcq_curved_near.jl): tensor_near_row's quadtree on the exact map of a
 # `CurvedPanel` for targets off the panel, checked against tensor_near_row on an affine panel and against brute-force
 # Gauss on the lens; for targets on it (own nodes), the Duffy region plus the quadtree, checked against an exact
-# identity on the sphere, tensor_near_row on an affine panel and an adaptive reference on the lens. No SCTL.
+# identity on the sphere, tensor_near_row on an affine panel and an adaptive reference on the lens. Last, what the
+# mesher's map closures, the engine's geometry and a row allocate. No SCTL.
 using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra
@@ -437,4 +438,36 @@ end
     on84 = (P.ru.x[8], P.rv.x[4]); n84 = P.normals[(8 - 1) * nv + 4]
     @test_throws ArgumentError BI.gcq_curved_row(:dt, P, P.lpoints[(8 - 1) * nv + 4]; on = on84,
                                                  n = normalize(collect(n84) .+ 1e-6))
+end
+
+# bytes allocated by f(args...), after a warm-up call (a function barrier: the testset's locals are not typed)
+_allocs(f::F, args...) where F = (f(args...); @allocated f(args...))
+
+@testset "gcq_curved_row: allocation" begin
+    # the lens edge panel of (b) and (d): the mesher's map closures and the engine's geometry allocate nothing (before
+    # Task 5b they collected the patch map into arrays: lmap 3.1 kB, dmap 0.5 kB, _curved_nd_hess 2.0 … 16.1 kB per
+    # call, the own row below 421 MB, the off-panel row 29 MB)
+    g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
+    ps = m.interface.panels
+    gcq = findall(p -> p.kind == :edge, ps)
+    P = ps[gcq[1]]
+    for (u, v) in ((1e-9, 0.3), (0.37, 0.61), (1.0, 1.0))
+        @test _allocs(P.lmap, u, v) == 0
+        @test _allocs(P.dmap, u, v) == 0
+        @test _allocs(BI.curved_lpoint, P, u, v) == 0
+        @test _allocs(BI._tangents, P, u, v) == 0
+    end
+    c = (0.37, 0.61); n = BI.curved_frame(P, c...)[3]
+    for Δ in ((1e-7, 2e-7), (-3e-3, 1e-2), (0.2, -0.1))                # 2, 8 and 16 σ-points
+        @test _allocs(BI._curved_step, P, c, Δ) == 0
+        @test _allocs(BI._curved_nd_hess, P, c, Δ, n) == 0
+    end
+    # rows: the buffers (16.8 kB), the result, and for an own node the Duffy rule's points and basis matrices. Measured:
+    # 1.73 MB (own, innermost u-node), 20.8 kB (off the panel: a node of the next GCQ panel)
+    own = (P, x, n, on) -> BI.gcq_curved_row(:dt, P, x; n, on)
+    @test _allocs(own, P, P.lpoints[4], P.normals[4], (P.ru.x[1], P.rv.x[4])) <= 3.5e6
+    Q = ps[gcq[2]]
+    off = (P, x, n) -> BI.gcq_curved_row(:dt, P, x; n)
+    @test _allocs(off, P, (Q.anchor .- P.anchor) .+ Q.lpoints[1], Q.normals[1]) <= 4.2e4
 end

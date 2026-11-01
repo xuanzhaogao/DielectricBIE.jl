@@ -329,14 +329,17 @@ function _gcq_curved_corrections(interface::DielectricInterface{<:CurvedPanel}, 
         rows = Matrix{Float64}(undef, length(ts), num_points(P))
         nch = min(Threads.nthreads(), length(ts))
         @sync for ch in 1:nch
-            Threads.@spawn for r in ch:nch:length(ts)
-                t = ts[r]; j = loc[t]; nt = (Nrm[1, t], Nrm[2, t], Nrm[3, t])
-                if owner[t] == k                                    # P's own node (a, b)
-                    a, b = (j - 1) ÷ nv + 1, (j - 1) % nv + 1
-                    rows[r, :] .= gcq_curved_row(:dt, P, P.lpoints[j]; n = nt, on = (P.ru.x[a], P.rv.x[b]))
-                else
-                    Pt = ps[owner[t]]
-                    rows[r, :] .= gcq_curved_row(:dt, P, (Pt.anchor .- P.anchor) .+ Pt.lpoints[j]; n = nt)
+            Threads.@spawn begin
+                ws = _GCQCurvedWS(P)                                # P's tables and row buffers, this task's
+                for r in ch:nch:length(ts)
+                    t = ts[r]; j = loc[t]; nt = (Nrm[1, t], Nrm[2, t], Nrm[3, t])
+                    if owner[t] == k                                # P's own node (a, b)
+                        a, b = (j - 1) ÷ nv + 1, (j - 1) % nv + 1
+                        rows[r, :] .= gcq_curved_row(:dt, P, P.lpoints[j]; n = nt, on = (P.ru.x[a], P.rv.x[b]), ws)
+                    else
+                        Pt = ps[owner[t]]
+                        rows[r, :] .= gcq_curved_row(:dt, P, (Pt.anchor .- P.anchor) .+ Pt.lpoints[j]; n = nt, ws)
+                    end
                 end
             end
         end
