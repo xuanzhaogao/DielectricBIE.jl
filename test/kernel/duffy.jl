@@ -20,12 +20,20 @@ duffy_slp_exact(Lx, Ly, x0, y0) = sum(duffy_Fq(a, b) for a in (x0, Lx - x0), b i
                ("u = node 7, v = 1/2", 1.0, 1.0, node(7), 0.5),
                ("corner: u = v = node 1", 1.0, 1.0, node(1), node(1)),
                ("clipped 1 x 0.52: u = node 1, v = 0.02", 1.0, 0.52, node(1), 0.02),
-               ("u = 1e-4, v = 1/2", 1.0, 1.0, 1e-4, 0.5)]
+               ("u = 1e-4, v = 1/2", 1.0, 1.0, 1e-4, 0.5),
+               # very close to a side: s = (E Gg - F²)^(1/2) det / A from the Lagrange identity, not C - B²/A, which
+               # lost all digits (error 1.5e-12 at 1e-7, 4.3e-11 at 1e-8) and threw below about 3e-9
+               ("u = 1e-8, v = 1/2", 1.0, 1.0, 1e-8, 0.5),
+               ("u = 1e-12, v = 1/2", 1.0, 1.0, 1e-12, 0.5),
+               ("u = 1 - 1e-9, v = 1/2 (the u = 1 side)", 1.0, 1.0, 1 - 1e-9, 0.5),
+               ("corner: u = v = 1e-9", 1.0, 1.0, 1e-9, 1e-9)]
     # measured relative errors for (nρ, nside) = (8, 8) / (16, 32) / (32, 32), at the targets in order (all at rounding,
     # the bound 1e-13 is the spec's):
     #   node 1:   3.0e-15 / 2.8e-15 / 1.3e-15      node 2:  1.3e-16 / 5.9e-15 / 3.9e-15
     #   node 7:   1.4e-15 / 2.0e-16 / 4.0e-16      corner:  1.9e-15 / 4.3e-15 / 3.4e-15
     #   clipped:  1.3e-16 / 2.5e-15 / 4.8e-15      1e-4:    1.2e-14 / 2.5e-15 / 4.3e-16
+    #   1e-8:     1.3e-15 / 1.9e-15 / 2.9e-15      1e-12:   1.9e-15 / 1.2e-15 / 2.3e-15
+    #   1 - 1e-9: 8.7e-16 / 1.6e-15 / 5.8e-16      corner 1e-9: 9.9e-16 / 9.9e-16 / 4.0e-16
     for (label, Lx, Ly, x0, y0) in targets, (nρ, nside) in ((8, 8), (16, 32), (32, 32))
         du, dv, w = BI.duffy_rule((x0, y0), (0.0, Lx, 0.0, Ly), (1.0, 0.0, 1.0); nρ, nside)
         @test length(du) == length(dv) == length(w)
@@ -66,15 +74,40 @@ end
     end
 end
 
-@testset "duffy_rule: sheared first fundamental form (F ≠ 0)" begin
-    # x = (u + 0.7 v, 0.8 v), G = (1, 0.7, 1.13): no closed form, so the default rule is compared with a 48 × 96 rule of the
-    # same G. Measured relative differences 2.4e-14 (16, 32) and 1.8e-14 (8, 8); with the isotropic G in place of the
-    # sheared one, the 48 × 96 rule is 1.5e-11 off, so the foot and distance in G do matter. The bound is the rounding floor.
-    G = (1.0, 0.7, 1.13)
-    f(du, dv) = 1 / sqrt(G[1] * du^2 + 2G[2] * du * dv + G[3] * dv^2)
-    integral(; kw...) = ((du, dv, w) = BI.duffy_rule((1e-3, 0.5), (0.0, 1.0, 0.0, 1.0), G; kw...);
-                         sum(w[q] * f(du[q], dv[q]) for q in eachindex(w)))
-    ref = integral(nρ = 48, nside = 96)
-    @test abs(integral() - ref) / ref <= 1e-13
-    @test abs(integral(nρ = 8, nside = 8) - ref) / ref <= 1e-13
+# ∫_0^A ∫_0^B du dv / sqrt(E u² + 2F u v + Gg v²) in BigFloat: split at the diagonal, with m = v/u (resp. u/v) the part
+# below (above) it is A ∫_0^(B/A) dm / sqrt(Gg m² + 2F m + E), a logarithm
+function duffy_Iq(A, B, E, F, Gg)
+    (A == 0 || B == 0) && return big(0.0)
+    J(M, a, f, g) = (log(2 * sqrt(g) * sqrt(g * M^2 + 2f * M + a) + 2g * M + 2f) - log(2 * sqrt(g) * sqrt(a) + 2f)) / sqrt(g)
+    return A * J(B / A, E, F, Gg) + B * J(A / B, Gg, F, E)
+end
+# ∫ du dv / r over the unit parameter square at c = (u0, v0): the four corner rectangles, F changing sign with the quadrant
+function duffy_exact(c, G)
+    u0, v0 = big.(c); E, F, Gg = big.(G)
+    return sum(duffy_Iq(a, b, E, su * sv * F, Gg) for (a, su) in ((u0, -1), (1 - u0, 1)), (b, sv) in ((v0, -1), (1 - v0, 1)))
+end
+
+@testset "duffy_rule: sheared first fundamental form (F ≠ 0), closed form" begin
+    # G = (1, ±0.7, 1.13) (x = (u ± 0.7 v, 0.8 v)): the exact integral of 1/r over the unit parameter square is the closed
+    # form duffy_Iq above (BigFloat), so the foot and distance in G are checked, not only the F = 0 shortcut.
+    # Measured relative errors, at (u0, v0) = (1e-3, 1/2), (0.3, 0.6), (1e-9, 1/2), (1e-12, 1/2), (1e-9, 1e-9),
+    # (1 - 1e-9, 1e-12):
+    #   F = +0.7:  1.3e-15, 3.0e-15, 2.6e-15, 3.4e-15, 1.1e-15, 3.3e-16
+    #   F = -0.7:  1.6e-15, 2.9e-17, 1.0e-15, 1.1e-15, 2.2e-15, 9.5e-16
+    # (a scratch run down to a target 1e-15 from the side or the corner stayed within 1.3e-14, for F = 0, 0.7, -0.7 and
+    # G = (4, 0, 1))
+    for F in (0.7, -0.7), c in ((1e-3, 0.5), (0.3, 0.6), (1e-9, 0.5), (1e-12, 0.5), (1e-9, 1e-9), (1 - 1e-9, 1e-12))
+        G = (1.0, F, 1.13)
+        du, dv, w = BI.duffy_rule(c, (0.0, 1.0, 0.0, 1.0), G)
+        val = sum(w[q] / sqrt(G[1] * du[q]^2 + 2G[2] * du[q] * dv[q] + G[3] * dv[q]^2) for q in eachindex(w))
+        ex = duffy_exact(c, G)
+        @test Float64(abs(val - ex) / ex) <= 1e-13
+    end
+end
+
+@testset "duffy_rule: G must be positive definite" begin
+    rect = (0.0, 1.0, 0.0, 1.0)
+    @test_throws ArgumentError BI.duffy_rule((0.5, 0.5), rect, (1.0, 1.0, 1.0))     # det G = 0
+    @test_throws ArgumentError BI.duffy_rule((0.5, 0.5), rect, (1.0, 2.0, 1.0))     # indefinite
+    @test_throws ArgumentError BI.duffy_rule((0.5, 0.5), rect, (-1.0, 0.0, -1.0))   # negative definite
 end
