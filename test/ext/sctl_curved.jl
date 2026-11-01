@@ -108,6 +108,23 @@ end
     @test length(support(Cd)) < length(support(Cm)) && Cd[support(Cd), cols] == Cm[support(Cd), cols]
 end
 
+@testset "GCQNearQuad (curved): a GCQ rule with a node in its weighted edge segment" begin
+    # edge_gcq_rule(...; grid = :adaptive) puts the first node in [0, 2^-K] (6.6e-7 < 7.6e-6 here), where an own node,
+    # a target on the panel, has no rule: an ArgumentError naming the segment, raised before the threaded rows (not a
+    # TaskFailedException)
+    g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
+    r = edge_gcq_rule(edge_density_powers(4.0, 1.0; angle = 2π / 3); tol = 1e-6, grid = :adaptive)
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6, edge_rule = r)
+    P = m.interface.panels[findfirst(!is_gl_panel, m.interface.panels)]
+    @test P.ru.pw != 0 && P.ru.segs[1][1] == 0 && P.ru.x[1] < P.ru.segs[1][2]
+    thrown = try
+        near_corrections(GCQNearQuad(), m.interface); nothing
+    catch ex
+        ex
+    end
+    @test thrown isa ArgumentError && occursin("edge segment", thrown.msg)
+end
+
 # ∫ over the parameter triangle (c, p, q), Duffy-mapped so that a 1/r singularity at c cancels: f(z, s, dz) is the
 # integrand at z = c + s dz (dz = p - c + t (q - p)), which for s small should take r from the tangents at c (two
 # positions that close round to the same point)
@@ -224,8 +241,9 @@ end
     inX = sort(unique([reduce(vcat, [collect(cols[k]) for k in full]); 1:5:length(X)]))
     XN = X[inX]
     rng = MersenneTwister(6)
-    # 20 surface points that are not nodes (Review Focus 1): random (u, v) on random GCQ panels, u log-uniform for half
-    # of them, all past the weighted edge segment [0, 2^-K] (where a target on the panel throws: below)
+    # 20 surface points that are not nodes (finite and accurate, through the Duffy region at their parameters): random
+    # (u, v) on random GCQ panels, u log-uniform for half of them, all past the weighted edge segment [0, 2^-K] (where
+    # a target on the panel throws: below)
     s1 = ps[gcq[1]].ru.segs[1][2]
     @test all(k -> ps[k].ru.segs[1] == (0.0, s1) && ps[k].ru.pw != 0 && ps[k].ru.x[1] > s1, gcq)
     uv = [(i <= 10 ? 2s1 + (1 - 2s1) * rand(rng) : 2s1 * (1 / 2s1)^rand(rng), rand(rng)) for i in 1:20]

@@ -19,8 +19,12 @@
 # Leaves at least GCQ_CURVED_PLAIN × the panel's diameter from the target take the plain difference x - y(u, v), which
 # is cheaper and rounds below 1e-13 of |x - y| there. Dᵀ rows of targets on neighbouring panels of the same smooth
 # surface, where n·(x - y) ~ |x - y|², have a floor whatever this cutoff: the mesh data's rounding (~1e-16 × the
-# diameter, in anchors and node positions) amplified by the near-tangent n·(x - y), measured at 1.7e-11 (lens, nlev 4)
-# and 7.1e-11 (nlev 5) of max|row| against a 128-bit-geometry reference (a cutoff of 1e-2 is no better).
+# diameter, in anchors and node positions) amplified by the near-tangent n·(x - y), measured against a 128-bit-geometry
+# reference at 1.7e-11 of max|row| on the lens at nlev 4 with n_quad 8 (7.1e-11 at nlev 5) and 1.7e-10 at nlev 4 with
+# n_quad 12 (a cutoff of 1e-2 is no better). Rows of targets across the rim, on the other cap ~5e-7 × the diameter from
+# P's edge, have a floor of about 1.9e-9 from the Float64 node positions their separations are formed from: the
+# quadrature itself, with exact separations, is at the 1e-12 level there (1.3e-12 against an exact reference no more
+# accurate than that; study results/curved3d/54_gcq_julia_near).
 #
 # Targets on the panel (`on`, the target's parameters (u0, v0); for example a node of P in the operator's self block)
 # take the weakly singular integral in two parts. Around the target, the Duffy region R: its fine u-segment [sa, sb]
@@ -87,9 +91,11 @@ function _curved_nd2(P, c, Δ, n, σ)
     end
 end
 
-# the per-panel part of a row: the rules' near tables, the row buffers and P's diameter. The rows of one panel can share
-# it (gcq_curved_row's `ws`; _gcq_curved_corrections builds one per panel and task): its buffers are not thread-safe
+# the per-panel part of a row: the panel, the rules' near tables, the row buffers and P's diameter. The rows of one
+# panel can share it (gcq_curved_row's `ws`, which must have been built for the row's panel; _gcq_curved_rows builds
+# one per panel and task): its buffers are not thread-safe
 struct _GCQCurvedWS
+    P::CurvedPanel
     tu::_TensorNearTables
     tv::_TensorNearTables
     row::_TensorRowWS
@@ -102,11 +108,11 @@ function _GCQCurvedWS(P::CurvedPanel)
     (isempty(tu_.clu) && length(ru.segs) > 1 || isempty(tv_.clu) && length(rv.segs) > 1) &&
         throw(ArgumentError("gcq_curved_row: the fine segments of a rule must tile [0, 1] from 0"))
     ws = _TensorRowWS(max(length(ru.z0), length(rv.z0)), max(size(ru.P, 2), size(rv.P, 2)))
-    return _GCQCurvedWS(tu_, tv_, ws, _gcq_curved_diam(P))
+    return _GCQCurvedWS(P, tu_, tv_, ws, _gcq_curved_diam(P))
 end
 
 """
-    gcq_curved_row(kind, P, x; n = nothing, on = nothing, η = 1.5, maxdepth = 120) -> Vector{Float64}
+    DielectricBIE.gcq_curved_row(kind, P, x; n = nothing, on = nothing, η = 1.5, maxdepth = 120) -> Vector{Float64}
 
 Row r over the nodes of the `CurvedPanel` P (P's node order, (i_u, j_v) -> (i_u - 1) n_v + j_v) with
 Σ_j r_j σ_j ≈ ∫_P K(x, y) σ(y) dA(y) for σ in P's interpolation space (`tensor_rule_interp`). `kind = :dt` is
@@ -118,16 +124,19 @@ distance from the target is at most η × their larger side, up to `maxdepth` le
 diameter of P's interior throws an `ArgumentError`.
 
 A target on the panel: `on = (u0, v0)`, its parameters, with `x = curved_lpoint(P, u0, v0)` (for P's own node (a, b),
-`(P.ru.x[a], P.rv.x[b])` and `P.lpoints[(a - 1) n_v + b]`) and, for `:dt`, `n` P's normal there. The sinh-mapped polar
-rule on the Duffy region around the target (its fine u-segment × a v-interval as long physically, clipped to [0, 1])
-and the quadtree on the rest of the panel. A target in the weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`) throws an
+`(P.ru.x[a], P.rv.x[b])` and `P.lpoints[(a - 1) n_v + b]`) and, for `:dt`, `n` P's normal there, exact to rounding
+(n·(x - y) comes from the map's second derivatives, which assume n·y_u = n·y_v = 0). The sinh-mapped polar rule on
+the Duffy region around the target (its fine u-segment × a v-interval as long physically, clipped to [0, 1]) and the
+quadtree on the rest of the panel. A target in the weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`) throws an
 `ArgumentError`, and so do `x` farther than 1e-13 × P's diameter from `curved_lpoint(P, u0, v0)` (which is then used
-in its place), an `n` not normal to P at `on`, and a v-rule other than one unweighted segment.
+in its place), an `n` with |n·y_u| or |n·y_v| above 1e-14 × |n| |y_u| or |n| |y_v| at `on`, and a v-rule other than
+one unweighted segment.
 """
 function gcq_curved_row(kind::Symbol, P::CurvedPanel, x::NTuple{3, Float64}; n = nothing, on = nothing,
                         η::Real = 1.5, maxdepth::Int = 120, ws::Union{Nothing, _GCQCurvedWS} = nothing)
     kind === :dt || kind === :sl || throw(ArgumentError("gcq_curved_row: kind must be :dt or :sl, got :$kind"))
     kind === :dt && n === nothing && throw(ArgumentError("gcq_curved_row: kind = :dt needs the target normal `n`"))
+    ws === nothing || ws.P === P || throw(ArgumentError("gcq_curved_row: `ws` was built for another panel"))
     nt = kind === :dt ? NTuple{3, Float64}(n) : nothing
     pws = ws === nothing ? _GCQCurvedWS(P) : ws
     on === nothing || return _gcq_curved_row_on(Val(kind), nt, P, x, NTuple{2, Float64}(on), Float64(η), maxdepth, pws)
@@ -262,9 +271,10 @@ function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth, pws)
         throw(ArgumentError("gcq_curved_row: x is not the point of the panel at `on`"))
     x = y0                         # far leaves subtract positions from the point that R and the near leaves start from
     yu, yv = _tangents(P, u0, v0)
-    # the second-derivative n·(x - y) drops n·y'(0): n must be the normal
-    n === nothing || abs(_dot3(n, yu)) <= 1e-12 * _norm3(n) * _norm3(yu) &&
-                     abs(_dot3(n, yv)) <= 1e-12 * _norm3(n) * _norm3(yv) ||
+    # the second-derivative n·(x - y) drops n·y'(0): n must be the normal to rounding (a tilt of 1e-13 moves the
+    # innermost lens Dᵀ self row by 1.6e-12 of max|row|)
+    n === nothing || abs(_dot3(n, yu)) <= 1e-14 * _norm3(n) * _norm3(yu) &&
+                     abs(_dot3(n, yv)) <= 1e-14 * _norm3(n) * _norm3(yv) ||
         throw(ArgumentError("gcq_curved_row: n is not the normal of the panel at `on`"))
     tu_, tv_, ws, M = _gcq_curved_setup(P, pws)
     # the Duffy region R = [sa, sb] × [va, vb], the first fundamental form G at the target

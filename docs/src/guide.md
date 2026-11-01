@@ -260,9 +260,9 @@ The 3D operator `τ I + Dᵀ` is assembled from two interchangeable parts:
   - [`SCTLNearCorrection`](@ref) is the default for `FlatPanel` interfaces: SCTL's near and singular quadrature
     of every panel ([`sctl_gl_corrections`](@ref)), with either far field;
   - [`GCQNearQuad`](@ref) is the default for GCQ `TensorPanel` and `CurvedPanel` interfaces: the GCQ rules for the
-    edge and corner panels (product integration in Julia, [`gcq_curved_row`](@ref) on a curved panel's exact map),
-    SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones at its `quad_tol` (1e-12 by default; the
-    deprecated [`SCTLCurvedNearQuad`](@ref)`(tol = t)`, the former curved default at 1e-10, is
+    edge and corner panels (product integration in Julia, [`DielectricBIE.gcq_curved_row`](@ref) on a curved panel's
+    exact map), SCTL's quadrature for the Gauss–Legendre × Gauss–Legendre ones at its `quad_tol` (1e-12 by default;
+    the deprecated [`SCTLCurvedNearQuad`](@ref)`(tol = t)`, the former curved default at 1e-10, is
     `GCQNearQuad(quad_tol = t)`);
   - [`SCTLNearQuad`](@ref) is SCTL's whole operator (its own FMM and singular quadrature), for `FlatPanel`
     interfaces with `n_quad` in 4, 8, 12, 16 or 20, combined with `SCTLFarField`;
@@ -487,9 +487,9 @@ campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) throu
 - **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel` and `CurvedPanel`) interfaces,
   off and on the surface: the node rule by a far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref))
   for the GL×GL panels and the product integration of the edge and corner panels (`tensor_near_row` on
-  `TensorPanel`s, [`gcq_curved_row`](@ref) on `CurvedPanel`s, whose targets on a panel get its Duffy-region row at
-  their parameters). [`potential_tensor`](@ref) is the `TensorPanel` quadrature summed directly, and also works on the
-  surface (SCTL's Duffy self rows at the GL panels' nodes).
+  `TensorPanel`s, [`DielectricBIE.gcq_curved_row`](@ref) on `CurvedPanel`s, whose targets on a panel get its
+  Duffy-region row at their parameters). [`potential_tensor`](@ref) is the `TensorPanel` quadrature summed directly,
+  and also works on the surface (SCTL's Duffy self rows at the GL panels' nodes).
 
 ```julia
 using DielectricBIE, SCTL

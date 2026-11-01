@@ -144,7 +144,7 @@ end
     @test worst_rim[1] <= 6e-15                                         # 5.8e-16 measured (Dᵀ)
     @test worst_rim[2] <= 9e-15                                         # 8.7e-16 (single layer)
 
-    # (d) Review Focus 2: a target on P (here a node) passed without its parameters throws, never a wrong row
+    # (d) a target on P (here a node) passed without its parameters throws, never a wrong row (Inf or an O(1) error)
     @test_throws ArgumentError BI.gcq_curved_row(:sl, P, P.lpoints[5])
 
     # (e) targets across the rim within a few widths of P's weighted edge segment [0, 2^-K] (6e-8 here): points of Q
@@ -297,8 +297,8 @@ function gcq_ref_row(T::GCQRefTarget, tol, atol; maxevals = 2 * 10^6)
 end
 
 @testset "gcq_curved_row: targets on the panel" begin
-    # bounds: about 10× the largest value measured at -t 1, 2 and 8 (OMP_NUM_THREADS alike), below the plan's 1e-12 (a),
-    # 1e-13 (c) and 2e-12 (d)
+    # bounds: about 10× the largest value measured at -t 1, 2 and 8 (OMP_NUM_THREADS alike), below the accuracy these
+    # rows must reach: 1e-12 (a), 1e-13 (c) and 2e-12 (d)
     # (a) the split sphere's thin GCQ edge panel (as in test/ext/sctl_curved.jl): on the unit sphere n_x = ±x, so
     # n_x·(x - y) = ±|x - y|²/2 and K_dt = ±K_sl/2 pointwise. The Dᵀ row takes n·(x - y) from the second derivatives
     # (the Duffy region and leaf points near the target) or from x - y, the single layer only |x - y|: the two rows,
@@ -357,6 +357,10 @@ end
         flat_err(Pt, Pc, on; ref = BI.gcq_curved_row(:sl, Pc, BI.curved_lpoint(Pc, on...); on, η = 6.0))
     end
     @test e_flat3 <= 2e-13                                              # 1.8e-14 measured
+    # and, loosely, against tensor_near_row itself: η = 6 against η = 1.5 cannot catch a tiling error next to the
+    # edge segment that does not move with η
+    e_flat3t = maximum(on -> flat_err(Pt, Pc, on), ((1.5 * s1, 0.37), (s1, 0.37)))
+    @test e_flat3t <= 2e-11                                             # 1.9e-12 measured (tensor_near_row's leaf)
     # n_quad 16: a v-end own node of the last segment and a point near its corner (u0, v0) = (0.501, 0.001), where 16
     # Gauss points in ρ left 6.9e-14 and 1.4e-12 (now 20, from the basis' degree)
     Pt16 = first(p for p in boxpanels(16) if p.kind == :edge); Pc16 = affine(Pt16)
@@ -410,8 +414,8 @@ end
     # reference itself, at rtol 1e-13 against 1e-14 on the innermost row: 2.0e-14 (Dᵀ), 2.4e-14 (single layer)
     @test maximum(err_lens) <= 5e-13
 
-    # (e) Review Focus 3: a target on the panel within the weighted edge segment [0, 2^-K] (and exactly on the edge,
-    # u = 0) throws, naming the segment
+    # (e) a target on the panel within the weighted edge segment [0, 2^-K] (and exactly on the edge, u = 0) throws,
+    # naming the segment
     s1 = P.ru.segs[1][2]
     for on in ((s1 / 2, 0.5), (0.0, 0.3))
         err = try
@@ -423,10 +427,11 @@ end
         @test err isa ArgumentError && occursin("edge segment", err.msg)
     end
 
-    # (f) a box of the quadtree overlapping R splits whatever its distance (Hazard H4): at (0.375, 0.45), with η = 0.05,
-    # a cluster box overlapping R is not near; against η = 1.5 the row moves by 9.5e-9 (coarse leaves), by 0.18 when
-    # that box is a leaf (R counted twice; measured with the forced split taken out). x within 1e-13 × diam of
-    # curved_lpoint(P, on) is replaced by it (the row is the same); x farther, or n not normal to P at `on`, throws
+    # (f) a box of the quadtree overlapping R splits whatever its distance (so that R is never integrated twice): at
+    # (0.375, 0.45), with η = 0.05, a cluster box overlapping R is not near; against η = 1.5 the row moves by 9.5e-9
+    # (coarse leaves), by 0.18 when that box is a leaf (R counted twice; measured with the forced split taken out).
+    # x within 1e-13 × diam of curved_lpoint(P, on) is replaced by it (the row is the same); x farther, or n not normal
+    # to P at `on`, throws
     xh = BI.curved_lpoint(Pc, 0.375, 0.45)
     rh = BI.gcq_curved_row(:sl, Pc, xh; on = (0.375, 0.45))
     e_eta = maximum(abs, BI.gcq_curved_row(:sl, Pc, xh; on = (0.375, 0.45), η = 0.05) .- rh) / maximum(abs, rh)
@@ -438,15 +443,21 @@ end
     on84 = (P.ru.x[8], P.rv.x[4]); n84 = P.normals[(8 - 1) * nv + 4]
     @test_throws ArgumentError BI.gcq_curved_row(:dt, P, P.lpoints[(8 - 1) * nv + 4]; on = on84,
                                                  n = normalize(collect(n84) .+ 1e-6))
+    # a workspace (the panel's tables and row buffers, shared by its rows) serves the panel it was built for: the same
+    # row; one built for another panel throws
+    @test BI.gcq_curved_row(:sl, Pc, x14; on = on14, ws = BI._GCQCurvedWS(Pc)) == r14
+    @test_throws ArgumentError BI.gcq_curved_row(:sl, Pc, x14; on = on14, ws = BI._GCQCurvedWS(P))
 end
 
-# bytes allocated by f(args...), after a warm-up call (a function barrier: the testset's locals are not typed)
-_allocs(f::F, args...) where F = (f(args...); @allocated f(args...))
+# bytes allocated by f(args...), after a warm-up call (a function barrier: the testset's locals are not typed). The
+# Vararg{Any, N} makes Julia 1.10 specialize on the arguments; with a bare `args...` it does not, and @allocated counts
+# the boxed result (16-64 B)
+_allocs(f::F, args::Vararg{Any, N}) where {F, N} = (f(args...); @allocated f(args...))
 
 @testset "gcq_curved_row: allocation" begin
     # the lens edge panel of (b) and (d): the mesher's map closures and the engine's geometry allocate nothing (before
-    # Task 5b they collected the patch map into arrays: lmap 3.1 kB, dmap 0.5 kB, _curved_nd_hess 2.0 … 16.1 kB per
-    # call, the own row below 421 MB, the off-panel row 29 MB)
+    # the mesher's map closures were made type-stable they collected the patch map into arrays: lmap 3.1 kB, dmap
+    # 0.5 kB, _curved_nd_hess 2.0 … 16.1 kB per call, the own row below 421 MB, the off-panel row 29 MB)
     g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
     m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
     ps = m.interface.panels

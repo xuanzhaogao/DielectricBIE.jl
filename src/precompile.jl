@@ -1,7 +1,7 @@
 # Precompile workload: small instances of the expensive first calls that need no SCTL (GCQ rules, box, multi-box and
-# curved meshes, a right-hand side), so that scripts and the tests do not compile them again in every process. The
-# operators, solves, potentials and the campaign need SCTL's quadrature for Gauss-Legendre panels: they are in the
-# SCTL extension's workload (ext/DielectricBIESCTLExt.jl), which uses the helpers below.
+# curved meshes, a right-hand side, a curved GCQ panel's rows), so that scripts and the tests do not compile them again
+# in every process. The operators, solves, potentials and the campaign need SCTL's quadrature for Gauss-Legendre
+# panels: they are in the SCTL extension's workload (ext/DielectricBIESCTLExt.jl), which uses the helpers below.
 using PrecompileTools: @setup_workload, @compile_workload
 
 # the unit sphere as six cube-sphere patches, each oriented outward (also used by the SCTL extension's workload)
@@ -69,6 +69,12 @@ _precompile_four_index(toml, far) =
         multi_dielectric_box3d_gcq([(center = (0.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0),
                                     (center = (1.0, 0.0, 0.0), Lx = 1.0, Ly = 1.0, Lz = 1.0)], [4.0, 2.0], 1.0;
                                    nlev = 0, n_quad = 3, tol = 1e-3)
-        _precompile_sphere_mesh()
+        # and a GCQ edge panel's rows (the pure-Julia engine of GCQNearQuad and GCQPotential on curved interfaces,
+        # which the SCTL extension's workload covers only on AVX-512 CPUs): an own-node Dᵀ row and an off-panel single
+        # layer row
+        ps = _precompile_sphere_mesh().interface.panels
+        P = ps[findfirst(!is_gl_panel, ps)]
+        gcq_curved_row(:dt, P, P.lpoints[1]; n = P.normals[1], on = (P.ru.x[1], P.rv.x[1]))
+        gcq_curved_row(:sl, P, P.lpoints[1] .+ 0.05 .* P.normals[1])
     end
 end

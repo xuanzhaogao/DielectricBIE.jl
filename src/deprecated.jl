@@ -118,7 +118,7 @@ end
     SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9) -> GCQNearQuad
 
 Kept for old scripts: [`GCQNearQuad`](@ref)`(quad_tol = tol)`, the near quadrature of `CurvedPanel` interfaces (their
-default, with `quad_tol = 1e-12`): the GCQ edge panels' rows in Julia ([`gcq_curved_row`](@ref)), SCTL's
+default, with `quad_tol = 1e-12`): the GCQ edge panels' rows in Julia ([`DielectricBIE.gcq_curved_row`](@ref)), SCTL's
 [`sctl_gl_corrections`](@ref) at `tol` for the Gauss-Legendre × Gauss-Legendre panels. `order`, `η` and `ε_rel`
 (the proxy elements, near radius and principal value of the former SCTL quadrature of the GCQ panels) are ignored.
 """
