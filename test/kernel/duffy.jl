@@ -28,12 +28,12 @@ duffy_slp_exact(Lx, Ly, x0, y0) = sum(duffy_Fq(a, b) for a in (x0, Lx - x0), b i
                ("u = 1 - 1e-9, v = 1/2 (the u = 1 side)", 1.0, 1.0, 1 - 1e-9, 0.5),
                ("corner: u = v = 1e-9", 1.0, 1.0, 1e-9, 1e-9)]
     # measured relative errors for (nρ, nside) = (8, 8) / (16, 32) / (32, 32), at the targets in order (all at rounding,
-    # the bound 1e-13 is the spec's):
-    #   node 1:   3.0e-15 / 2.8e-15 / 1.3e-15      node 2:  1.3e-16 / 5.9e-15 / 3.9e-15
-    #   node 7:   1.4e-15 / 2.0e-16 / 4.0e-16      corner:  1.9e-15 / 4.3e-15 / 3.4e-15
-    #   clipped:  1.3e-16 / 2.5e-15 / 4.8e-15      1e-4:    1.2e-14 / 2.5e-15 / 4.3e-16
-    #   1e-8:     1.3e-15 / 1.9e-15 / 2.9e-15      1e-12:   1.9e-15 / 1.2e-15 / 2.3e-15
-    #   1 - 1e-9: 8.7e-16 / 1.6e-15 / 5.8e-16      corner 1e-9: 9.9e-16 / 9.9e-16 / 4.0e-16
+    # the bound 1e-13 is the spec's; every target but node 7 has a side within DUFFY_NEAR, with 2 nside points):
+    #   node 1:   7.0e-16 / 1.7e-15 / 4.6e-15      node 2:  1.2e-15 / 1.4e-15 / 7.8e-16
+    #   node 7:   1.4e-15 / 2.0e-16 / 4.0e-16      corner:  1.5e-15 / 3.2e-15 / 7.5e-15
+    #   clipped:  1.1e-15 / 4.4e-15 / 1.4e-15      1e-4:    2.9e-16 / 3.6e-15 / 6.5e-15
+    #   1e-8:     1.9e-15 / 5.4e-15 / 7.0e-15      1e-12:   1.3e-15 / 5.8e-16 / 4.1e-15
+    #   1 - 1e-9: 5.8e-16 / 4.3e-16 / 7.2e-16      corner 1e-9: 2.0e-16 / 2.0e-16 / 6.7e-15
     for (label, Lx, Ly, x0, y0) in targets, (nρ, nside) in ((8, 8), (16, 32), (32, 32))
         du, dv, w = BI.duffy_rule((x0, y0), (0.0, Lx, 0.0, Ly), (1.0, 0.0, 1.0); nρ, nside)
         @test length(du) == length(dv) == length(w)
@@ -64,7 +64,7 @@ end
 @testset "duffy_rule: anisotropic first fundamental form" begin
     # G = (4, 0, 1): the unit parameter square is the physical rectangle [0, 2] × [0, 1] (x = 2u, y = v), r =
     # sqrt(4 du² + dv²), and ∫ f dA = 2 ∫ f du dv, so Σ w / (4π r) is the physical closed form divided by √det G = 2.
-    # Measured relative errors at (u0, v0) = (0.0069, 1/2), (0.3, 0.3), (1e-4, 1/2), (1/2, 1/2): 6.5e-16, 2.9e-15, 1.6e-15, 3.3e-15
+    # Measured relative errors at (u0, v0) = (0.0069, 1/2), (0.3, 0.3), (1e-4, 1/2), (1/2, 1/2): 1.3e-15, 2.9e-15, 2.0e-15, 3.3e-15
     for (u0, v0) in ((0.0069, 0.5), (0.3, 0.3), (1e-4, 0.5), (0.5, 0.5))
         du, dv, w = BI.duffy_rule((u0, v0), (0.0, 1.0, 0.0, 1.0), (4.0, 0.0, 1.0))
         val = sum(w[q] / (4π * sqrt(4 * du[q]^2 + dv[q]^2)) for q in eachindex(w))
@@ -92,8 +92,8 @@ end
     # form duffy_Iq above (BigFloat), so the foot and distance in G are checked, not only the F = 0 shortcut.
     # Measured relative errors, at (u0, v0) = (1e-3, 1/2), (0.3, 0.6), (1e-9, 1/2), (1e-12, 1/2), (1e-9, 1e-9),
     # (1 - 1e-9, 1e-12):
-    #   F = +0.7:  1.3e-15, 3.0e-15, 2.6e-15, 3.4e-15, 1.1e-15, 3.3e-16
-    #   F = -0.7:  1.6e-15, 2.9e-17, 1.0e-15, 1.1e-15, 2.2e-15, 9.5e-16
+    #   F = +0.7:  4.6e-17, 3.0e-15, 4.6e-15, 6.8e-15, 2.0e-15, 3.3e-16
+    #   F = -0.7:  6.3e-16, 2.9e-17, 3.1e-15, 2.4e-15, 4.7e-17, 9.5e-16
     # (a scratch run down to a target 1e-15 from the side or the corner stayed within 1.3e-14, for F = 0, 0.7, -0.7 and
     # G = (4, 0, 1))
     for F in (0.7, -0.7), c in ((1e-3, 0.5), (0.3, 0.6), (1e-9, 0.5), (1e-12, 0.5), (1e-9, 1e-9), (1 - 1e-9, 1e-12))
@@ -102,6 +102,23 @@ end
         val = sum(w[q] / sqrt(G[1] * du[q]^2 + 2G[2] * du[q] * dv[q] + G[3] * dv[q]^2) for q in eachindex(w))
         ex = duffy_exact(c, G)
         @test Float64(abs(val - ex) / ex) <= 1e-13
+    end
+end
+
+@testset "duffy_rule: a side close to the target gets 2 nside points" begin
+    # g / r on [0.5, 1] × [0, 0.26] (a curved GCQ panel's last fine segment: g like its degree-13 basis times u^pw)
+    # with the target close to the v = 0 side, against nρ = 64, nside = 256; errors relative to ∫ |g| / r. Measured with
+    # the side at 2 nside / at nside (before): (0.77, 1e-5) 3.0e-15 / 6.9e-12, (0.95, 1e-7) 3.4e-15 / 3.2e-11,
+    # (0.55, 1e-3) 8.8e-16 / 6.7e-13; at (0.77, 0.03) the side is 0.06 × its length away (refined), at (0.77, 0.06)
+    # 0.12 × (not refined, 5.0e-15)
+    g(u, v) = (2u - 1.5)^13 * (1 + v)^7 / u^0.27
+    rect = (0.5, 1.0, 0.0, 0.26); G = (1.0, 0.0, 1.0)
+    quad(c, f; kw...) = ((du, dv, w) = BI.duffy_rule(c, rect, G; kw...);
+                         sum(w[q] * f(c[1] + du[q], c[2] + dv[q]) / hypot(du[q], dv[q]) for q in eachindex(w)))
+    for (c, nsides) in (((0.77, 1e-5), 5), ((0.95, 1e-7), 5), ((0.55, 1e-3), 5), ((0.77, 0.03), 4 + 1), ((0.77, 0.06), 4))
+        @test length(BI.duffy_rule(c, rect, G)[3]) == nsides * BI.DUFFY_NRHO * BI.DUFFY_NSIDE
+        ref = quad(c, g; nρ = 64, nside = 256)
+        @test abs(quad(c, g) - ref) / quad(c, (u, v) -> abs(g(u, v)); nρ = 64, nside = 256) <= 5e-14
     end
 end
 
