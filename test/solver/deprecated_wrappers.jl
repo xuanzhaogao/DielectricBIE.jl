@@ -42,16 +42,11 @@ using Test
     @test laplace3d_pottrg_near(itf, (0.1, 0.2, 0.9), x, 1e-10; range_factor = 2.0) ≈ (P * x)[1]
     @test laplace3d_pottrg_fmm3d_corrected_hcubature(itf, T, 1e-12, 1e-10, 5.0; correct_edges = false) * x ≈ P * x
 
-    # the curved near quadrature: GCQNearQuad(quad_tol = tol), its other keywords ignored (@test_deprecated checks the
-    # warning under --depwarn=yes, and only runs the call otherwise)
+    # the curved near quadrature: GCQNearQuad(quad_tol = tol) itself (===), its other keywords ignored (@test_deprecated
+    # checks the warning under --depwarn=yes, and only runs the call otherwise)
     @test_deprecated r"GCQNearQuad" SCTLCurvedNearQuad(tol = 1e-10)
     @test SCTLCurvedNearQuad(tol = 1e-8, order = 16, η = 3.0, ε_rel = 1e-6) === GCQNearQuad(quad_tol = 1e-8)
     @test SCTLCurvedNearQuad() === GCQNearQuad(quad_tol = 1e-10)               # its tol's default
-    # (one GCQ and one GL panel of a curved sphere: 8 s per call at -t 2, the whole sphere 51 s)
-    sph = BI._precompile_sphere_mesh().interface
-    sub = [findfirst(!is_gl_panel, sph.panels), findfirst(is_gl_panel, sph.panels)]
-    two = DielectricInterface(sph.panels[sub], sph.eps_in[sub], sph.eps_out[sub])
-    @test near_corrections(SCTLCurvedNearQuad(tol = 1e-10), two) == near_corrections(GCQNearQuad(quad_tol = 1e-10), two)
 
     # the in-house near code and its entry points without a wrapper are gone
     for name in (:UpsampledNearQuad, :HCubaturePotential, :SCTLProxyNearQuad, :build_neighbor_list,

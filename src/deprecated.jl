@@ -1,10 +1,11 @@
-# Old entry points kept for scripts. The in-house near quadrature they called (upsampling, adaptive quadtrees,
-# HCubature corrections) is gone: every one is now a thin wrapper over the FMM node rule and SCTL's near and self
-# corrections (sctl_gl_corrections, SCTLPotential), so all of them need `using SCTL`. Keywords of the old methods
+# Old entry points kept for scripts. Each wrapper gives a deprecation warning (with `--depwarn=yes`) naming its
+# replacement. The operators and potentials: the in-house near quadrature they called (upsampling, adaptive quadtrees,
+# HCubature corrections) is gone, and each is now a thin wrapper over the FMM node rule and SCTL's near and self
+# corrections (sctl_gl_corrections, SCTLPotential), so they need `using SCTL`. Keywords of the old methods
 # (`correct_edges`, `adaptive_atol`, `adaptive_rtol`, `adaptive_n_GL`, `adaptive_max_depth`, `range_factor`) and
-# `max_order` are accepted and ignored: SCTL corrects every panel, edges included, at the tolerance given. Each
-# wrapper gives a deprecation warning (with `--depwarn=yes`) naming its replacement. SCTLCurvedNearQuad, the former
-# near quadrature of curved interfaces, is GCQNearQuad now (its GCQ panels' rows in Julia, SCTL's for the GL panels).
+# `max_order` are accepted and ignored: SCTL corrects every panel, edges included, at the tolerance given.
+# SCTLCurvedNearQuad, the former near quadrature of curved interfaces, returns a GCQNearQuad: its GCQ panels' rows are
+# Julia's, and only its Gauss-Legendre panels need `using SCTL`.
 
 """
     lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order; kw...) -> LinearMap

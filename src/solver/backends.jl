@@ -290,6 +290,7 @@ function near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:Curve
     # the GL×GL source panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
     gl = intersect(findall(is_gl_panel, ps), sources)
     Cgl = isempty(gl) ? nothing : sctl_gl_corrections(interface, gl; tol = q.quad_tol)
+    isempty(gcq) && return Cgl === nothing ? spzeros(num_points(interface), num_points(interface)) : Cgl
     C = _gcq_curved_corrections(interface, gcq; η_gcq = q.η_gcq, gcq_far = q.gcq_far)
     return Cgl === nothing ? C : _add_corrections(C, Cgl)
 end

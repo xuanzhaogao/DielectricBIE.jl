@@ -4,6 +4,7 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays
 using SCTL
+using HCubature
 using Test
 
 include(joinpath(@__DIR__, "..", "shape", "lens_patches.jl"))
@@ -62,8 +63,8 @@ function gl_dt_ref_row(P, x, nx; rtol = 1e-12)
         r = x .- (cc .+ bma .* (uv[1] / 2) .+ dma .* (uv[2] / 2))
         vec(permutedims((dot(nx, r) / (4π * norm(r)^3) * area / 4) .* (rx * ry')))    # node (i, j): (i-1) nq + j
     end
-    return BI.HCubature.hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
-                                  rtol, atol = 1e-15, maxevals = 10^7)[1]
+    return hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
+                     rtol, atol = 1e-15, maxevals = 10^7)[1]
 end
 
 # the single-layer potential of the density σ on FlatPanel P at x, by adaptive cubature
@@ -77,8 +78,8 @@ function gl_sl_ref(P, σ, x; rtol = 1e-12)
         BI.barycentric_row!(rx, P.gl_xs, P.bary_weights, uv[1]); BI.barycentric_row!(ry, P.gl_xs, P.bary_weights, uv[2])
         dot(rx, vals * ry) / (4π * norm(x .- (cc .+ bma .* (uv[1] / 2) .+ dma .* (uv[2] / 2)))) * area / 4
     end
-    return BI.HCubature.hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
-                                  rtol, atol = 1e-15, maxevals = 10^7)[1]
+    return hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
+                     rtol, atol = 1e-15, maxevals = 10^7)[1]
 end
 
 # node-rule single layer Σ_j w_j σ_j / (4π |x - y_j|), the coincident node skipped (what the far field adds)

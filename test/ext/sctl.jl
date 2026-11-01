@@ -3,6 +3,7 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays, Random
 using SCTL
+using HCubature
 using Test
 
 relerr(a, b) = norm(a - b) / norm(b)
@@ -16,8 +17,8 @@ function _ref_potential(itf, σ, x; rtol = 1e-12)
         area = norm(bma) * norm(dma); rx = zeros(nq); ry = zeros(nq)
         f = uv -> (BI.barycentric_row!(rx, p.gl_xs, p.bary_weights, uv[1]); BI.barycentric_row!(ry, p.gl_xs, p.bary_weights, uv[2]);
                    dot(rx, vals * ry) / (4π * norm(x .- (cc .+ bma .* (uv[1] / 2) .+ dma .* (uv[2] / 2)))) * area / 4)
-        acc += BI.HCubature.hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
-                                      rtol = rtol, atol = 1e-15, maxevals = 10^7)[1]
+        acc += hcubature(f, BI.StaticArrays.SVector(-1.0, -1.0), BI.StaticArrays.SVector(1.0, 1.0);
+                         rtol = rtol, atol = 1e-15, maxevals = 10^7)[1]
     end
     return acc
 end
@@ -97,8 +98,8 @@ BI.near_corrections(q::WrappedQuad, interface) = 2 .* BI.near_corrections(q.inne
     @test default_near_quadrature(sph) === GCQNearQuad()
     # on curved interfaces gcq_far is :max or :direction, and a GCQ panel's rule must be in u (both checked first)
     @test_throws ArgumentError BI.near_corrections(GCQNearQuad(gcq_far = :min), sph)
-    P = sph.panels[findfirst(!is_gl_panel, sph.panels)]
-    Pv = BI.CurvedPanel(P.anchor, P.lmap, P.rv, P.ru; kind = :edge, flip = P.flip)
+    Pgcq = sph.panels[findfirst(!is_gl_panel, sph.panels)]
+    Pv = BI.CurvedPanel(Pgcq.anchor, Pgcq.lmap, Pgcq.rv, Pgcq.ru; kind = :edge, flip = Pgcq.flip)
     @test_throws ArgumentError BI.near_corrections(GCQNearQuad(), DielectricInterface([Pv], [4.0], [1.0]))
 
     # campaign [backend] table

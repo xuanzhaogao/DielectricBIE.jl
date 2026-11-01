@@ -6,6 +6,7 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra
 using FastGaussQuadrature: gausslegendre, gaussjacobi
+using HCubature
 using Test
 
 include(joinpath(@__DIR__, "..", "shape", "lens_patches.jl"))
@@ -173,6 +174,17 @@ end
 # study repository. Dᵀ only (the operator's self rows): the single layer, at about twice the cost, would not fit the
 # testset's CI budget; its rows share every rule but the kernel with the Dᵀ rows and are checked in (a) and (c).
 const GCQ_REF_GL = Dict(n => ((t, w) = gausslegendre(n); ((1 .+ t) ./ 2, w ./ 2)) for n in (4, 8, 12, 24))
+# Σ_j |node-rule Dᵀ entry| of P's row for the target x (P's frame) with normal n: the row's scale, for the reference's
+# absolute tolerance
+function node_rule_scale(P, x, n)
+    s = 0.0
+    for (y, w) in zip(P.lpoints, P.weights)
+        d = x .- y; r2 = dot(d, d)
+        r2 == 0 && continue
+        s += abs(w * dot(n, d) / (4π * r2 * sqrt(r2)))
+    end
+    return s
+end
 gcq_ref_nsel(λ) = λ < 1e-4 ? 4 : λ < 1e-2 ? 8 : λ < 0.1 ? 12 : 24
 struct GCQRefTarget{F, PA, PP}
     f::F; pa::PA; P::PP
@@ -242,11 +254,11 @@ function gcq_ref_polar(T, R, tol, atol; maxevals = 10^6)
         brk = 0 < tst < 1 ? (0.0, tst, 1.0) : (0.0, 1.0)
         inner = t -> begin
             dz = (p0[1] + t * e[1], p0[2] + t * e[2])
-            BI.HCubature.hquadrature(ρ -> (ρ * det) .* gcq_ref_f(T, (ρ * dz[1], ρ * dz[2]), T.k0), 0.0, 1.0;
-                                     rtol = tol / 10, atol = atol / 10, maxevals)[1]
+            hquadrature(ρ -> (ρ * det) .* gcq_ref_f(T, (ρ * dz[1], ρ * dz[2]), T.k0), 0.0, 1.0;
+                        rtol = tol / 10, atol = atol / 10, maxevals)[1]
         end
         for j in 1:length(brk)-1
-            I .+= BI.HCubature.hquadrature(inner, brk[j], brk[j+1]; rtol = tol, atol, maxevals)[1]
+            I .+= hquadrature(inner, brk[j], brk[j+1]; rtol = tol, atol, maxevals)[1]
         end
     end
     return I
@@ -273,10 +285,10 @@ function gcq_ref_row(T::GCQRefTarget, tol, atol; maxevals = 2 * 10^6)
             if sa == 0 && ru.pw != 0
                 δ = sb; γ = 1 / (1 + ru.pw)                                   # u = δ w^γ: u^pw du = δ^(1+pw) γ dw
                 f = x -> (δ^(1 + ru.pw) * γ) .* gcq_ref_f(T, (δ * x[1]^γ - c[1], x[2] - c[2]), k; weight = false)
-                I .+= BI.HCubature.hcubature(f, (0.0, va), (1.0, vb); rtol = tol, atol, maxevals)[1]
+                I .+= hcubature(f, (0.0, va), (1.0, vb); rtol = tol, atol, maxevals)[1]
             else
                 f = x -> gcq_ref_f(T, (x[1] - c[1], x[2] - c[2]), k)
-                I .+= BI.HCubature.hcubature(f, (sa, va), (sb, vb); rtol = tol, atol, maxevals)[1]
+                I .+= hcubature(f, (sa, va), (sb, vb); rtol = tol, atol, maxevals)[1]
             end
         end
     end
@@ -387,7 +399,7 @@ end
         a, b = nodes[q]
         i = (a - 1) * nv + b
         x = P.lpoints[i]; n = P.normals[i]
-        ref = gcq_ref_row(GCQRefTarget(f, pa, P, a, b), 1e-13, 1e-13 * BI._curved_node_scale(P, x, n))
+        ref = gcq_ref_row(GCQRefTarget(f, pa, P, a, b), 1e-13, 1e-13 * node_rule_scale(P, x, n))
         rd = BI.gcq_curved_row(:dt, P, x; n, on = (P.ru.x[a], P.rv.x[b]))
         err_lens[q] = maximum(abs, rd .- ref) / maximum(abs, ref)
     end

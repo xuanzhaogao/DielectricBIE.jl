@@ -6,7 +6,6 @@ using QuadGK: quadgk_segbuf_count
 using Serialization
 using FastGaussQuadrature, LegendrePolynomials, SpecialFunctions
 using Krylov, LinearMaps
-import HCubature    # (no package code uses it: the tests' adaptive references, as DielectricBIE.HCubature)
 using NearestNeighbors
 using ForwardDiff
 using TOML

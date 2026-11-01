@@ -4,6 +4,7 @@ using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, SparseArrays
 using SCTL
+using HCubature
 using Test
 
 include(joinpath(@__DIR__, "..", "shape", "lens_patches.jl"))
@@ -88,18 +89,37 @@ end
     @test Cs == BI._keep_source_columns(Cm, itf, srcs)
 end
 
+@testset "GCQNearQuad (curved): the near test" begin
+    # a GCQ panel P's columns hold exactly its own nodes and the nodes within η_gcq × L of P's nearest node, L its
+    # larger mean chord (gcq_far = :max) or the one across u (:direction); the rows do not depend on the near set
+    g, m, Cm = sctl_curved_lens()
+    itf = m.interface
+    k = findfirst(!is_gl_panel, itf.panels); P = itf.panels[k]
+    cols = panel_column_ranges(itf)[k]
+    X = nodes_of(itf)
+    own = falses(length(X)); own[cols] .= true
+    dist = [minimum(norm(collect(x .- y)) for y in P.points) for x in X]
+    su, sv = BI._mean_chords((u, v) -> BI.curved_lpoint(P, u, v))
+    @test su < sv                                     # (so that :direction measures with a shorter L than :max)
+    support(C) = sort(unique(rowvals(C[:, cols])))
+    @test support(Cm) == findall(own .| (dist .<= 2.0 * max(su, sv)))              # the default: η_gcq = 2, :max
+    Cd = near_corrections(GCQNearQuad(quad_tol = 1e-12, η_gcq = 1.0, gcq_far = :direction), itf, [k])
+    @test support(Cd) == findall(own .| (dist .<= 1.0 * su))
+    @test length(support(Cd)) < length(support(Cm)) && Cd[support(Cd), cols] == Cm[support(Cd), cols]
+end
+
 # ∫ over the parameter triangle (c, p, q), Duffy-mapped so that a 1/r singularity at c cancels: f(z, s, dz) is the
 # integrand at z = c + s dz (dz = p - c + t (q - p)), which for s small should take r from the tangents at c (two
 # positions that close round to the same point)
 function duffy_tri(f, c, p, q)
     J = abs((p[1] - c[1]) * (q[2] - p[2]) - (p[2] - c[2]) * (q[1] - p[1]))
     g = st -> (dz = (p .- c) .+ st[2] .* (q .- p); st[1] * J * f(c .+ st[1] .* dz, st[1], dz))
-    return BI.HCubature.hcubature(g, [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11, atol = 1e-19, maxevals = 50_000)[1]
+    return hcubature(g, [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11, atol = 1e-19, maxevals = 50_000)[1]
 end
 # ∫ over the unit parameter square of f, singular at c when c is given
 square_int(f, c) = c === nothing ?
-    BI.HCubature.hcubature(uv -> f((uv[1], uv[2]), nothing, nothing), [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11,
-                           atol = 1e-19, maxevals = 250_000)[1] :
+    hcubature(uv -> f((uv[1], uv[2]), nothing, nothing), [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11,
+              atol = 1e-19, maxevals = 250_000)[1] :
     sum(duffy_tri(f, c, (o[1], c[2]), o) + duffy_tri(f, c, o, (c[1], o[2])) for o in ((0, 0), (1, 0), (0, 1), (1, 1)))
 
 @testset "GCQNearQuad (curved): rows on thin panels at the edge (exact sphere integrals)" begin
