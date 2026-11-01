@@ -50,6 +50,7 @@ function gcq_brute_rows(P, X, N; nq = 48)
 end
 
 @testset "gcq_curved_row: off-panel targets" begin
+    # bounds: about 10× the largest value measured at -t 1, 2 and 8 (OMP_NUM_THREADS alike), which differ at rounding
     # (a) an affine CurvedPanel on a GCQ edge TensorPanel of a box: the same rows as tensor_near_row
     itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 10.0, 1.0; nlev = 2, n_quad = 8,
                                       rule = edge_gcq_rule(10.0, 1.0; tol = 1e-8))
@@ -71,7 +72,7 @@ end
         rc = BI.gcq_curved_row(:dt, Pc, x; n = nt)
         worst_dt = max(worst_dt, maximum(abs, rc .- rt) / maximum(abs, rt))
     end
-    @test worst_dt <= 1e-13                                             # 9.3e-15 measured
+    @test worst_dt <= 1e-13                                             # 9.6e-15 measured
     # single layer: 10 targets 1e-6 … 1e-1 above the plane, over points near the edge (one inside the weighted edge
     # segment [0, 2^-K]), in the middle and at the far end, at node rows and between them
     ksl(d) = 1 / (4π * norm(d))
@@ -84,7 +85,7 @@ end
         rc = BI.gcq_curved_row(:sl, Pc, x)
         worst_sl = max(worst_sl, maximum(abs, rc .- rt) / maximum(abs, rt))
     end
-    @test worst_sl <= 1e-13                                             # 2.1e-15
+    @test worst_sl <= 2e-14                                             # 2.1e-15
 
     # (b) the lens edge panel (curved, weighted edge rule) against brute force: 4 nodes of neighbouring panels (the
     # same patch, the patch beside, the cap's top GL panel, the other cap across the rim) and 4 points off the surface,
@@ -116,8 +117,8 @@ end
         worst[1] = max(worst[1], maximum(abs, rd .- ref[i][1]) / maximum(abs, ref[i][1]))
         worst[2] = max(worst[2], maximum(abs, rs .- ref[i][2]) / maximum(abs, ref[i][2]))
     end
-    @test worst[1] <= 1e-12                                             # 8.8e-15 measured (Dᵀ)
-    @test worst[2] <= 1e-12                                             # 5.0e-15 (single layer)
+    @test worst[1] <= 9e-14                                             # 8.8e-15 measured (Dᵀ)
+    @test worst[2] <= 5e-14                                             # 5.0e-15 (single layer)
 
     # (c) across the rim: the nodes of the other cap's edge panel Q nearest P (as in test/ext/sctl_curved.jl), offsets
     # from the anchors' difference; all rows finite, and the 4 targets farthest from the rim against brute force
@@ -137,9 +138,25 @@ end
     for (i, j) in enumerate(far), s in 1:2
         worst_rim[s] = max(worst_rim[s], abs(sum(rows[j][s]) - sum(refQ[i][s])) / abs(sum(refQ[i][s])))
     end
-    @test worst_rim[1] <= 1e-10                                         # 4.5e-16 measured (Dᵀ)
-    @test worst_rim[2] <= 1e-10                                         # 5.3e-16 (single layer)
+    @test worst_rim[1] <= 6e-15                                         # 5.8e-16 measured (Dᵀ)
+    @test worst_rim[2] <= 9e-15                                         # 8.7e-16 (single layer)
 
     # (d) Review Focus 2: a target on P (here a node) passed without its parameters throws, never a wrong row
     @test_throws ArgumentError BI.gcq_curved_row(:sl, P, P.lpoints[5])
+
+    # (e) targets across the rim within a few widths of P's weighted edge segment [0, 2^-K] (6e-8 here): points of Q
+    # 6.9e-8, 6.3e-10 and 7.5e-13 from P, where the quadtree would take the whole edge segment as a leaf. Its own rule
+    # (interpolatory product weights for u^pw, exact to degree nz - 1) was off by up to 2.3e-7 of max|row| there; the
+    # segment is now split, and the rows converge in η
+    cases = [(uq, vq, kind) for (uq, vq) in ((1e-7, 0.5), (1e-9, 0.3), (1e-12, 0.77)) for kind in (:dt, :sl)]
+    err_edge = zeros(length(cases))
+    Threads.@threads for c in eachindex(cases)                         # (an η = 6 row takes 2-4 s)
+        uq, vq, kind = cases[c]
+        x = (Q.anchor .- P.anchor) .+ BI.curved_lpoint(Q, uq, vq)
+        nq = BI.curved_frame(Q, uq, vq)[3]
+        r6 = BI.gcq_curved_row(kind, P, x; n = nq, η = 6.0)
+        err_edge[c] = maximum(abs, BI.gcq_curved_row(kind, P, x; n = nq) .- r6) / maximum(abs, r6)
+    end
+    worst_edge = maximum(err_edge)
+    @test worst_edge <= 7e-14                                           # 7.3e-15 measured (2.3e-7 before the split)
 end

@@ -7,18 +7,29 @@
 # for the weight u^pw on a leaf at the edge), here in parameter measure (L = 1) with the Jacobian J = |y_u × y_v| taken
 # into the kernel at every leaf point. Sizes and distances are physical: a leaf's sides are its parameter lengths times
 # |y_u|, |y_v| at its point p̂ nearest the target's closest point (u*, v*) of the panel, and its distance from the target
-# is that of p̂.
+# is that of p̂. One departure: a leaf is never the whole weighted edge segment [0, sb] (u^pw, pw ≠ 0) of a direction,
+# which _tensor_leaf_map! would integrate with the segment's own rule. That rule's product weights for u^pw are
+# interpolatory, exact to degree nz - 1 only, and leave up to 2.3e-7 of max|row| for targets within a few segment widths
+# of the edge (lens, across the rim, 6.9e-8 from the panel); the segment is split instead, into a Gauss-Jacobi and a
+# Gauss-Legendre half, and the rows agree with η = 6 to rounding.
 #
 # x - y is not formed by subtracting positions near the target. w = x - y(u*, v*) is measured from the panel's nearest
 # node y_i (x - y_i, plus y_i - y(u*, v*) from the tangents), and a point at the offset (ou, ov) from (u*, v*) has
 # x - y = w - (y(u* + ou, v* + ov) - y(u*, v*)), the tangents integrated over the parameter step (ou, ov) as given.
 # Leaves at least GCQ_CURVED_PLAIN × the panel's diameter from the target take the plain difference x - y(u, v), which
-# is cheaper and rounds below 1e-13 of |x - y| there. (For Dᵀ at a target on the smooth continuation of the surface,
-# where n·(x - y) ~ |x - y|², that is up to ~3e-12 of max|row| at 1e-3 × the diameter on the lens: as large as the
-# effect of the rounding of the target's own position.)
+# is cheaper and rounds below 1e-13 of |x - y| there. Dᵀ rows of targets on neighbouring panels of the same smooth
+# surface, where n·(x - y) ~ |x - y|², have a floor whatever this cutoff: the mesh data's rounding (~1e-16 × the
+# diameter, in anchors and node positions) amplified by the near-tangent n·(x - y), measured at 1.7e-11 (lens, nlev 4)
+# and 7.1e-11 (nlev 5) of max|row| against a 128-bit-geometry reference (a cutoff of 1e-2 is no better).
 
 const GCQ_CURVED_PLAIN = 1e-3   # leaves this far from the target (× the panel's diameter): plain differences
 const GCQ_CURVED_ON = 1e-13     # a target this close (× the diameter) to the panel's interior lies on it
+
+# whether the part (kseg, a, b) of one direction of a quadtree node is the whole weighted edge segment, which
+# _tensor_leaf_map! would integrate with the segment's own rule (its condition, for the segment at the edge)
+_gcq_whole_edge_seg(r::TensorRule1D, kseg, c, a, b) =
+    kseg >= 1 && r.pw != 0 && r.segs[kseg][1] == 0 && a == r.segs[kseg][1] - c && b == r.segs[kseg][2] - c &&
+    length(r.z0) >= TENSOR_NEAR_M
 
 _cross3(a, b) = (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3], a[1] * b[2] - a[2] * b[1])
 _norm3(a) = sqrt(_dot3(a, a))
@@ -76,10 +87,16 @@ function _gcq_curved_row(kern::F, P::CurvedPanel, x, η, maxdepth) where F
         yu, yv = _tangents(P, us + pu, vs + pv)
         du = (ub - ua) * _norm3(yu); dv = (vb - va) * _norm3(yv)
         d = _norm3(w .- _curved_step(P, (us, vs), (pu, pv)))
-        if d <= η * max(du, dv) && depth < maxdepth
-            su = du > dv / 2 && η * du >= d
-            sv = dv > du / 2 && η * dv >= d
-            !su && !sv && (du >= dv ? (su = true) : (sv = true))
+        # split while near, and the whole weighted edge segment always (in its direction; see above)
+        eu = _gcq_whole_edge_seg(ru, ku, us, ua, ub); ev = _gcq_whole_edge_seg(rv, kv, vs, va, vb)
+        near = d <= η * max(du, dv)
+        if (near || eu || ev) && depth < maxdepth
+            su, sv = eu, ev
+            if near
+                su = du > dv / 2 && η * du >= d
+                sv = dv > du / 2 && η * dv >= d
+                !su && !sv && (du >= dv ? (su = true) : (sv = true))
+            end
             uch = su ? _tensor_dir_split(ru, ku, us, ua, ub) : ((ku, ua, ub),)
             vch = sv ? _tensor_dir_split(rv, kv, vs, va, vb) : ((kv, va, vb),)
             for (k1, a1, b1) in uch, (k2, a2, b2) in vch
