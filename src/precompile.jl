@@ -8,10 +8,12 @@ using PrecompileTools: @setup_workload, @compile_workload
 function _precompile_sphere()
     ps = SurfacePatch[]
     for a in 1:3, s in (-1.0, 1.0)
+        # the face point p = (s, x, y), (x, s, y) or (x, y, s), projected; each branch of one type (no allocation at
+        # dual numbers), and r summed in p's order
         f = (U, V) -> begin
-            p = a == 1 ? (s, 2U - 1, 2V - 1) : a == 2 ? (2U - 1, s, 2V - 1) : (2U - 1, 2V - 1, s)
-            r = sqrt(p[1]^2 + p[2]^2 + p[3]^2)
-            (p[1] / r, p[2] / r, p[3] / r)
+            x = 2U - 1; y = 2V - 1
+            r = sqrt(a == 1 ? s^2 + x^2 + y^2 : a == 2 ? x^2 + s^2 + y^2 : x^2 + y^2 + s^2)
+            a == 1 ? (s / r, x / r, y / r) : a == 2 ? (x / r, s / r, y / r) : (x / r, y / r, s / r)
         end
         P = SurfacePatch(f; eps_in = 4.0, eps_out = 1.0)
         n = patch_frame(P, 0.5, 0.5)[3]
