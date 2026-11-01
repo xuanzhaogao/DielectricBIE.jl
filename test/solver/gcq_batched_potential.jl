@@ -127,3 +127,25 @@ end
     p3 = boxes[3].panels[findfirst(is_gl_panel, boxes[3].panels)]
     @test_throws ArgumentError BI.potential_tensor(boxes[3], randn(rng, BI.num_points(boxes[3])), [p3.points[1]])
 end
+
+@testset "GCQPotential on the box's surface nodes" begin
+    # a target on a node of a GCQ edge or corner panel: the node rule, the far field's and the correction's, skips the
+    # pair at r = 0 (it was -Inf), so the value is finite and potential_tensor's, which sums tensor_near_row's row there
+    # directly; the GL nodes get SCTL's Duffy self row (n_quad 4). All nodes of an edge, a corner and a GL panel, and
+    # every 23rd node (all 6144: ~30 s each at 8 threads)
+    ε = 10.0
+    itf = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, ε, 1.0; nlev = 1, n_quad = 4, rule = edge_gcq_rule(ε, 1.0; tol = 1e-4))
+    ps = itf.panels
+    X, _ = BI._interface_targets_normals(itf)
+    cols = panel_column_ranges(itf)
+    sel = sort(unique([reduce(vcat, [collect(cols[findfirst(p -> p.kind == kd, ps)]) for kd in (:edge, :corner, :gl)]);
+                       1:23:size(X, 2)]))
+    T = X[:, sel]
+    σ = randn(MersenneTwister(12), BI.num_points(itf))
+    uref = BI.potential_tensor(itf, σ, [Tuple(T[:, t]) for t in axes(T, 2)])
+    u = potential_operator(GCQPotential(far = FMM3DFarField(1e-13)), itf, T) * σ
+    @test all(isfinite, uref) && all(isfinite, u)
+    # rounding: 2.7e-14 measured, as large at the GL nodes (2.7e-14), whose path did not change (2.25e-14 over all 6144
+    # nodes before), and independent of the FMM's tolerance (1e-13 or 1e-15); 1.9e-14 with a smooth σ
+    @test maximum(abs, u - uref) / maximum(abs, uref) < 3e-13
+end

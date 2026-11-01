@@ -223,16 +223,21 @@ _gcq_on_kern(::Val{:dt}, P, c, n, d, ou, ov, hess) =
     (r2 = _dot3(d, d); (hess ? -_curved_nd_hess(P, c, (ou, ov), n) : _dot3(n, d)) / (4π * r2 * sqrt(r2)))
 _gcq_on_kern(::Val{:sl}, P, c, n, d, ou, ov, hess) = 1 / (4π * sqrt(_dot3(d, d)))
 
+# the fine u-segment of a target on the panel at u0 (taken from `on`, never from x: a target at u0 = 0 is in the edge
+# segment), and whether it is the weighted edge segment [0, 2^-K], where the density's u^pw is singular in the Duffy
+# region and a target on the panel throws (GCQPotential checks its targets with these before computing rows)
+_gcq_on_segment(ru::TensorRule1D, u0) = clamp(searchsortedlast(ru.segs, (u0, Inf)), 1, length(ru.segs))
+_gcq_edge_segment(ru::TensorRule1D, k) = ru.segs[k][1] == 0 && ru.pw != 0
+
 function _gcq_curved_row_on(K::Val, n, P::CurvedPanel, x, c, η, maxdepth, pws)
     ru, rv = P.ru, P.rv
     u0, v0 = c
     (0 <= u0 <= 1 && 0 <= v0 <= 1) || throw(ArgumentError("gcq_curved_row: `on` must lie in [0, 1]², got $c"))
     (length(rv.segs) == 1 && rv.pw == 0) ||
         throw(ArgumentError("gcq_curved_row: targets on the panel need a one-segment unweighted rule in v"))
-    # the target's fine u-segment k (taken from `on`, never from x: a target at u0 = 0 is in the edge segment)
-    k = clamp(searchsortedlast(ru.segs, (u0, Inf)), 1, length(ru.segs))
+    k = _gcq_on_segment(ru, u0)
     sa, sb = ru.segs[k]
-    sa == 0 && ru.pw != 0 &&
+    _gcq_edge_segment(ru, k) &&
         throw(ArgumentError("gcq_curved_row: target within the edge segment [0, 2^-K] of a GCQ panel"))
     diam = pws.diam
     y0 = curved_lpoint(P, u0, v0)

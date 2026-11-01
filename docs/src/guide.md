@@ -484,10 +484,12 @@ campaign's eval phase. They are computed by a [`PotentialEvaluator`](@ref) throu
   It needs Gauss–Legendre × Gauss–Legendre panels ([`is_gl_panel`](@ref)) and `using SCTL`. A panel whose node
   count is not one of SCTL's orders is a proxy element of the next order, as above. A target on a node of a panel
   that is its own element (4, 8, 12, 16 or 20 nodes per direction) gets SCTL's Duffy self row.
-- **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel`) interfaces: the node rule by a
-  far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref)) for the GL×GL panels and the product
-  integration of `tensor_near_row` for the edge and corner panels. [`potential_tensor`](@ref) is the same quadrature
-  summed directly, and also works on the surface (SCTL's Duffy self rows at the GL panels' nodes).
+- **[`GCQPotential`](@ref)`(quad_tol = …)`** is the evaluator for GCQ (`TensorPanel` and `CurvedPanel`) interfaces,
+  off and on the surface: the node rule by a far field, SCTL's corrections ([`sctl_gl_potential_corrections`](@ref))
+  for the GL×GL panels and the product integration of the edge and corner panels (`tensor_near_row` on
+  `TensorPanel`s, [`gcq_curved_row`](@ref) on `CurvedPanel`s, whose targets on a panel get its Duffy-region row at
+  their parameters). [`potential_tensor`](@ref) is the `TensorPanel` quadrature summed directly, and also works on the
+  surface (SCTL's Duffy self rows at the GL panels' nodes).
 
 ```julia
 using DielectricBIE, SCTL

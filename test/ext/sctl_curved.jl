@@ -2,7 +2,7 @@
 # Gauss-Legendre × Gauss-Legendre panels, and solves on curved bodies (patches from test/shape/lens_patches.jl).
 using DielectricBIE
 import DielectricBIE as BI
-using LinearAlgebra, SparseArrays
+using LinearAlgebra, SparseArrays, Random
 using SCTL
 using HCubature
 using Test
@@ -202,6 +202,88 @@ function sphere_series(eps_in, eps_out, a, d, x; lmax = 80)
         s += (eps_out - eps_in) * l / (eps_in * l + eps_out * (l + 1)) * a^(2l + 1) / (d^(l + 1) * r^(l + 1)) * Pl
     end
     return s / (4π * eps_out)
+end
+
+@testset "GCQPotential (curved): the single layer on and inside the split sphere" begin
+    # S[z] = z/3 on and inside the unit sphere (S Y_l = r^l Y_l / (2l + 1)), and σ = z vanishes on the disk z = 0. The
+    # GCQ edge panels of both caps and of the disk meet at the equator; their rows are gcq_curved_row's (a target on the
+    # panel: the Duffy region at its parameters). The GL×GL panels are SCTL's order-8 elements, their geometry the
+    # order-8 interpolant of the map on panels spanning ~45°: they set the floor of the values against z/3
+    g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
+    itf = m.interface; ps = itf.panels
+    X = nodes_of(itf); σ = [x[3] for x in X]
+    gcq = findall(!is_gl_panel, ps)
+    pt(P, u, v) = P.anchor .+ BI.curved_lpoint(P, u, v)
+    rng = MersenneTwister(6)
+    # 20 surface points that are not nodes (Review Focus 1): random (u, v) on random GCQ panels, u log-uniform for half
+    # of them, all past the weighted edge segment [0, 2^-K] (where a target on the panel throws: below)
+    s1 = ps[gcq[1]].ru.segs[1][2]
+    @test all(k -> ps[k].ru.segs[1] == (0.0, s1) && ps[k].ru.pw != 0 && ps[k].ru.x[1] > s1, gcq)
+    uv = [(i <= 10 ? 2s1 + (1 - 2s1) * rand(rng) : 2s1 * (1 / 2s1)^rand(rng), rand(rng)) for i in 1:20]
+    sk = rand(rng, gcq, 20)
+    S = [pt(ps[k], c...) for (k, c) in zip(sk, uv)]
+    nS = [BI.curved_frame(ps[k], c...)[3] for (k, c) in zip(sk, uv)]
+    # points on boundaries shared by two GCQ panels (v = 0, 1), by a GCQ and a GL panel (u = 1), and corners where two
+    # GCQ panels meet one or two GL panels (u = 1, v = 1): on every panel they lie on, upper cap, lower cap and disk
+    bk = gcq[[1, 10, 20]]
+    bc = ((0.37, 0.0), (0.61, 1.0), (1.0, 0.43), (1.0, 1.0))
+    B = [pt(ps[k], c...) for k in bk for c in bc]
+    nB = [BI.curved_frame(ps[k], c...)[3] for k in bk for c in bc]
+    onp(x) = [k for k in eachindex(ps) if BI._curved_closest(ps[k], x .- ps[k].anchor)[3] <= 1e-15]
+    @test all(x -> length(onp(x)) >= 2, B) && all(x -> any(is_gl_panel, ps[onp(x)]), B[[3:4:end; 4:4:end]])
+    gg = [i for (i, c) in enumerate(Iterators.product(bc, bk)) if c[1][1] < 1]       # the GCQ-GCQ ones
+    # the single layer is continuous and its normal derivative jumps by -σ: u(x) = (u(x + δn) + u(x - δn) + δσ(x))/2
+    # + O(δ²) checks the rows of targets on a panel (the Duffy region) against those of targets off it (the quadtree),
+    # below the GL floor (at points away from the GL panels: not at u = 1). δσ(x) takes σ = z, not its interpolant on
+    # the panel, which below the first u-node (4e-5) extrapolates with u^pw: that difference gives δ(σ_h - z)/2,
+    # linear in δ (3.1e-11 at δ = 1e-7 for u = 2.6e-7, 3.5e-14 at 1e-10, 8e-16 at 1e-12). Not at nodes: FMM3D's term
+    # of a node δ from the target is off by ~3e-18 wσ / δ² (1.1 at δ = 1e-10, next to a node with wσ = 3.4e-3)
+    δ = 1e-12
+    Y = [S; B[gg]]; nY = [nS; nB[gg]]
+    Yp = [y .+ δ .* n for (y, n) in zip(Y, nY)]; Ym = [y .- δ .* n for (y, n) in zip(Y, nY)]
+    I9 = fib(0.9, 10); I99 = fib(0.99, 10)
+    T = [X; S; B; I9; I99; Yp; Ym]
+    t0 = time()
+    u = potential_operator(GCQPotential(), itf, reduce(hcat, collect.(T))) * σ
+    @info "GCQPotential (curved): $(length(T)) targets in $(round(time() - t0, digits = 1)) s"
+    @test all(isfinite, u)
+    part(r) = (o = 0; for A in (X, S, B, I9, I99, Yp, Ym)
+                          r === A && return o .+ eachindex(A); o += length(A)
+                      end)
+    e = abs.(u .- [x[3] / 3 for x in T])
+    err(A) = maximum(e[part(A)])
+    # against z/3 (|u| ≤ 1/3), set by the GL panels' geometry: largest next to the caps' GL panels (u → 1 on the GCQ
+    # panels), ≤ 3e-15 on the disk (z = 0, by symmetry). The GCQ nodes at the first u-node (4e-5 from the equator) are
+    # farthest from them
+    cols = panel_column_ranges(itf)
+    first_u = [cols[k][b] for k in gcq if m.panel_patch[k] <= 10 for b in 1:length(ps[k].rv.x)]
+    @test maximum(e[first_u]) < 1e-9                  # 4.1e-10 measured
+    @test err(X) < 2.5e-6                             # all nodes: 1.17e-6 (a GL node)
+    @test err(S) < 1.5e-7                             # non-node points: 6.6e-8
+    @test err(B) < 2e-6                               # shared boundaries: 9.5e-7 (u = 1, on a GL panel)
+    @test err(I9) < 2.5e-7                            # r = 0.9: 1.14e-7
+    @test err(I99) < 1.2e-6                           # r = 0.99: 6.0e-7
+    uY = u[[part(S); part(B)[gg]]]
+    cons = abs.(uY .- (u[part(Yp)] .+ u[part(Ym)] .+ δ .* [y[3] for y in Y]) ./ 2)
+    @test maximum(cons[1:20]) < 1.5e-14               # non-node points: 1.35e-15 measured
+    @test maximum(cons[21:end]) < 2e-14               # GCQ-GCQ boundaries: 1.7e-15
+    # a target within 1e-13 of a GCQ panel's diameter of one of its nodes is moved onto the node, as onto GL nodes: the
+    # far field and the node rule skip the same pair
+    y = ps[gcq[2]].points[20]; ny = ps[gcq[2]].normals[20]
+    u2 = potential_operator(GCQPotential(), itf, [collect(y) collect(y .+ 1e-14 .* ny)]) * σ
+    @test u2[2] == u2[1] && abs(u2[1] - u[findfirst(==(y), X)]) < 1e-12
+
+    # an on-surface target in a GCQ panel's weighted edge segment (u < 2^-K; u = 0 is the equator, on three GCQ panels):
+    # an ArgumentError naming the segment, raised before the threaded rows (not a TaskFailedException)
+    for c in ((s1 / 2, 0.3), (0.0, 0.6))
+        thrown = try
+            potential_operator(GCQPotential(), itf, reshape(collect(pt(ps[gcq[1]], c...)), 3, 1)); nothing
+        catch ex
+            ex
+        end
+        @test thrown isa ArgumentError && occursin("edge segment", thrown.msg)
+    end
 end
 
 @testset "curved solves: sphere, lens, split sphere" begin

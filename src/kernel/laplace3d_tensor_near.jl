@@ -510,24 +510,31 @@ end
 # sctl_gl_potential_corrections: a target a rounding error off a node would keep an uncancelled ~1/r term in one of
 # them (2^-48 × box covers FMM3D's band on panels smaller than ~4e-3 × box). On the node all of them skip it, and
 # SCTL's correction is the Duffy self row. `node(k, j)`: the coordinates that node j of panel k is moved to
-# (SCTLPotential passes its SCTL elements' node coordinates).
-function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix; node = (k, j) -> panels[k].points[j])
+# (SCTLPotential passes its SCTL elements' node coordinates). `hit` (a vector of (k, j), one per target), when given,
+# records the node each target was moved onto. GCQPotential on curved interfaces passes all panels as `gl`.
+function _snap_to_gl_nodes(panels, gl, targets::AbstractMatrix; node = (k, j) -> panels[k].points[j], hit = nothing)
     Xs = Matrix{Float64}(targets)
     (isempty(gl) || size(Xs, 2) == 0) && return Xs
-    lo = vec(minimum(Xs; dims = 2)); hi = vec(maximum(Xs; dims = 2))
-    for P in panels, y in P.points
-        lo .= min.(lo, y); hi .= max.(hi, y)
-    end
-    hbox = 2.0^-48 * maximum(hi .- lo)
+    hbox = 2.0^-48 * _node_target_extent(panels, Xs)
     tree = KDTree(Matrix{Float64}(targets))
     for k in gl
         P = panels[k]
         h = max(1e-13 * _gl_diam(P), hbox)
         for (j, y) in enumerate(P.points), t in inrange(tree, collect(y), h)
             Xs[:, t] .= node(k, j)
+            hit === nothing || (hit[t] = (k, j))
         end
     end
     return Xs
+end
+
+# the largest coordinate extent of the panels' nodes and the targets (3 × Nt, at least one)
+function _node_target_extent(panels, targets::AbstractMatrix)
+    lo = vec(minimum(targets; dims = 2)); hi = vec(maximum(targets; dims = 2))
+    for P in panels, y in P.points
+        lo .= min.(lo, y); hi .= max.(hi, y)
+    end
+    return maximum(hi .- lo)
 end
 
 """
