@@ -15,16 +15,25 @@
 
 const _OFFSET_GL = gausslegendre(16)
 
+# d/dx f(x) for f returning three numbers (a patch map along a line), as a 3-tuple: ForwardDiff.derivative's own tag
+# and seed, without collecting f(x) into an array (the panels' lmap and dmap allocate nothing and are type-stable)
+@inline function _map_derivative(f::F, x::R) where {F, R <: Real}
+    T = typeof(ForwardDiff.Tag(f, R))
+    y = f(ForwardDiff.Dual{T}(x, one(x)))
+    return (ForwardDiff.extract_derivative(T, y[1]), ForwardDiff.extract_derivative(T, y[2]),
+            ForwardDiff.extract_derivative(T, y[3]))
+end
+
 # map(b) - map(a) along the straight parameter segment a -> b, as ∫ d/ds map(a + s (b - a)) ds
-function _segment_offset(f, a, b)
+function _segment_offset(f::F, a, b) where F
     t, w = _OFFSET_GL
     du = b[1] - a[1]; dv = b[2] - a[2]
     acc = zero(du + dv) .* (1, 1, 1)
     (iszero(du) && iszero(dv)) && return acc
     for (ti, wi) in zip(t, w)
         s = (1 + ti) / 2
-        g = ForwardDiff.derivative(τ -> collect(f(a[1] + τ * du, a[2] + τ * dv)), s)
-        acc = acc .+ (wi / 2) .* (g[1], g[2], g[3])
+        g = _map_derivative(τ -> f(a[1] + τ * du, a[2] + τ * dv), s)
+        acc = acc .+ (wi / 2) .* g
     end
     return acc
 end
@@ -141,8 +150,8 @@ function curved_gcq_mesh(g::CurvedGeometry; nlev::Int = 4, n_quad::Int = 16, m::
                      s == 3 ? ((0.0, dV), (dU, 0.0)) : ((0.0, -dV), (dU, 0.0))
             dmap = (u, v) -> begin
                 U, V = pa(u, v)
-                XU = ForwardDiff.derivative(t -> collect(f(t, V)), U); XV = ForwardDiff.derivative(t -> collect(f(U, t)), V)
-                (Tuple(cu[1] .* XU .+ cu[2] .* XV), Tuple(cv[1] .* XU .+ cv[2] .* XV))
+                XU = _map_derivative(t -> f(t, V), U); XV = _map_derivative(t -> f(U, t), V)
+                (cu[1] .* XU .+ cu[2] .* XV, cv[1] .* XU .+ cv[2] .* XV)
             end
             ru = s == 0 ? rgl : rule(g.side_curve[s, k])
             kind = s != 0 && edge == :gcq ? :edge : :gl

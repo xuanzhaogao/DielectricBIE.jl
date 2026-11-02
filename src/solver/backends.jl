@@ -200,8 +200,7 @@ Built in:
   ([`sctl_gl_corrections`](@ref)) as a sparse correction, with any far field (`FlatPanel` interfaces, default;
   `using SCTL`);
 - [`GCQNearQuad`](@ref): the product-integration rules of the GCQ edge and corner panels, SCTL's for the
-  Gauss-Legendre ones (`TensorPanel` interfaces, default);
-- [`SCTLCurvedNearQuad`](@ref): `CurvedPanel` interfaces, GCQ edge panels included (default; `using SCTL`);
+  Gauss-Legendre ones (`TensorPanel` and `CurvedPanel` interfaces, default);
 - [`SCTLNearQuad`](@ref): SCTL's singular quadrature of `QuadElemList` as its whole operator (needs `SCTLFarField`
   and `using SCTL`);
 - [`CorrectionMatrix`](@ref) (a precomputed `C`) and [`FunctionNearQuad`](@ref) (`C = f(interface)`).
@@ -249,11 +248,24 @@ end
 """
     GCQNearQuad(; quad_tol = 1e-12, η_gcq = 2.0, reuse = true, gcq_far = :max)
 
-Near corrections of `TensorPanel` (GCQ) interfaces, from [`laplace3d_DT_tensor_corrections`](@ref): DielectricBIE's
-product integration for the GCQ edge and corner panels, SCTL's quadrature ([`sctl_gl_corrections`](@ref) at
-`quad_tol`) for the Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)), which needs `using SCTL` when the
-interface has any. `η_gcq`, `reuse` and `gcq_far` concern the GCQ panels: `gcq_far = :direction` measures the near
-distance of edge panels against their GCQ direction instead of their larger side (see `tensor_isfar`).
+Near corrections of GCQ interfaces, `TensorPanel` and `CurvedPanel` ones: DielectricBIE's product integration for
+the GCQ edge and corner panels, in Julia, and SCTL's quadrature ([`sctl_gl_corrections`](@ref) at `quad_tol`) for the
+Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)), which needs `using SCTL` when the interface has any.
+`η_gcq`, `reuse` and `gcq_far` concern the GCQ panels.
+
+- `TensorPanel`s: [`laplace3d_DT_tensor_corrections`](@ref). A pair is near when `tensor_isfar` rejects it at
+  `quad_tol`; `gcq_far = :direction` measures the near distance of edge panels against their GCQ direction instead
+  of their larger side; `reuse` computes equal rows (the same relative position) once.
+- `CurvedPanel`s (GCQ rule in u, the edge at u = 0): the rows of [`DielectricBIE.gcq_curved_row`](@ref) on the
+  panel's exact map minus the node rule. A target is near a GCQ panel when it lies within `η_gcq` × L of one of its
+  nodes, L the panel's larger mean chord (across u or across v; with `gcq_far = :direction` the one across u), and the
+  panel's own nodes always are: they get its on-surface rows. A curved GCQ rule must have no node in its weighted
+  edge segment [0, 2^-K] (else an `ArgumentError`, before any row is computed); graded grids, the default, guarantee
+  it. Dᵀ rows of near-tangent targets (nodes of neighbouring panels of the same smooth surface) and of targets across
+  the rim have a floor from the rounding of the mesh's Float64 node positions, not from the quadrature: on the lens,
+  1.7e-11 (n_quad 8) to 1.7e-10 (n_quad 12) of max|row|, and about 1.9e-9 at ~5e-7 × the diameter across the rim.
+  `quad_tol` goes to the GL×GL panels only, and `reuse` is ignored. The GL×GL panels are SCTL elements of their own
+  order, whose geometry is SCTL's interpolant of the map (see [`sctl_gl_corrections`](@ref)).
 """
 Base.@kwdef struct GCQNearQuad <: NearQuadrature
     quad_tol::Float64 = 1e-12
@@ -268,6 +280,116 @@ near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:TensorPanel}) 
 near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:TensorPanel}, sources::AbstractVector{<:Integer}) =
     SparseMatrixCSC{Float64, Int}(first(laplace3d_DT_tensor_corrections(interface;
         reuse = q.reuse, quad_tol = q.quad_tol, η_gcq = q.η_gcq, gcq_far = q.gcq_far, sources = sources)))
+
+near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:CurvedPanel}) =
+    near_corrections(q, interface, eachindex(interface.panels))
+
+function near_corrections(q::GCQNearQuad, interface::DielectricInterface{<:CurvedPanel},
+                          sources::AbstractVector{<:Integer})
+    ps = interface.panels
+    q.gcq_far in (:max, :direction) || throw(ArgumentError("gcq_far must be :max or :direction, got :$(q.gcq_far)"))
+    gcq = filter(k -> !is_gl_panel(ps[k]), unique(sources))
+    foreach(k -> _gcq_check_vrule(ps[k], "GCQNearQuad"), gcq)          # (own nodes are targets on the panel)
+    # and none of them in a weighted edge segment (the smallest u-node decides): a plain ArgumentError here, before the
+    # threaded rows
+    foreach(k -> _gcq_check_edge_segment(ps[k].ru, minimum(ps[k].ru.x), "GCQNearQuad",
+                                         "the smallest u-node of panel $k"), gcq)
+    # the GL×GL source panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
+    gl = intersect(findall(is_gl_panel, ps), sources)
+    Cgl = isempty(gl) ? nothing : sctl_gl_corrections(interface, gl; tol = q.quad_tol)
+    isempty(gcq) && return Cgl === nothing ? spzeros(num_points(interface), num_points(interface)) : Cgl
+    C = _gcq_curved_corrections(interface, gcq; η_gcq = q.η_gcq, gcq_far = q.gcq_far)
+    return Cgl === nothing ? C : _add_corrections(C, Cgl)
+end
+
+# The columns of the curved GCQ panels `gcq` (panel indices) of GCQNearQuad: per panel P, gcq_curved_row's Dᵀ rows
+# minus the node rule for its near targets (_gcq_curved_nearest) and its own nodes. Its own nodes are targets on the
+# panel (`on`, their parameters); another panel's node is taken into P's frame from its own,
+# (anchor_t - anchor_P) + lpoint_t, never by subtracting absolute positions.
+function _gcq_curved_corrections(interface::DielectricInterface{<:CurvedPanel}, gcq; η_gcq::Real, gcq_far::Symbol)
+    ps = interface.panels
+    n = num_points(interface)
+    offs = cumsum([0; num_points.(ps)])
+    owner = zeros(Int, n); loc = zeros(Int, n)
+    for (k, P) in enumerate(ps), i in 1:num_points(P)
+        owner[offs[k] + i] = k; loc[offs[k] + i] = i
+    end
+    X0, N0 = _interface_targets_normals(interface)
+    X = Matrix{Float64}(X0); Nrm = Matrix{Float64}(N0)      # (new names: closures capture X and Nrm, unboxed)
+    tree = KDTree(X)
+    return _gcq_curved_assemble(ps, gcq, n) do k
+        P = ps[k]; nv = length(P.rv.x)
+        R = _gcq_curved_radius(P, η_gcq, gcq_far)
+        cand, dmin = _gcq_curved_nearest(P, X, tree, R)
+        ts = sort!([t for (i, t) in enumerate(cand) if owner[t] == k || dmin[i] <= R])
+        rows = _gcq_curved_rows(P, length(ts)) do r, ws
+            t = ts[r]; j = loc[t]; nt = (Nrm[1, t], Nrm[2, t], Nrm[3, t])
+            if owner[t] == k                                        # P's own node (a, b)
+                a, b = (j - 1) ÷ nv + 1, (j - 1) % nv + 1
+                return gcq_curved_row(:dt, P, P.lpoints[j]; n = nt, on = (P.ru.x[a], P.rv.x[b]), ws)
+            end
+            Pt = ps[owner[t]]
+            return gcq_curved_row(:dt, P, (Pt.anchor .- P.anchor) .+ Pt.lpoints[j]; n = nt, ws)
+        end
+        (ts, rows .- dt_node_rule_block(interface, k, X[:, ts], Nrm[:, ts]))
+    end
+end
+
+# The near radius of the curved GCQ panel P: η_gcq × L, L its larger mean chord (across u or across v), or with
+# gcq_far = :direction the one across u
+function _gcq_curved_radius(P::CurvedPanel, η_gcq::Real, gcq_far::Symbol)
+    su, sv = _mean_chords((u, v) -> curved_lpoint(P, u, v))
+    return η_gcq * (gcq_far === :max ? max(su, sv) : su)
+end
+
+# The candidate targets (columns of X, `tree` its KD tree) for the targets within `rad` of a node of P: those within rad
+# of the ball around P's nodes, with their distances to P's nearest node (a target is near P when that is ≤ the radius
+# of _gcq_curved_radius)
+function _gcq_curved_nearest(P::CurvedPanel, X::Matrix{Float64}, tree, rad::Real)
+    Y = reduce(hcat, [collect(y) for y in P.points])
+    c = vec(sum(Y; dims = 2)) ./ size(Y, 2)
+    cand = inrange(tree, c, maximum(norm(Y[:, j] .- c) for j in axes(Y, 2)) + rad)
+    _, dmin = isempty(cand) ? (Int[], Float64[]) : nn(KDTree(Y), X[:, cand])
+    return cand, dmin
+end
+
+# The m rows of the curved GCQ panel P, row r = f(r, ws), over tasks: an edge panel has a large share of all targets
+# near it, and its own rows next to the edge cost the most, so the rows are dealt to the tasks in turn rather than in
+# blocks. Each task has its own workspace ws (P's tables and row buffers: not thread-safe, and built from P)
+function _gcq_curved_rows(f::F, P::CurvedPanel, m::Int) where F
+    rows = Matrix{Float64}(undef, m, num_points(P))
+    nch = min(Threads.nthreads(), m)
+    @sync for ch in 1:nch
+        Threads.@spawn begin
+            ws = _GCQCurvedWS(P)
+            for r in ch:nch:m
+                rows[r, :] .= f(r, ws)
+            end
+        end
+    end
+    return rows
+end
+
+# The m × N sparse correction with the column blocks block(k) = (ts, B) of the curved GCQ panels `gcq` (B: the rows of
+# the targets ts over panel k's nodes), threaded over the panels; the rules' near tables (cached) are built first
+function _gcq_curved_assemble(block::F, ps, gcq, m::Int) where F
+    offs = cumsum([0; num_points.(ps)])
+    foreach(k -> (_tensor_near_tables(ps[k].ru); _tensor_near_tables(ps[k].rv)), gcq)
+    blocks = Vector{Tuple{Vector{Int}, Matrix{Float64}}}(undef, length(ps))
+    _blas_single() do
+        Threads.@threads :dynamic for k in gcq
+            blocks[k] = block(k)
+        end
+    end
+    I = Int[]; J = Int[]; V = Float64[]
+    for k in gcq
+        ts, B = blocks[k]
+        for j in axes(B, 2), (r, t) in enumerate(ts)
+            push!(I, t); push!(J, offs[k] + j); push!(V, B[r, j])
+        end
+    end
+    return sparse(I, J, V, m, offs[end])
+end
 
 """
     SCTLNearQuad(; tol = nothing)
@@ -300,41 +422,6 @@ end
 
 near_corrections(::SCTLNearCorrection, interface) =
     error("SCTLNearCorrection needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
-
-"""
-    SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9)
-
-SCTL's near and on-surface quadrature for `CurvedPanel` interfaces (the default there), GCQ edge panels included.
-The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)) get [`sctl_gl_corrections`](@ref) at `tol`: each
-one SCTL element of its own order (4, 8, 12, 16 or 20 nodes per direction; the element's geometry is SCTL's
-interpolant of the map at that order, which bounds the accuracy on large panels). `order`, `η` and `ε_rel` concern
-the GCQ edge panels, as follows.
-
-A GCQ panel's u-segments (the fine segments of its GCQ rule) of aspect ratio (v-length / width) up to 4 are proxy
-`QuadElemList` elements of order `order` (default: the smallest of 16, 20 at least the segments' node counts: the
-proxies carry the curved geometry too, which order 8 resolves only to ~1e-4 on a 45° sphere panel), in the panel's
-own frame, the density on each interpolated from the panel's nodes (`tensor_rule_interp`). Thinner segments (next to
-an edge: GCQ fine segments down to 2^-K of the panel), on which SCTL's rule is inaccurate, are integrated row by row:
-by their fine Gauss nodes in u (the weight s^pw included; the segments below half the target's distance from the
-edge merged into one 20-point rule) and adaptive quadrature in v when the target is at least a segment width away,
-and by square SCTL elements in a small window about the target in v otherwise. For a panel's own nodes x - y is
-formed from tangent integrals, never by subtracting positions (near an edge n·(x - y) is below their rounding); other
-targets are measured from their nearest node of the panel.
-
-A target is near a GCQ panel when it lies within `η` times the panel's diameter of one of its nodes. On the panel
-itself SCTL's rule returns a one-sided limit, so a target on its own element gets the principal value from the two
-sides, x ± εn and x ± 2εn (ε = `ε_rel` × the element's diameter), Richardson-extrapolated. The correction is the
-accurate block minus the node rule ([`dt_node_rule_block`](@ref)); combines with any far field. Needs `using SCTL`.
-"""
-Base.@kwdef struct SCTLCurvedNearQuad <: NearQuadrature
-    tol::Float64 = 1e-10
-    order::Union{Nothing, Int} = nothing
-    η::Float64 = 1.5
-    ε_rel::Float64 = 1e-9
-end
-
-near_corrections(::SCTLCurvedNearQuad, interface) =
-    error("SCTLCurvedNearQuad needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
 
 """
     sctl_near_list(interface; tol = 1e-10, radius = nothing, targets = nothing) -> SCTL.NearList
@@ -459,13 +546,13 @@ _near_quadrature(f::Function) = FunctionNearQuad(f)
 """
     default_near_quadrature(interface) -> NearQuadrature
 
-[`SCTLNearCorrection`](@ref)`()` for `FlatPanel` interfaces, [`GCQNearQuad`](@ref)`()` for `TensorPanel` ones,
-[`SCTLCurvedNearQuad`](@ref)`()` for `CurvedPanel` ones. The Gauss-Legendre × Gauss-Legendre panels' corrections are
-SCTL's in all three ([`sctl_gl_corrections`](@ref)): they need `using SCTL`.
+[`SCTLNearCorrection`](@ref)`()` for `FlatPanel` interfaces, [`GCQNearQuad`](@ref)`()` for `TensorPanel` and
+`CurvedPanel` ones: the GCQ panels' rows in Julia, the Gauss-Legendre × Gauss-Legendre panels' corrections SCTL's
+([`sctl_gl_corrections`](@ref), at `quad_tol = 1e-12` under `GCQNearQuad()`), which need `using SCTL`.
 """
 default_near_quadrature(::DielectricInterface{<:FlatPanel}) = SCTLNearCorrection()
 default_near_quadrature(::DielectricInterface{<:TensorPanel}) = GCQNearQuad()
-default_near_quadrature(::DielectricInterface{<:CurvedPanel}) = SCTLCurvedNearQuad()
+default_near_quadrature(::DielectricInterface{<:CurvedPanel}) = GCQNearQuad()
 
 """
     default_far_field() -> FarField
@@ -549,8 +636,8 @@ How the single-layer potential `u(x) = ∫ G(x - y) σ(y) dS_y` of a solved dens
 near) the interface: [`potential_operator`](@ref)`(ev, interface, targets)` returns a `LinearMap` `P` (`Nt × N`),
 applied to one density at a time (`P * σ`). Available: [`SCTLPotential`](@ref) (the default of
 `evaluate_batch_potential`, `four_index_matrix` and the campaign's eval phase) for Gauss-Legendre × Gauss-Legendre
-interfaces, and [`GCQPotential`](@ref) for `TensorPanel` (GCQ) interfaces. `SCTLPotential` needs `using SCTL`, and so
-does `GCQPotential` on an interface with GL×GL panels.
+interfaces, and [`GCQPotential`](@ref) for `TensorPanel` and `CurvedPanel` (GCQ) interfaces, off and on the surface.
+`SCTLPotential` needs `using SCTL`, and so does `GCQPotential` on an interface with GL×GL panels.
 """
 abstract type PotentialEvaluator end
 
@@ -578,8 +665,9 @@ end
 """
     potential_operator(ev::PotentialEvaluator, interface, targets) -> P
 
-The off-surface single-layer potential operator, a `LinearMap` of size `size(targets, 2) × num_points(interface)`, for
-densities in the interface's node order: `P * σ` (for a block apply it per column; `P * Σ` is a lazy map).
+The single-layer potential operator at targets off or on the surface (as each evaluator allows), a `LinearMap` of
+size `size(targets, 2) × num_points(interface)`, for densities in the interface's node order: `P * σ` (for a block
+apply it per column; `P * Σ` is a lazy map).
 """
 potential_operator(::SCTLPotential, interface, targets) =
     error("SCTLPotential needs the SCTL.jl package: run `using SCTL` (it loads DielectricBIESCTLExt)")
@@ -587,16 +675,27 @@ potential_operator(::SCTLPotential, interface, targets) =
 """
     GCQPotential(; quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, far = FMM3DFarField(1e-12))
 
-Off-surface single-layer potential for `TensorPanel` (GCQ) interfaces, accurate near edges and corners: the node
-rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or [`SCTLFarField`](@ref)), plus near
-corrections. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)): SCTL's,
-[`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). The GCQ edge
-and corner panels: for every (panel, target) pair that `tensor_isfar` rejects at `quad_tol`, the product-integration
-row of `tensor_near_row` minus the node rule; candidate pairs are found with a KD tree, `gcq_far` as for
-[`GCQNearQuad`](@ref). A target within max(1e-13 × a GL panel's size, 2^-48 × the extent of nodes and targets) of one
-of its nodes is moved onto the node first, so that the far field and SCTL's correction skip the same pair: a target on
-a node gets SCTL's Duffy self row (on a node of a GL panel whose `n_quad` is not an SCTL order, an `ArgumentError`).
-The same quadrature as [`potential_tensor`](@ref), which sums directly over all pairs.
+Single-layer potential for `TensorPanel` and `CurvedPanel` (GCQ) interfaces, off and on the surface, accurate near
+edges and corners: the node rule over all nodes by the far-field backend `far` ([`FMM3DFarField`](@ref) or
+[`SCTLFarField`](@ref)), plus near corrections, (accurate row) − (node rule). The node rule skips a target's pair with
+a node it lies on (r = 0), as the far field does. The Gauss-Legendre × Gauss-Legendre panels ([`is_gl_panel`](@ref)):
+SCTL's, [`sctl_gl_potential_corrections`](@ref)`(interface, gl, targets; tol = quad_tol)` (needs `using SCTL`). A
+target within max(1e-13 × a panel's size, 2^-48 × the extent of nodes and targets) of one of its nodes, of any panel,
+is moved onto the node first, so that the far field, SCTL's correction and the node rule skip the same pair: a target
+on a node of a GL panel gets SCTL's Duffy self row (on one whose `n_quad` is not an SCTL order, an `ArgumentError`).
+A target off the surface within ~1e-6 of a node, but outside that snap radius, loses accuracy through the FMM far
+field, whose term of the node is off by ~3e-18 · wσ / δ² at distance δ (w the node's weight, σ the density there).
+
+- `TensorPanel`s: the GCQ edge and corner panels' rows are `tensor_near_row`'s product integration, for every
+  (panel, target) pair that `tensor_isfar` rejects at `quad_tol`; candidate pairs are found with a KD tree, `gcq_far`
+  as for [`GCQNearQuad`](@ref). The same quadrature as [`potential_tensor`](@ref), which sums directly over all pairs.
+- `CurvedPanel`s (GCQ rule in u, the edge at u = 0): the GCQ panels' rows are
+  [`DielectricBIE.gcq_curved_row`](@ref)'s on the panel's exact map, for the targets within `η_gcq` × L of one of a
+  panel's nodes (L and `gcq_far` as for [`GCQNearQuad`](@ref)) and those on it. A target lies on a GCQ panel within
+  max(1e-13 × the panel's diameter, 2^-48 × the extent of nodes and targets) of its closest point there: it gets the
+  panel's on-surface row at those parameters (the Duffy region around it), from every panel it lies on (a boundary
+  shared by panels). A target on a GCQ panel in its weighted edge segment [0, 2^-K] (`ru.pw ≠ 0`; the edge u = 0
+  included) is an `ArgumentError`, raised before any row is computed.
 """
 Base.@kwdef struct GCQPotential{F <: FarField} <: PotentialEvaluator
     quad_tol::Float64 = 1e-12
@@ -616,7 +715,9 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
     size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
     panels = interface.panels
     gl = findall(is_gl_panel, panels)
-    Xt = _snap_to_gl_nodes(panels, gl, targets)
+    # every target within the snap radius of a node, GL or GCQ, moved onto it: the far field, SCTL's correction and the
+    # node rule subtracted below all skip that pair (r = 0)
+    Xt = _snap_to_gl_nodes(panels, eachindex(panels), targets)
     nt = size(Xt, 2)
     offs = cumsum([0; num_points.(panels)])
     # the GL×GL panels: SCTL (first, so that a missing SCTL fails before the GCQ rows are computed)
@@ -647,7 +748,8 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
             row = tensor_near_row(G, ps, xl; ws)
             for (j, y) in enumerate(ps.points)
                 push!(rows[k], t); push!(cols[k], offs[k] + j)
-                push!(vals[k], row[j] - G(x .- y) * ps.weights[j])
+                # the node rule without the node the target is on (r = 0), as the far field
+                push!(vals[k], x == y ? row[j] : row[j] - G(x .- y) * ps.weights[j])
             end
         end
     end
@@ -656,4 +758,97 @@ function potential_operator(ev::GCQPotential, interface::DielectricInterface{Ten
     C = Cgl === nothing ? Cgcq : _add_corrections(Cgcq, Cgl)     # (not reassigned: the closure below captures it)
     F = _pottrg_far(ev.far, interface, Xt)
     return LinearMap{Float64}(σ -> F * σ .+ C * σ, nt, offs[end])
+end
+
+function potential_operator(ev::GCQPotential, interface::DielectricInterface{<:CurvedPanel}, targets::AbstractMatrix)
+    size(targets, 1) == 3 || throw(DimensionMismatch("targets must be 3 × Nt"))
+    ev.gcq_far in (:max, :direction) || throw(ArgumentError("gcq_far must be :max or :direction, got :$(ev.gcq_far)"))
+    ps = interface.panels
+    gl = findall(is_gl_panel, ps); gcq = findall(!is_gl_panel, ps)
+    foreach(k -> _gcq_check_vrule(ps[k], "GCQPotential"), gcq)
+    # every target within the snap radius of a node, of any panel, moved onto it (`hit`: which), so that the far field,
+    # SCTL's correction and the node rule subtracted below all skip that pair (r = 0)
+    X0 = Matrix{Float64}(targets)
+    hbox = _snap_hbox(ps, X0)
+    hit = fill((0, 0), size(X0, 2))
+    Xt = _snap_to_gl_nodes(ps, eachindex(ps), X0; hit, hbox)
+    # the GCQ panels' near targets and the targets on them, before any rows (one in a weighted edge segment throws)
+    near = _gcq_curved_sl_targets(ps, gcq, Xt, hit; η_gcq = ev.η_gcq, gcq_far = ev.gcq_far, hbox)
+    # the GL×GL panels: SCTL (before the GCQ rows, so that a missing SCTL fails first)
+    Cgl = isempty(gl) ? nothing : sctl_gl_potential_corrections(interface, gl, Xt; tol = ev.quad_tol)
+    Cgcq = _gcq_curved_sl_corrections(ps, gcq, Xt, hit, near)
+    C = Cgl === nothing ? Cgcq : _add_corrections(Cgcq, Cgl)     # (not reassigned: the closure below captures it)
+    F = _pottrg_far(ev.far, interface, Xt)
+    return LinearMap{Float64}(σ -> F * σ .+ C * σ, size(Xt, 2), num_points(interface))
+end
+
+# target t (column of Xt) in the frame of panel P, x_t - P.anchor: from the panel and node it was moved onto
+# (hit[t] = (k, j)), (anchor_k - anchor_P) + lpoint_kj, else from its position
+_gcq_target_frame(ps, P, Xt, hit, t) =
+    hit[t][1] == 0 ? (Xt[1, t] - P.anchor[1], Xt[2, t] - P.anchor[2], Xt[3, t] - P.anchor[3]) :
+                     (ps[hit[t][1]].anchor .- P.anchor) .+ ps[hit[t][1]].lpoints[hit[t][2]]
+
+# GCQPotential's targets of the curved GCQ panels `gcq` (Xt: 3 × Nt, moved onto nodes as `hit` records): per panel P,
+# (ts, on), the targets within η_gcq × L of one of its nodes (_gcq_curved_radius) and those on P, with their parameters
+# on P, (NaN, NaN) for the others. A target lies on P on node j of P (its parameters), or within _gcq_on_tol(P's
+# diameter, hbox) of its closest point (u*, v*) on P (_curved_closest; at least the rows' own test, on the same x), so
+# one on a boundary shared by panels lies on each. Threaded over the panels; then the ArgumentErrors of the on-panel
+# rows (_gcq_check_edge_segment: a target on P in its weighted edge segment), which would come from the threaded rows
+function _gcq_curved_sl_targets(ps, gcq, Xt::Matrix{Float64}, hit; η_gcq::Real, gcq_far::Symbol, hbox::Real)
+    tree = KDTree(Xt)
+    near = Vector{Tuple{Vector{Int}, Vector{NTuple{2, Float64}}}}(undef, length(ps))
+    Threads.@threads :dynamic for k in gcq
+        P = ps[k]; nv = length(P.rv.x)
+        R = _gcq_curved_radius(P, η_gcq, gcq_far)
+        diam = _gcq_curved_diam(P)
+        hon = _gcq_on_tol(diam, hbox)
+        # every target that may be a row: within R of P's nearest node, or on P (a point of P is within its diameter)
+        rad = max(R, diam)
+        cand, dmin = _gcq_curved_nearest(P, Xt, tree, rad)
+        ts = Int[]; on = NTuple{2, Float64}[]
+        for (i, t) in enumerate(cand)
+            uv = (NaN, NaN)
+            if hit[t][1] == k
+                j = hit[t][2]
+                uv = (P.ru.x[(j - 1) ÷ nv + 1], P.rv.x[(j - 1) % nv + 1])
+            elseif dmin[i] <= rad
+                us, vs, d = _curved_closest(P, _gcq_target_frame(ps, P, Xt, hit, t))
+                d <= hon && (uv = (us, vs))
+            end
+            (dmin[i] <= R || !isnan(uv[1])) || continue
+            push!(ts, t); push!(on, uv)
+        end
+        p = sortperm(ts)
+        near[k] = (ts[p], on[p])
+    end
+    for k in gcq, (t, uv) in zip(near[k]...)
+        isnan(uv[1]) || _gcq_check_edge_segment(ps[k].ru, uv[1], "GCQPotential", "target $t (panel $k)")
+    end
+    return near
+end
+
+# GCQPotential's columns of the curved GCQ panels `gcq` at the targets Xt: per panel P, gcq_curved_row's single-layer
+# rows of its targets `near` (_gcq_curved_sl_targets; one on P at the point of P at its parameters, `on`) minus the node
+# rule
+function _gcq_curved_sl_corrections(ps, gcq, Xt::Matrix{Float64}, hit, near)
+    return _gcq_curved_assemble(ps, gcq, size(Xt, 2)) do k
+        P = ps[k]; ts, on = near[k]
+        rows = _gcq_curved_rows(P, length(ts)) do r, ws
+            isnan(on[r][1]) && return gcq_curved_row(:sl, P, _gcq_target_frame(ps, P, Xt, hit, ts[r]); ws)
+            return gcq_curved_row(:sl, P, curved_lpoint(P, on[r]...); on = on[r], ws)
+        end
+        (ts, rows .- _sl_node_rule_block(P, Xt, ts))
+    end
+end
+
+# the node rule of the single layer from panel P's nodes to the targets ts (columns of X): w_j / (4π |x - y_j|), zero
+# where x = y_j (the pair the far field skips)
+function _sl_node_rule_block(P, X::AbstractMatrix, ts)
+    B = zeros(length(ts), num_points(P))
+    for j in 1:num_points(P), (r, t) in enumerate(ts)
+        y = P.points[j]
+        r2 = (X[1, t] - y[1])^2 + (X[2, t] - y[2])^2 + (X[3, t] - y[3])^2
+        r2 == 0 || (B[r, j] = P.weights[j] / (4π * sqrt(r2)))
+    end
+    return B
 end

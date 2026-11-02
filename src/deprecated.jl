@@ -1,9 +1,11 @@
-# Old entry points kept for scripts. The in-house near quadrature they called (upsampling, adaptive quadtrees,
-# HCubature corrections) is gone: every one is now a thin wrapper over the FMM node rule and SCTL's near and self
-# corrections (sctl_gl_corrections, SCTLPotential), so all of them need `using SCTL`. Keywords of the old methods
+# Old entry points kept for scripts. Each wrapper gives a deprecation warning (with `--depwarn=yes`) naming its
+# replacement. The operators and potentials: the in-house near quadrature they called (upsampling, adaptive quadtrees,
+# HCubature corrections) is gone, and each is now a thin wrapper over the FMM node rule and SCTL's near and self
+# corrections (sctl_gl_corrections, SCTLPotential), so they need `using SCTL`. Keywords of the old methods
 # (`correct_edges`, `adaptive_atol`, `adaptive_rtol`, `adaptive_n_GL`, `adaptive_max_depth`, `range_factor`) and
-# `max_order` are accepted and ignored: SCTL corrects every panel, edges included, at the tolerance given. Each
-# wrapper gives a deprecation warning (with `--depwarn=yes`) naming its replacement.
+# `max_order` are accepted and ignored: SCTL corrects every panel, edges included, at the tolerance given.
+# SCTLCurvedNearQuad, the former near quadrature of curved interfaces, returns a GCQNearQuad: its GCQ panels' rows are
+# Julia's, and only its Gauss-Legendre panels need `using SCTL`.
 
 """
     lhs_dielectric_box3d_fmm3d_corrected(interface, fmm_tol, up_tol, max_order; kw...) -> LinearMap
@@ -110,4 +112,18 @@ function laplace3d_pottrg_near(interface::DielectricInterface, target::NTuple{3,
                  "`potential_operator(SCTLPotential(tol = atol), interface, targets) * sol` (one operator for " *
                  "all the targets)", :laplace3d_pottrg_near)
     return (potential_operator(SCTLPotential(tol = atol), interface, reshape(Float64[target...], 3, 1)) * sol)[1]
+end
+
+"""
+    SCTLCurvedNearQuad(; tol = 1e-10, order = nothing, η = 1.5, ε_rel = 1e-9) -> GCQNearQuad
+
+Kept for old scripts: [`GCQNearQuad`](@ref)`(quad_tol = tol)`, the near quadrature of `CurvedPanel` interfaces (their
+default, with `quad_tol = 1e-12`): the GCQ edge panels' rows in Julia ([`DielectricBIE.gcq_curved_row`](@ref)), SCTL's
+[`sctl_gl_corrections`](@ref) at `tol` for the Gauss-Legendre × Gauss-Legendre panels. `order`, `η` and `ε_rel`
+(the proxy elements, near radius and principal value of the former SCTL quadrature of the GCQ panels) are ignored.
+"""
+function SCTLCurvedNearQuad(; tol::Real = 1e-10, order = nothing, η::Real = 1.5, ε_rel::Real = 1e-9)
+    Base.depwarn("`SCTLCurvedNearQuad(; tol)` is deprecated, use `GCQNearQuad(quad_tol = tol)` (`order`, `η` and " *
+                 "`ε_rel` are ignored)", :SCTLCurvedNearQuad)
+    return GCQNearQuad(quad_tol = tol)
 end

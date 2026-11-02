@@ -7,7 +7,7 @@
 # GCQ panels (a rule with several fine segments) have no limit and are never split.
 #
 # The aspect ratio is longer side / shorter side; a curved panel's sides are its mean chords across u and
-# across v at 1/4, 1/2 and 3/4 of the other parameter (the measure of the SCTL extension's `_curved_split`).
+# across v at 1/4, 1/2 and 3/4 of the other parameter (also the length of GCQNearQuad's curved near test).
 
 """
     GL_MAX_ASPECT

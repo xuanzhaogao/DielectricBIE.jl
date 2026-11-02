@@ -1,9 +1,10 @@
-# SCTL near and on-surface quadrature for curved GCQ panels, and solves on curved bodies (patches from
-# test/shape/lens_patches.jl).
+# GCQNearQuad on curved interfaces: the GCQ edge panels' near and self rows in Julia (gcq_curved_row), SCTL's for the
+# Gauss-Legendre × Gauss-Legendre panels, and solves on curved bodies (patches from test/shape/lens_patches.jl).
 using DielectricBIE
 import DielectricBIE as BI
-using LinearAlgebra, SparseArrays
+using LinearAlgebra, SparseArrays, Random
 using SCTL
+using HCubature
 using Test
 
 include(joinpath(@__DIR__, "..", "shape", "lens_patches.jl"))
@@ -19,29 +20,28 @@ function dt_operator(itf, Cm::AbstractMatrix)
 end
 nodes_of(itf) = reduce(vcat, [p.points for p in itf.panels])
 # the lens (θ1 = θ2 = π/3, singular rim) with its corrections at tol = 1e-12: built once, used by the Gauss-identity
-# test and the solves (the most expensive object here: SCTLCurvedNearQuad's thin rows on the GCQ edge panels)
+# test, the source-column test and the solves (the most expensive object here: the GCQ edge panels' own-node rows)
 sctl_curved_lens_cache = Dict{Symbol, Any}()
 sctl_curved_lens() = get!(sctl_curved_lens_cache, :coarse) do
     g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
     m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
-    (g, m, near_corrections(SCTLCurvedNearQuad(tol = 1e-12), m.interface))
+    (g, m, near_corrections(GCQNearQuad(quad_tol = 1e-12), m.interface))
 end
 
-@testset "SCTLCurvedNearQuad: Dᵀ on the unit sphere, one panel per patch" begin
+@testset "GCQNearQuad (curved): Dᵀ on the unit sphere, one panel per patch" begin
     # θ1 = θ2 = π/2, one ε: the unit sphere; the equator graded, with GCQ edge panels. One panel per patch: the
-    # caps' top charts have their pole at the centre of a panel, where the tangents vanish (panel scales and closest
-    # points must not be taken there), and panels span ~90° of the sphere: an order-16 proxy element resolves that
-    # geometry only to ~1e-5, so x ± εn of the principal value fell on one side of it (Dᵀ1 off by 1/2) until
-    # proxies were split to resolve it. The GL×GL panels are now SCTL elements of their own order, their geometry
-    # SCTL's order-n_quad interpolant of the map, which on these ~90° panels bounds every row near them (the GCQ
-    # nodes next to a GL panel included): Dᵀ1 - 1/2 is 6.3e-2 at n_quad = 8, 9.8e-5 at 16, 4.8e-6 at 20, 7.0e-9
-    # with m = 2 at 16. Hence n_quad = 16 here (8 before SCTL's GL routine)
+    # caps' top charts have their pole at the centre of a panel, where the tangents vanish, and panels span ~90° of
+    # the sphere. The GCQ panels' rows are gcq_curved_row's on the exact maps (all finite). The GL×GL panels are SCTL
+    # elements of their own order, their geometry SCTL's order-n_quad interpolant of the map, which on these ~90°
+    # panels bounds every row near them (the GCQ nodes next to a GL panel included): Dᵀ1 - 1/2 is 6.3e-2 at
+    # n_quad = 8, 9.8e-5 at 16, 4.8e-6 at 20, 7.0e-9 with m = 2 at 16. Hence n_quad = 16 here (8 before SCTL's GL
+    # routine). The values below are unchanged, to 4 digits, from SCTLCurvedNearQuad's (SCTL proxies for the GCQ panels)
     g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 4.0, 4.0, 1.0))
     m = curved_gcq_mesh(g; nlev = 0, across = 1, m = 1, n_quad = 16, tol = 1e-6, grade = c -> abs(c.midpoint[3]) < 1e-12)
     itf = m.interface
     X = nodes_of(itf); z = [x[3] for x in X]
     isedge = reduce(vcat, [fill(p.kind == :edge, BI.num_points(p)) for p in itf.panels])
-    Cm = near_corrections(SCTLCurvedNearQuad(tol = 1e-10), itf)
+    Cm = near_corrections(GCQNearQuad(quad_tol = 1e-10), itf)
     @test all(isfinite, nonzeros(Cm))
     Dt = dt_operator(itf, Cm)
     # Dᵀ Y_l = Y_l / (2(2l + 1)) on the unit sphere (DielectricBIE's sign), limited by the GL panels' geometry
@@ -53,14 +53,14 @@ end
     @test maximum(abs, Dt(z) .- z ./ 6) < 1.5e-4                  # 7.6e-5
     y2 = (3 .* z .^ 2 .- 1) ./ 2
     @test maximum(abs, Dt(y2) .- y2 ./ 10) < 8e-5                 # 4.0e-5
-    # the GL×GL panels' columns are sctl_gl_corrections' (η, order and ε_rel concern the GCQ panels only)
+    # the GL×GL panels' columns are sctl_gl_corrections' at quad_tol (η_gcq and gcq_far concern the GCQ panels only)
     gl = findall(is_gl_panel, itf.panels)
     glc = falses(length(X)); foreach(r -> glc[r] .= true, panel_column_ranges(itf)[gl])
     @test !isempty(gl) && !all(glc)
     @test Cm[:, glc] == sctl_gl_corrections(itf, gl; tol = 1e-10)[:, glc]
 end
 
-@testset "SCTLCurvedNearQuad: Gauss identity on the lens (singular edge rules)" begin
+@testset "GCQNearQuad (curved): Gauss identity on the lens (singular edge rules)" begin
     # D1 = 1/2 on a closed surface, so wᵀ Dᵀ σ = ½ wᵀ σ for every σ; with σ ~ s^p₁ at the rim (s the distance to
     # it) this exercises the weighted GCQ edge panels (pw ≠ 0): strip, Gauss-Jacobi weights, s^pw interpolation
     g, m, Cm = sctl_curved_lens()
@@ -76,21 +76,77 @@ end
     @test gauss(Dt, s .^ (p1 + 1)) < 1e-5                           # 5.7e-6
 end
 
+@testset "GCQNearQuad (curved): the columns of some source panels" begin
+    # with `sources` (panel indices, in any order) only their columns are computed: the full call's, exactly for the
+    # GCQ edge panels (gcq_curved_row) and to rounding for the GL×GL panels (sctl_gl_corrections). SCTL gets the nodes
+    # of the GL panels in `sources` at its elements' coordinates, which can differ from the interface's in the last bit
+    # (on Julia 1.14, 12 to 24 of a panel's 64 nodes; none on 1.13), so the rows of the other GL panels' nodes depend on
+    # the source set: by 3.2e-16 on 1.14, 2.3e-14 of the largest GL entry. GCQNearQuad() has quad_tol = 1e-12, as the
+    # lens's corrections
+    g, m, Cm = sctl_curved_lens()
+    itf = m.interface
+    gcq = findall(!is_gl_panel, itf.panels); gl = findall(is_gl_panel, itf.panels)
+    srcs = [gcq[end], gl[1], gcq[1], gl[end], gcq[cld(length(gcq), 2)]]
+    Cs = near_corrections(GCQNearQuad(), itf, srcs)
+    Ck = BI._keep_source_columns(Cm, itf, srcs)
+    cols = panel_column_ranges(itf)
+    gc = reduce(vcat, cols[intersect(srcs, gcq)]); lc = reduce(vcat, cols[intersect(srcs, gl)])
+    @test Cs isa SparseMatrixCSC{Float64, Int} && nnz(Cs) > 0
+    @test Cs[:, gc] == Ck[:, gc]
+    @test maximum(abs, Cs - Ck) <= 1e-13 * maximum(abs, Ck[:, lc])
+end
+
+@testset "GCQNearQuad (curved): the near test" begin
+    # a GCQ panel P's columns hold exactly its own nodes and the nodes within η_gcq × L of P's nearest node, L its
+    # larger mean chord (gcq_far = :max) or the one across u (:direction); the rows do not depend on the near set
+    g, m, Cm = sctl_curved_lens()
+    itf = m.interface
+    k = findfirst(!is_gl_panel, itf.panels); P = itf.panels[k]
+    cols = panel_column_ranges(itf)[k]
+    X = nodes_of(itf)
+    own = falses(length(X)); own[cols] .= true
+    dist = [minimum(norm(collect(x .- y)) for y in P.points) for x in X]
+    su, sv = BI._mean_chords((u, v) -> BI.curved_lpoint(P, u, v))
+    @test su < sv                                     # (so that :direction measures with a shorter L than :max)
+    support(C) = sort(unique(rowvals(C[:, cols])))
+    @test support(Cm) == findall(own .| (dist .<= 2.0 * max(su, sv)))              # the default: η_gcq = 2, :max
+    Cd = near_corrections(GCQNearQuad(quad_tol = 1e-12, η_gcq = 1.0, gcq_far = :direction), itf, [k])
+    @test support(Cd) == findall(own .| (dist .<= 1.0 * su))
+    @test length(support(Cd)) < length(support(Cm)) && Cd[support(Cd), cols] == Cm[support(Cd), cols]
+end
+
+@testset "GCQNearQuad (curved): a GCQ rule with a node in its weighted edge segment" begin
+    # edge_gcq_rule(...; grid = :adaptive) puts the first node in [0, 2^-K] (6.6e-7 < 7.6e-6 here), where an own node,
+    # a target on the panel, has no rule: an ArgumentError naming the segment, raised before the threaded rows (not a
+    # TaskFailedException)
+    g = CurvedGeometry(lens_patches(1.0, π / 3, π / 3, 4.0, 4.0, 1.0))
+    r = edge_gcq_rule(edge_density_powers(4.0, 1.0; angle = 2π / 3); tol = 1e-6, grid = :adaptive)
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6, edge_rule = r)
+    P = m.interface.panels[findfirst(!is_gl_panel, m.interface.panels)]
+    @test P.ru.pw != 0 && P.ru.segs[1][1] == 0 && P.ru.x[1] < P.ru.segs[1][2]
+    thrown = try
+        near_corrections(GCQNearQuad(), m.interface); nothing
+    catch ex
+        ex
+    end
+    @test thrown isa ArgumentError && occursin("edge segment", thrown.msg)
+end
+
 # ∫ over the parameter triangle (c, p, q), Duffy-mapped so that a 1/r singularity at c cancels: f(z, s, dz) is the
 # integrand at z = c + s dz (dz = p - c + t (q - p)), which for s small should take r from the tangents at c (two
 # positions that close round to the same point)
 function duffy_tri(f, c, p, q)
     J = abs((p[1] - c[1]) * (q[2] - p[2]) - (p[2] - c[2]) * (q[1] - p[1]))
     g = st -> (dz = (p .- c) .+ st[2] .* (q .- p); st[1] * J * f(c .+ st[1] .* dz, st[1], dz))
-    return BI.HCubature.hcubature(g, [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11, atol = 1e-19, maxevals = 50_000)[1]
+    return hcubature(g, [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11, atol = 1e-19, maxevals = 50_000)[1]
 end
 # ∫ over the unit parameter square of f, singular at c when c is given
 square_int(f, c) = c === nothing ?
-    BI.HCubature.hcubature(uv -> f((uv[1], uv[2]), nothing, nothing), [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11,
-                           atol = 1e-19, maxevals = 250_000)[1] :
+    hcubature(uv -> f((uv[1], uv[2]), nothing, nothing), [0.0, 0.0], [1.0, 1.0]; rtol = 1e-11,
+              atol = 1e-19, maxevals = 250_000)[1] :
     sum(duffy_tri(f, c, (o[1], c[2]), o) + duffy_tri(f, c, o, (c[1], o[2])) for o in ((0, 0), (1, 0), (0, 1), (1, 1)))
 
-@testset "SCTLCurvedNearQuad: rows on thin panels at the edge (exact sphere integrals)" begin
+@testset "GCQNearQuad (curved): rows on thin panels at the edge (exact sphere integrals)" begin
     # On the unit sphere n_x·(x - y) = ±|x - y|²/2, so the Dᵀ row of a source panel P for σ = 1 is ±∫_P dS/(8π r),
     # computed independently (Duffy on P itself). Grading and a tight rule make P's elements next to the equator
     # very thin (u-widths down to 6e-15 against a v-length ~0.76) and put nodes within 6e-8 of it. Rows: the
@@ -107,7 +163,7 @@ square_int(f, c) = c === nothing ?
                      norm(collect(mid(ps[k], 0.5, 0.5) .- mid(P, 1.0, 0.5))) : Inf, eachindex(ps))  # neighbour
     sub = [kP, kQ, kG]
     itf = DielectricInterface(ps[sub], m.interface.eps_in[sub], m.interface.eps_out[sub])
-    C = Matrix(near_corrections(SCTLCurvedNearQuad(tol = 1e-12), itf))
+    C = Matrix(near_corrections(GCQNearQuad(quad_tol = 1e-12), itf))
     offs = cumsum([0; [BI.num_points(p) for p in itf.panels]])
     X, N = BI._interface_targets_normals(itf)
     worst = zeros(2, 2)               # sources (the GCQ panel P, the GL panel G) × targets (same surface, across)
@@ -129,13 +185,16 @@ square_int(f, c) = c === nothing ?
             worst[s, k] = max(worst[s, k], abs(sum(A[r, :]) - ref) / abs(ref))
         end
     end
-    @test worst[1, 1] < 1e-9                                          # 2.3e-12 measured
+    # P's own rows and G's nodes: gcq_curved_row, 4.1e-13 measured (2.3e-12 with SCTLCurvedNearQuad's proxies and
+    # thin rows, under a bound of 1e-9; now ~10× the measured value)
+    @test worst[1, 1] < 4e-12
     # across the edge the target's offset from P is formed from two patch maps (two anchors, ~2e-16 each) that meet
     # at the equator only to rounding: for Q's nodes 6e-8 from it that limits the geometry, and so the row (and
     # the identity behind the reference; 1.5e-9 at nlev = 6, n_quad = 12, Q's nodes 1.6e-8 from it)
-    @test worst[1, 2] < 1e-8                                          # 7.5e-11 measured
+    @test worst[1, 2] < 1e-8                                          # 7.5e-11 measured (as SCTLCurvedNearQuad's)
     # the GL panel G is an SCTL element of order 8, its geometry the order-8 interpolant of the map (before SCTL's
-    # GL routine, with DielectricBIE's split proxies, at most 9.2e-12 and 7.5e-11, as for P)
+    # GL routine, with DielectricBIE's split proxies, at most 9.2e-12 and 7.5e-11, as for P). These are G's columns,
+    # sctl_gl_corrections' under either quadrature: the worst, 4.6e-6, is P's node next to G (a = n_u)
     @test worst[2, 1] < 1e-5                                          # 4.6e-6 measured
     @test worst[2, 2] < 5e-8                                          # 2.0e-8 measured
 end
@@ -146,7 +205,7 @@ function u_ind(itf, σ, T)
     return [sum(w[j] * σ[j] / (4π * norm(collect(t .- X[j]))) for j in eachindex(X)) for t in T]
 end
 curved_operator(m; tol = 1e-10) =
-    dielectric_operator(m.interface; far = FMM3DFarField(1e-12), near = SCTLCurvedNearQuad(; tol))
+    dielectric_operator(m.interface; far = FMM3DFarField(1e-12), near = GCQNearQuad(quad_tol = tol))
 function solve_point(A, m, src)
     itf = m.interface
     b = BI.rhs_dielectric_box3d(itf, PointSource(src, 1.0), 1.0)
@@ -167,6 +226,97 @@ function sphere_series(eps_in, eps_out, a, d, x; lmax = 80)
         s += (eps_out - eps_in) * l / (eps_in * l + eps_out * (l + 1)) * a^(2l + 1) / (d^(l + 1) * r^(l + 1)) * Pl
     end
     return s / (4π * eps_out)
+end
+
+@testset "GCQPotential (curved): the single layer on and inside the split sphere" begin
+    # S[z] = z/3 on and inside the unit sphere (S Y_l = r^l Y_l / (2l + 1)), and σ = z vanishes on the disk z = 0. The
+    # GCQ edge panels of both caps and of the disk meet at the equator; their rows are gcq_curved_row's (a target on the
+    # panel: the Duffy region at its parameters). The GL×GL panels are SCTL's order-8 elements, their geometry the
+    # order-8 interpolant of the map on panels spanning ~45°: they set the floor of the values against z/3
+    g = CurvedGeometry(lens_patches(1.0, π / 2, π / 2, 2.0, 8.0, 1.0))
+    m = curved_gcq_mesh(g; nlev = 0, n_quad = 8, tol = 1e-6)
+    itf = m.interface; ps = itf.panels
+    X = nodes_of(itf); σ = [x[3] for x in X]
+    gcq = findall(!is_gl_panel, ps)
+    oncap(k) = any(y -> y[3] != 0, ps[k].points)            # a panel of the caps; the disk's nodes have z = 0
+    pt(P, u, v) = P.anchor .+ BI.curved_lpoint(P, u, v)
+    # node targets (all 3840 take ~37 s at 8 threads): every node of an upper-cap GCQ panel, of a disk GCQ panel and of
+    # a cap GL panel, and every 5th node
+    cols = panel_column_ranges(itf)
+    full = [gcq[2], gcq[23], findfirst(k -> is_gl_panel(ps[k]) && oncap(k), eachindex(ps))]
+    @test all(y -> y[3] > 0, ps[gcq[2]].points) && !oncap(gcq[23])
+    inX = sort(unique([reduce(vcat, [collect(cols[k]) for k in full]); 1:5:length(X)]))
+    XN = X[inX]
+    rng = MersenneTwister(6)
+    # 20 surface points that are not nodes (finite and accurate, through the Duffy region at their parameters): random
+    # (u, v) on random GCQ panels, u log-uniform for half of them, all past the weighted edge segment [0, 2^-K] (where
+    # a target on the panel throws: below)
+    s1 = ps[gcq[1]].ru.segs[1][2]
+    @test all(k -> ps[k].ru.segs[1] == (0.0, s1) && ps[k].ru.pw != 0 && ps[k].ru.x[1] > s1, gcq)
+    uv = [(i <= 10 ? 2s1 + (1 - 2s1) * rand(rng) : 2s1 * (1 / 2s1)^rand(rng), rand(rng)) for i in 1:20]
+    sk = rand(rng, gcq, 20)
+    S = [pt(ps[k], c...) for (k, c) in zip(sk, uv)]
+    nS = [BI.curved_frame(ps[k], c...)[3] for (k, c) in zip(sk, uv)]
+    # points on boundaries shared by two GCQ panels (v = 0, 1), by a GCQ and a GL panel (u = 1), and corners where two
+    # GCQ panels meet one or two GL panels (u = 1, v = 1): on every panel they lie on, upper cap, lower cap and disk
+    bk = gcq[[1, 10, 20]]
+    bc = ((0.37, 0.0), (0.61, 1.0), (1.0, 0.43), (1.0, 1.0))
+    B = [pt(ps[k], c...) for k in bk for c in bc]
+    nB = [BI.curved_frame(ps[k], c...)[3] for k in bk for c in bc]
+    onp(x) = [k for k in eachindex(ps) if BI._curved_closest(ps[k], x .- ps[k].anchor)[3] <= 1e-15]
+    @test all(x -> length(onp(x)) >= 2, B) && all(x -> any(is_gl_panel, ps[onp(x)]), B[[3:4:end; 4:4:end]])
+    gg = [i for (i, c) in enumerate(Iterators.product(bc, bk)) if c[1][1] < 1]       # the GCQ-GCQ ones
+    # the single layer is continuous and its normal derivative jumps by -σ: u(x) = (u(x + δn) + u(x - δn) + δσ(x))/2
+    # + O(δ²) checks the rows of targets on a panel (the Duffy region) against those of targets off it (the quadtree),
+    # below the GL floor (at points away from the GL panels: not at u = 1). δσ(x) takes σ = z, not its interpolant on
+    # the panel, which below the first u-node (4e-5) extrapolates with u^pw: that difference gives δ(σ_h - z)/2,
+    # linear in δ (3.1e-11 at δ = 1e-7 for u = 2.6e-7, 3.5e-14 at 1e-10, 8e-16 at 1e-12). Not at nodes: FMM3D's term
+    # of a node δ from the target is off by ~3e-18 wσ / δ² (1.1 at δ = 1e-10, next to a node with wσ = 3.4e-3)
+    δ = 1e-12
+    Y = [S; B[gg]]; nY = [nS; nB[gg]]
+    Yp = [y .+ δ .* n for (y, n) in zip(Y, nY)]; Ym = [y .- δ .* n for (y, n) in zip(Y, nY)]
+    I9 = fib(0.9, 10); I99 = fib(0.99, 10)
+    T = [XN; S; B; I9; I99; Yp; Ym]
+    t0 = time()
+    u = potential_operator(GCQPotential(), itf, reduce(hcat, collect.(T))) * σ
+    @info "GCQPotential (curved): $(length(T)) targets in $(round(time() - t0, digits = 1)) s"
+    @test all(isfinite, u)
+    part(r) = (o = 0; for A in (XN, S, B, I9, I99, Yp, Ym)
+                          r === A && return o .+ eachindex(A); o += length(A)
+                      end)
+    e = abs.(u .- [x[3] / 3 for x in T])
+    err(A) = maximum(e[part(A)])
+    # against z/3 (|u| ≤ 1/3), set by the GL panels' geometry: largest next to the caps' GL panels (u → 1 on the GCQ
+    # panels), ≤ 3e-15 on the disk (z = 0, by symmetry). The GCQ nodes at the first u-node (4e-5 from the equator) are
+    # farthest from them
+    first_u = Set(cols[k][b] for k in gcq if oncap(k) for b in 1:length(ps[k].rv.x))
+    @test maximum(e[findall(in(first_u), inX)]) < 1e-9          # 4.1e-10 measured
+    @test err(XN) < 2.5e-6                            # nodes: 1.17e-6 (a GL node)
+    @test err(S) < 1.5e-7                             # non-node points: 6.6e-8
+    @test err(B) < 2e-6                               # shared boundaries: 9.5e-7 (u = 1, on a GL panel)
+    @test err(I9) < 2.5e-7                            # r = 0.9: 1.14e-7
+    @test err(I99) < 1.2e-6                           # r = 0.99: 6.0e-7
+    uY = u[[part(S); part(B)[gg]]]
+    cons = abs.(uY .- (u[part(Yp)] .+ u[part(Ym)] .+ δ .* [y[3] for y in Y]) ./ 2)
+    @test maximum(cons[1:20]) < 1.5e-14               # non-node points: 1.35e-15 measured
+    @test maximum(cons[21:end]) < 2e-14               # GCQ-GCQ boundaries: 1.7e-15
+    # a target within 1e-13 of a GCQ panel's diameter of one of its nodes is moved onto the node, as onto GL nodes: the
+    # far field and the node rule skip the same pair. The value on the node is the one above, but for the far field's
+    # rounding on a different set of targets
+    y = ps[gcq[2]].points[20]; ny = ps[gcq[2]].normals[20]
+    u2 = potential_operator(GCQPotential(), itf, [collect(y) collect(y .+ 1e-14 .* ny)]) * σ
+    @test u2[2] == u2[1] && abs(u2[1] - u[findfirst(==(y), XN)]) < 3e-16      # 2.5e-17 (1 ulp) measured
+
+    # an on-surface target in a GCQ panel's weighted edge segment (u < 2^-K; u = 0 is the equator, on three GCQ panels):
+    # an ArgumentError naming the segment, raised before the threaded rows (not a TaskFailedException)
+    for c in ((s1 / 2, 0.3), (0.0, 0.6))
+        thrown = try
+            potential_operator(GCQPotential(), itf, reshape(collect(pt(ps[gcq[1]], c...)), 3, 1)); nothing
+        catch ex
+            ex
+        end
+        @test thrown isa ArgumentError && occursin("edge segment", thrown.msg)
+    end
 end
 
 @testset "curved solves: sphere, lens, split sphere" begin

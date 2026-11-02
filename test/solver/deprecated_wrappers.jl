@@ -1,6 +1,6 @@
 # The old entry points kept for scripts (src/deprecated.jl): thin wrappers over dielectric_operator,
-# sctl_gl_corrections and SCTLPotential. The in-house upsampling, adaptive-quadtree and HCubature near code they
-# used to call is gone.
+# sctl_gl_corrections, SCTLPotential and GCQNearQuad. The in-house upsampling, adaptive-quadtree and HCubature near
+# code they used to call is gone, and so is the SCTL path of SCTLCurvedNearQuad's GCQ panels.
 using DielectricBIE
 import DielectricBIE as BI
 using LinearAlgebra, Random
@@ -41,6 +41,12 @@ using Test
           (potential_operator(SCTLPotential(tol = 1e-10), itf, [0.1; 0.2; 0.9;;]) * x)[1]
     @test laplace3d_pottrg_near(itf, (0.1, 0.2, 0.9), x, 1e-10; range_factor = 2.0) ≈ (P * x)[1]
     @test laplace3d_pottrg_fmm3d_corrected_hcubature(itf, T, 1e-12, 1e-10, 5.0; correct_edges = false) * x ≈ P * x
+
+    # the curved near quadrature: GCQNearQuad(quad_tol = tol) itself (===), its other keywords ignored (@test_deprecated
+    # checks the warning under --depwarn=yes, and only runs the call otherwise)
+    @test_deprecated r"GCQNearQuad" SCTLCurvedNearQuad(tol = 1e-10)
+    @test SCTLCurvedNearQuad(tol = 1e-8, order = 16, η = 3.0, ε_rel = 1e-6) === GCQNearQuad(quad_tol = 1e-8)
+    @test SCTLCurvedNearQuad() === GCQNearQuad(quad_tol = 1e-10)               # its tol's default
 
     # the in-house near code and its entry points without a wrapper are gone
     for name in (:UpsampledNearQuad, :HCubaturePotential, :SCTLProxyNearQuad, :build_neighbor_list,
