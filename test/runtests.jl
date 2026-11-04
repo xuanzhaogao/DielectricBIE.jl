@@ -40,6 +40,7 @@ using Test
     include("core/curved_panels.jl")
     include("core/gl_panels.jl")
     include("shape/curved_geometry.jl")
+    include("shape/polyhedron_mesh.jl")
     include("shape/volume_field.jl")
     include("shape/volume_field_window.jl")
 
