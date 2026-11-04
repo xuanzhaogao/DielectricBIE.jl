@@ -56,3 +56,45 @@ end
     X = reduce(vcat, [p.points for p in itf.panels]); w = DB.all_weights(itf)
     @test u[3] ≈ sum(w[j] * σ[j] / (4π * norm(collect(X[j]) .- [0.0, 0.0, 20.0])) for j in eachindex(w)) rtol = 1e-13
 end
+
+# ∫ dA / (4π |x0 - y|) over the convex polygon c (vertices in order) for x0 in its plane (n its normal): signed triangles
+# (x0, a, b), each h (asinh(t_b / h) - asinh(t_a / h)), h the distance of x0 to the line ab, t along it from the foot
+function polygon_slp(c, x0, n)
+    s = 0.0
+    for k in eachindex(c)
+        a = c[k]; b = c[mod1(k + 1, length(c))]
+        e = (b - a) / norm(b - a)
+        f = a + dot(x0 - a, e) * e
+        h = norm(x0 - f)
+        h == 0 && continue
+        s += sign(dot(cross(a - x0, b - x0), n)) * h * (asinh(dot(b - f, e) / h) - asinh(dot(a - f, e) / h))
+    end
+    return abs(s) / (4π)
+end
+
+@testset "single layer on the surface" begin
+    # a GL × GL panel, σ = 1: against the closed form at its own nodes
+    F, _ = orient_outward(OCT_V, OCT_F)
+    patches, quads = polyhedron_patches(OCT_V, F; eps_in = 2.0)
+    itf, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 1, n_quad = 5, tol = 1e-6, corner = :gcq)
+    P = first(P for P in itf.panels if P.kind == :gl)
+    one = DB.DielectricInterface{CurvedPanel, Float64}([P], [2.0], [1.0])
+    u = planar_slp_nodes(one, ones(DB.num_points(P)))
+    c = [collect(DB.curved_lpoint(P, s, t)) for (s, t) in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))]
+    ue = [polygon_slp(c, collect(y .- P.anchor), collect(P.normals[1])) for y in P.points]
+    @test maximum(abs.(u .- ue) ./ ue) < 1e-12
+    # GCQ edge and corner panels (PEC rules of a cube, GCQ in one or both directions) as CurvedPanels of the same map
+    # and rules, a random density: against potential_tensor's product integration on the TensorPanels
+    rule = DB.edge_gcq_rule(DB.edge_density_powers(Inf, 1.0; gmax = 2.0); tol = 1e-6, qmax = 12.0)
+    cube = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, Inf, 1.0; nlev = 1, n_quad = 6, rule)
+    for kind in (:edge, :corner)
+        T = first(P for P in cube.panels if P.kind == kind)
+        C = CurvedPanel(T.anchor, (u, v) -> T.o .+ (u * T.Lu) .* T.eu .+ (v * T.Lv) .* T.ev, T.ru, T.rv; kind,
+                        dmap = (u, v) -> (T.Lu .* T.eu, T.Lv .* T.ev))
+        @test maximum(norm(collect(x .- y)) for (x, y) in zip(C.points, T.points)) < 1e-14
+        σ = randn(DB.num_points(T))
+        ut = DB.potential_tensor(DB.DielectricInterface{typeof(T), Float64}([T], [Inf], [1.0]), σ, T.points; quad_tol = 1e-16)
+        uc = planar_slp_nodes(DB.DielectricInterface{CurvedPanel, Float64}([C], [Inf], [1.0]), σ)
+        @test maximum(abs.(uc .- ut)) < 1e-12 * maximum(abs.(ut))
+    end
+end

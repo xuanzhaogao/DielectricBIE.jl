@@ -502,8 +502,19 @@ product integration, so it also handles GCQ in both directions.
 panels. Its node sum is exact (direct summation by default): FMM3D's ~1e-8 relative error on
 terms ~wσ/δ would spoil targets at distance δ ≪ the node spacing.
 
+**On the surface.** `planar_slp_nodes(itf, σ)` is `u = Sσ` at the interface's own nodes. It is
+the node sum without the coincident node plus the near correction `planar_slp_corrections(itf) * σ`:
+```julia
+u = planar_slp_nodes(itf, σ)
+E = dot(BI.all_weights(itf) .* σ, u)                            # ∫σ Sσ, e.g. C = Q² / (4π E) (Thomson)
+```
+A node's own panel is integrated by Duffy's rule on the node's own leaf (`duffy = true`, the
+default) and by the leaf tree elsewhere.
+
 On the small stellated dodecahedron (ε = 2, all 90 edges at 116.57°/243.43°), GCQ × GCQ corners
-take ∫σ to a relative error of 2e-11 at N = 417k. GL × GL corners stall near 1e-5.
+take ∫σ to a relative error of 2e-11 at N = 417k. GL × GL corners stall near 1e-5. As a perfect
+conductor, its capacitance from the energy Q²/(4πE) self-converges to about 5e-13. The potential
+at its centre gives about 5e-11.
 
 ## Potentials off the surface
 

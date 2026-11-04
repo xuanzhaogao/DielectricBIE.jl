@@ -82,7 +82,7 @@ export NearQuadrature, near_corrections, GCQNearQuad, SCTLNearQuad, CorrectionMa
 export default_near_quadrature, default_far_field, DielectricOperator, dielectric_operator
 export BlockCorrection, panel_column_ranges
 export SCTLNearCorrection, sctl_near_list, dt_node_rule_block, sctl_gl_corrections, sctl_gl_potential_corrections
-export PlanarProductNearQuad, planar_slp_potential
+export PlanarProductNearQuad, planar_slp_corrections, planar_slp_nodes, planar_slp_potential
 export PotentialEvaluator, SCTLPotential, GCQPotential, potential_operator
 export four_index_matrix
 
