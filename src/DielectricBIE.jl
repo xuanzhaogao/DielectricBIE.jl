@@ -126,6 +126,7 @@ include("utils/edge_gcq.jl")       # needed by the tensor panels (EdgeGCQRule)
 include("core/tensor_panels.jl")
 include("core/curved_panels.jl")
 include("core/gl_panels.jl")       # GL×GL panels: predicate, aspect ratio, splitting to GL_MAX_ASPECT
+include("utils/threads.jl")          # _tforeach: dynamic self-scheduling on the threads
 include("core/block_corrections.jl") # near corrections as per-panel dense blocks
 include("core/sources.jl")
 include("core/source_geometry.jl")

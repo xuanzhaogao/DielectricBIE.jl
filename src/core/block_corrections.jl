@@ -41,8 +41,10 @@ function panel_column_ranges(interface::DielectricInterface)
     return [offs[k]+1:offs[k+1] for k in eachindex(interface.panels)]
 end
 
+# (convert, not the SparseMatrixCSC constructor: that copies a SparseMatrixCSC, 50 GB for the Dᵀ correction of a cube
+# with N = 254k)
 BlockCorrection(C::AbstractSparseMatrix, interface::DielectricInterface; chunk::Integer = 256) =
-    BlockCorrection(SparseMatrixCSC(C), panel_column_ranges(interface); chunk)
+    BlockCorrection(convert(SparseMatrixCSC, C), panel_column_ranges(interface); chunk)
 
 function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; chunk::Integer = 256) where T
     m, n = size(C)
@@ -52,7 +54,8 @@ function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; ch
     rows = Vector{Vector{Int}}(undef, np)
     blocks = Vector{Matrix{T}}(undef, np)
     rv = rowvals(C); nzv = nonzeros(C)
-    Threads.@threads :dynamic for k in 1:np
+    # the panels one at a time, the largest first (their sizes differ by orders of magnitude)
+    _tforeach(sortperm([C.colptr[last(cs) + 1] - C.colptr[first(cs)] for cs in cols]; rev = true)) do k
         # fast path: every column of the panel has the same rows (as the builders produce), copied column by column
         c1 = first(cols[k], 1)
         r1 = isempty(c1) ? Int[] : rv[nzrange(C, c1[1])]
@@ -63,7 +66,7 @@ function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; ch
                 copyto!(view(B, :, jc), view(nzv, nzrange(C, c)))
             end
             rows[k] = r1; blocks[k] = B
-            continue
+            return
         end
         rs = Int[]
         for c in cols[k], idx in nzrange(C, c)
@@ -76,6 +79,19 @@ function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; ch
         end
         rows[k] = rs; blocks[k] = B
     end
+    return _block_correction(m, n, rows, cols, blocks; chunk)
+end
+
+# A correction that is already blocks (the builders that assemble per-panel blocks directly, as PlanarProductNearQuad
+# does for dielectric_operator) is kept as it is.
+BlockCorrection(B::BlockCorrection, ::DielectricInterface; chunk::Integer = 256) = B
+
+# A BlockCorrection from its blocks: block k (rows[k] × cols[k]) of every panel, rows[k] strictly increasing; the
+# panels without rows dropped, the work units (`chunk` rows of a block) and the scatter by target row set up
+function _block_correction(m::Int, n::Int, rows::Vector{Vector{Int}}, cols::Vector{UnitRange{Int}},
+                           blocks::Vector{Matrix{T}}; chunk::Integer = 256) where T
+    np = length(cols)
+    all(rs -> issorted(rs; lt = <=), rows) || throw(ArgumentError("_block_correction: the rows of a block must increase"))
     keep = findall(k -> !isempty(rows[k]), 1:np)
     rows = rows[keep]; blocks = blocks[keep]; bcols = cols[keep]
     off = cumsum([0; length.(rows)])
@@ -83,16 +99,26 @@ function BlockCorrection(C::SparseMatrixCSC{T}, cols::Vector{UnitRange{Int}}; ch
     for (b, rs) in enumerate(rows), lo in 1:chunk:length(rs)
         push!(chk_blk, b); push!(chk_lo, lo); push!(chk_hi, min(lo + chunk - 1, length(rs)))
     end
-    # the buffer rows of each target row, in CSR order
+    # the buffer rows of each target row, in CSR order (block by block). The target rows are split among the threads,
+    # each range found in every block's rows (sorted) by bisection, so that no two threads write one entry
+    nr = clamp(4 * Threads.nthreads(), 1, max(m, 1))
+    bnd = [round(Int, m * i / nr) for i in 0:nr]
     cnt = zeros(Int, m + 1)
-    for rs in rows, r in rs
-        cnt[r + 1] += 1
+    _tforeach(nr) do i
+        lo, hi = bnd[i] + 1, bnd[i + 1]
+        for rs in rows, l in searchsortedfirst(rs, lo):searchsortedlast(rs, hi)
+            cnt[rs[l] + 1] += 1
+        end
     end
     ptr = cumsum(cnt) .+ 1
     src = Vector{Int}(undef, ptr[end] - 1)
     fill_at = ptr[1:m]
-    for (b, rs) in enumerate(rows), (l, r) in enumerate(rs)
-        src[fill_at[r]] = off[b] + l; fill_at[r] += 1
+    _tforeach(nr) do i
+        lo, hi = bnd[i] + 1, bnd[i + 1]
+        for (b, rs) in enumerate(rows), l in searchsortedfirst(rs, lo):searchsortedlast(rs, hi)
+            r = rs[l]
+            src[fill_at[r]] = off[b] + l; fill_at[r] += 1
+        end
     end
     return BlockCorrection{T}(m, n, rows, bcols, blocks, chk_blk, chk_lo, chk_hi, off, ptr, src, Matrix{T}(undef, 0, 0))
 end

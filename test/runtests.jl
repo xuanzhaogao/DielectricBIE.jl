@@ -31,12 +31,14 @@ using Test
     include("utils/gcq_fine_interpolation.jl")        # the fine-grid interpolant against the global one; ninterp
     include("utils/gcq_family_accuracy.jl")           # component-resolved training, density_tol rank, certificate
     include("utils/fftw_threads.jl")
+    include("utils/threads.jl")                       # _tforeach
     # visualization helpers
     include("visualization/extensions.jl")
 
     # core
     include("core/panels.jl")
     include("core/block_corrections.jl")
+    include("solver/far_close_direct.jl")             # _close_direct! (direct far field, FMM close nodes)
     include("core/sources.jl")
     include("core/source_geometry.jl")
     include("core/tensor_panels.jl")
@@ -48,6 +50,7 @@ using Test
     include("solver/planar_self_endpoint_gcq.jl")         # self rows: Duffy + the walk, either endpoint rule
     include("solver/planar_block_self.jl")                # default self rows: Duffy over the 3 x 3 fine cells
     include("solver/planar_global_self.jl")               # experimental: self rows from the global interpolant
+    include("solver/planar_near_assembly.jl")             # the assembly: deterministic on the threads, shared rows
     include("shape/volume_field.jl")
     include("shape/volume_field_window.jl")
 
