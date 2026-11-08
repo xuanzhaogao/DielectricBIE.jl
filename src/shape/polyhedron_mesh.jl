@@ -104,21 +104,32 @@ end
 
 """
     polyhedron_mesh(g, quads; nlev = 4, n_quad = 10, n_corner = n_quad, tol = 1e-10, gmax = 20.0, edge = :gcq,
-                    corner = :gl)
+                    corner = :gl, ninterp = 14, grid_tol = :auto, density_tol = nothing,
+                    floor = 0.0)
 
 Mesh the patches of `polyhedron_patches` (the file header). `edge = :gl` puts Gauss-Legendre on the edge panels
 too (an h-graded reference, with `nlev` levels toward the vertices only: use it with care). `corner = :gcq` gives
-the corner panels the GCQ rule in both directions (`n_corner` is then unused; needs `PlanarProductNearQuad`). Returns
+the corner panels the GCQ rule in both directions (`n_corner` is then unused; needs `PlanarProductNearQuad`).
+`ninterp` is the GCQ rules' interpolation points per fine segment (`edge_gcq_rule`; the nodes are unchanged);
+`grid_tol` (default `:auto`: `tol`, the fine grid resolves the family to `tol`, study 73; `density_tol / 10` with
+`density_tol`; `nothing` the bare dyadic grid, `edge_gcq_rule`) and `density_tol` set the component-resolved training
+and the certified rank, and `floor` keeps the GCQ nodes
+at s ≥ floor (`edge_gcq_rule`; these change the rules' nodes, hence the unknowns). Returns
 (interface, rules, powers): the `DielectricInterface` of `CurvedPanel`s, the GCQ rule of every edge curve and
 the density powers of every curve (rules are shared between curves of equal powers).
 """
 function polyhedron_mesh(g::CurvedGeometry, quads; nlev::Int = 4, n_quad::Int = 10, n_corner::Int = n_quad,
-                         tol::Real = 1e-10, gmax::Real = 20.0, edge::Symbol = :gcq, corner::Symbol = :gl)
+                         tol::Real = 1e-10, gmax::Real = 20.0, edge::Symbol = :gcq, corner::Symbol = :gl,
+                         ninterp::Int = 14, grid_tol::Union{Nothing, Real, Symbol} = :auto,
+                         density_tol::Union{Nothing, Real} = nothing, floor::Real = 0.0)
     corner in (:gcq, :gl) || throw(ArgumentError("corner must be :gcq or :gl"))
     powers = [c.smooth ? Float64[] : _junction_density_powers(c.angles, c.eps; gmax) for c in g.curves]
     rgl = gl_tensor_rule(n_quad); rcorner = gl_tensor_rule(n_corner)
     cache = Dict{Vector{Float64}, TensorRule1D}()
-    rule(i) = edge == :gl ? rgl : get!(() -> gcq_tensor_rule(edge_gcq_rule(powers[i]; tol)), cache, round.(powers[i], digits = 9))
+    grid_tol === :auto && (grid_tol = density_tol === nothing ? Float64(tol) : nothing)
+    grid_tol isa Symbol && throw(ArgumentError("grid_tol must be a positive number, nothing or :auto, got :$grid_tol"))
+    rule(i) = edge == :gl ? rgl : get!(() -> gcq_tensor_rule(edge_gcq_rule(powers[i]; tol, ninterp, grid_tol, density_tol, floor)),
+                                       cache, round.(powers[i], digits = 9))
     panels = CurvedPanel[]; ein = Float64[]; eout = Float64[]
     for (k, P) in enumerate(g.patches)
         q = quads[k]

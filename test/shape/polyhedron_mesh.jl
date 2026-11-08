@@ -94,7 +94,116 @@ end
         @test maximum(norm(collect(x .- y)) for (x, y) in zip(C.points, T.points)) < 1e-14
         σ = randn(DB.num_points(T))
         ut = DB.potential_tensor(DB.DielectricInterface{typeof(T), Float64}([T], [Inf], [1.0]), σ, T.points; quad_tol = 1e-16)
-        uc = planar_slp_nodes(DB.DielectricInterface{CurvedPanel, Float64}([C], [Inf], [1.0]), σ)
+        # (the moment endpoint rule and own-cell self rows: exact for every density of the span; the defaults, scaled
+        # GCQ endpoints and 3 × 3 self rows, to the rule's tolerance for resolved densities: planar_block_self.jl)
+        uc = planar_slp_nodes(DB.DielectricInterface{CurvedPanel, Float64}([C], [Inf], [1.0]), σ;
+                              q = PlanarProductNearQuad(endpoint_rule = :moment, self = :cell))
         @test maximum(abs.(uc .- ut)) < 1e-12 * maximum(abs.(ut))
     end
+    # σ = 1 (in the GCQ span to the rule's tol) on GCQ × GL and GCQ × GCQ panels: the closed form at their own nodes
+    itf12, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 1, n_quad = 6, tol = 1e-12, corner = :gcq)
+    for kind in (:edge, :corner)
+        P = first(P for P in itf12.panels if P.kind == kind)
+        u = planar_slp_nodes(DB.DielectricInterface{CurvedPanel, Float64}([P], [2.0], [1.0]), ones(DB.num_points(P)))
+        c = [collect(DB.curved_lpoint(P, s, t)) for (s, t) in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))]
+        ue = [polygon_slp(c, collect(y), collect(P.normals[1])) for y in P.lpoints]
+        @test maximum(abs.(u .- ue) ./ ue) < 1e-11
+    end
+end
+
+# The exact panel geometry of polyhedron_mesh in BigFloat: the point (u, v) of panel K (the bilinear quadrilaterals'
+# Float64 data taken as exact, the panels in polyhedron_mesh's order)
+function exact_point(quads, nlev, K, u, v)
+    rects = polyhedron_quad_rects(nlev)
+    k, r = divrem(K - 1, length(rects)) .+ 1
+    q = quads[k]; U0, U1, V0, V1, s = big.(rects[r])
+    U, V = s == 3 ? (U0 + big(v) * (U1 - U0), big(u) * V1) : s == 1 ? (big(u) * U1, V0 + big(v) * (V1 - V0)) :
+                    (U0 + big(u) * (U1 - U0), V0 + big(v) * (V1 - V0))
+    return big.(collect(q.c)) .+ U .* big.(collect(q.A)) .+ V .* big.(collect(q.B)) .+ (U * V) .* big.(collect(q.C))
+end
+
+# ∫_P (x - y) / |x - y|³ dA(y) over the planar polygon c (vertices in order, BigFloat): n Ω + Σ_e ν_e ln((R_a + R_b + L) /
+# (R_a + R_b - L)), Ω = ∫ n·(x - y) / |x - y|³ dA the signed solid angle (fan of triangles, Van Oosterom-Strackee),
+# ν_e the in-plane outward normal of side e (the in-plane part by the divergence theorem in the plane)
+function polygon_field(c, x)
+    n = cross(c[2] - c[1], c[3] - c[1]); n = n / norm(n)
+    Ω = sum(2 * atan(dot(a, cross(b, d)), norm(a) * norm(b) * norm(d) + dot(a, b) * norm(d) + dot(a, d) * norm(b) +
+                                          dot(b, d) * norm(a))
+            for (a, b, d) in ((c[1] - x, c[k] - x, c[k + 1] - x) for k in 2:length(c) - 1))
+    F = -Ω .* n
+    for k in eachindex(c)
+        a = c[k]; b = c[mod1(k + 1, length(c))]
+        L = norm(b - a); Ra = norm(a - x); Rb = norm(b - x)
+        F = F .+ (cross(b - a, n) / L) .* log((Ra + Rb + L) / (Ra + Rb - L))
+    end
+    return F
+end
+
+@testset "Dᵀ rows at nodes beside an edge" begin
+    setprecision(BigFloat, 256) do
+        # the field of a polygon against its far-field limit (the closed form's signs)
+        c = [big.([0.0, 0.0, 0.0]), big.([1.0, 0.0, 0.0]), big.([1.0, 1.0, 0.0]), big.([0.0, 1.0, 0.0])]
+        x = big.([0.5, 0.5, 1000.0]); F = polygon_field(c, x)
+        @test Float64(norm(F .- (x .- big.([0.5, 0.5, 0.0])) ./ norm(x .- big.([0.5, 0.5, 0.0]))^3)) < 1e-5 * Float64(norm(F))
+        # two faces of a perfect-conductor octahedron sharing an edge, as given and turned and moved away from the
+        # origin (generic coordinates): σ = 1 (in the GCQ span, p1 < 0), the Dᵀ row sums at the nodes beside the edge on
+        # the other face (down to 2.6e-7 of the panel from it) against the closed form. Differences of Float64 positions
+        # left 1.2e-11 and 2.7e-11; the check itself is good to ~2e-12 (the node rule, up to ~2e4, added back to C). Both
+        # endpoint rules: σ = 1 is in the GCQ family, which the scaled GCQ rule of endpoint_rule = :gcq integrates to tol
+        F0, _ = orient_outward(OCT_V, OCT_F)
+        ta = 1; tb = findfirst(t -> t != ta && length(intersect(F0[:, t], F0[:, ta])) == 2, axes(F0, 2))
+        ax = normalize([0.3, -0.81, 0.47]); K = [0 -ax[3] ax[2]; ax[3] 0 -ax[1]; -ax[2] ax[1] 0]
+        rot = I + sin(0.7310281) * K + (1 - cos(0.7310281)) * K^2
+        for V in (OCT_V, rot * OCT_V .+ [37.3, -51.9, 93.1]), rule in (:moment, :gcq)
+            patches, quads = polyhedron_patches(V, F0; eps_in = Inf)
+            nlev = 1; npq = length(polyhedron_quad_rects(nlev))
+            itf, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev, n_quad = 6, tol = 1e-14, corner = :gcq)
+            sel = [K for t in (ta, tb) for k in 3(t - 1) + 1:3t for K in (k - 1) * npq + 1:k * npq]
+            sub = DB.DielectricInterface{CurvedPanel, Float64}(itf.panels[sel], itf.eps_in[sel], itf.eps_out[sel])
+            C = DB.near_corrections(PlanarProductNearQuad(endpoint_rule = rule), sub)
+            X, N = DB._interface_targets_normals(sub); X = Matrix{Float64}(X); N = Matrix{Float64}(N)
+            offs = cumsum([0; DB.num_points.(sub.panels)])
+            owner(t) = searchsortedlast(offs, t - 1)
+            worst = 0.0; count = 0
+            for (k, P) in enumerate(sub.panels)
+                P.kind == :gl && continue
+                cols = offs[k] + 1:offs[k + 1]
+                corners = [exact_point(quads, nlev, sel[k], s, t) for (s, t) in ((0, 0), (1, 0), (1, 1), (0, 1))]
+                ts = unique(C[:, cols].rowval)
+                # targets on the other triangle within 1e-4 of P's diameter of P
+                diam = maximum(norm(collect(a .- b)) for a in P.points for b in P.points)
+                ts = filter(ts) do t
+                    (sel[owner(t)] - 1) ÷ (3npq) != (sel[k] - 1) ÷ (3npq) &&
+                        minimum(norm(X[:, t] .- collect(y)) for y in P.points) < 1e-4 * diam
+                end
+                isempty(ts) && continue
+                rows = Matrix(C[ts, cols]) .+ DB.dt_node_rule_block(sub, k, X[:, ts], N[:, ts])
+                for (r, t) in enumerate(ts)
+                    Pt = sub.panels[owner(t)]; j = t - offs[owner(t)]; nv = length(Pt.rv.x)
+                    xe = exact_point(quads, nlev, sel[owner(t)], Pt.ru.x[(j - 1) ÷ nv + 1], Pt.rv.x[(j - 1) % nv + 1])
+                    ref = Float64(dot(big.(N[:, t]), polygon_field(corners, xe)) / (4 * big(π)))
+                    worst = max(worst, abs(sum(rows[r, :]) - ref) / max(1.0, abs(ref)))
+                    count += 1
+                end
+            end
+            @test count > 50
+            @test worst < 5e-12
+        end
+    end
+end
+
+@testset "Dᵀ near corrections drop the in-plane nodes of small panels" begin
+    # Panels 3e-4 across (nlev = 12) at O(1) positions with non-dyadic coordinates: their nodes lie off the panel's
+    # plane by the rounding of absolute positions (~3e-17, 1.1e-13 of the diameter). Dᵀ vanishes in the plane, so a
+    # panel's own nodes and the other nodes in its plane are no targets of it; kept, an own node's row hits r = 0 (NaN).
+    patches, quads = polyhedron_patches(OCT_V, OCT_F; eps_in = Inf)
+    itf, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 12, n_quad = 4, tol = 1e-4, corner = :gcq)
+    k = findlast(P -> P.kind == :gl, itf.panels)               # a GL panel of the last level, at a vertex
+    P = itf.panels[k]
+    @test DB._flat_geom(P).diam < 1e-3
+    X = reduce(hcat, [collect(y) for y in P.points])
+    @test maximum(abs.(X' * collect(P.normals[1]) .- dot(collect(P.anchor), collect(P.normals[1])))) > 1e-13 * DB._flat_geom(P).diam
+    one = DB.DielectricInterface{CurvedPanel, Float64}([P], [Inf], [1.0])
+    C = near_corrections(PlanarProductNearQuad(), one)
+    @test nnz(C) == 0                                          # every target is in the panel's plane
 end

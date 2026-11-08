@@ -27,6 +27,9 @@ using Test
     include("utils/quad_order.jl")
     include("utils/best_grid.jl")
     include("utils/edge_gcq.jl")
+    include("utils/gcq_global_interpolation.jl")      # the global GCQ interpolant (retained SVD data, global_interp!)
+    include("utils/gcq_fine_interpolation.jl")        # the fine-grid interpolant against the global one; ninterp
+    include("utils/gcq_family_accuracy.jl")           # component-resolved training, density_tol rank, certificate
     include("utils/fftw_threads.jl")
     # visualization helpers
     include("visualization/extensions.jl")
@@ -41,6 +44,10 @@ using Test
     include("core/gl_panels.jl")
     include("shape/curved_geometry.jl")
     include("shape/polyhedron_mesh.jl")
+    include("solver/planar_endpoint_gcq.jl")              # PlanarProductNearQuad(endpoint_rule = :gcq)
+    include("solver/planar_self_endpoint_gcq.jl")         # self rows: Duffy + the walk, either endpoint rule
+    include("solver/planar_block_self.jl")                # default self rows: Duffy over the 3 x 3 fine cells
+    include("solver/planar_global_self.jl")               # experimental: self rows from the global interpolant
     include("shape/volume_field.jl")
     include("shape/volume_field_window.jl")
 

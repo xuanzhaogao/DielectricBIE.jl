@@ -165,6 +165,7 @@ include("utils/xsf_reader.jl")
 # # solvers
 include("solver/backends.jl") # operator backends: far field x near quadrature
 include("solver/planar_near.jl") # product-integration near quadrature for flat CurvedPanels
+include("solver/planar_global_self.jl") # experimental: self rows from the global GCQ interpolant
 include("solver/dielectric_box2d.jl")
 include("solver/dielectric_box3d.jl")
 include("solver/dielectric_box3d_gcq.jl")

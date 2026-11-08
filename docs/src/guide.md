@@ -490,13 +490,94 @@ A = dielectric_operator(itf; far = FMM3DFarField(1e-12), near = PlanarProductNea
 u = planar_slp_potential(itf, σ, T)                           # Sσ at the targets T (3 × m), near the surface too
 ```
 
+**The default pipeline (study 73).** All in Float64:
+1. `polyhedron_mesh` builds its GCQ rules with `grid_tol = tol` (its default): `edge_gcq_rule` refines the graded fine
+   grid until every component of the family is interpolated to `tol`, then takes the singular-value rank, the
+   pivoted-QR nodes, the weights and the Float64 map P from the node values to the fine grid. (`edge_gcq_rule` alone,
+   and the box and curved meshes, keep the bare dyadic grid.)
+2. Near rows (`PlanarProductNearQuad()`): P maps the node values to the fine grid, every fine cell carries its local
+   polynomial, and the cells at an edge are clustered into a smaller GCQ panel, the rule scaled to [0, s_k]
+   (`endpoint_rule = :gcq`).
+3. Single-layer self rows: one Duffy rule over the 3 × 3 fine cells around the node (`self = :block`); the rest of
+   the panel by the walk from the whole panel with the Duffy region left out, so the cells at an edge stay clustered
+   beyond it (study 75: 2.4× fewer leaves at a corner node beside the vertex, the same energy).
+
+As a perfect conductor (Dᵀ solve with Q = 1, direct far field, Thomson energy Q²/(4πE)), the unit cube's capacitance
+comes to −2.7e-15 of the reference at n_quad = 12, nlev = 12, and the octahedron conv(±e_i) to C = 0.72048161272881. The
+floor is set by n_quad (2.9e-12, 3e-14, ≤ 3e-15 at 8, 10, 12), not by the edge rules or the self rows
+(`dielectric_edge_singularity/results/polyhedra3d/73_pec_capacitance_simple`).
+
 **Near quadrature.** `PlanarProductNearQuad` computes the near corrections of flat panels by
 product integration, so it also handles GCQ in both directions.
 - Dᵀ vanishes for targets in a panel's plane, so on-surface rows need no singular quadrature.
-- A target off the plane gets the exact row of the panel's interpolation space, over leaves
-  split until the target is far enough away.
+- A target off the plane gets the exact row of the panel's interpolation space, by adaptive
+  refinement over clusters of the GCQ segments and parts of segments.
+- Separations come from parameter differences of the panel's bilinear map, and a node beside an
+  edge is placed by its own panel's parameters, so its distance from the edge is exact however
+  small (nodes come within ~1e-7 of the panel size of a GCQ edge).
 - Rows are computed once per congruent panel class and relative target position, so a symmetric
   polyhedron costs about one symmetry orbit.
+
+**Endpoint rule.** A leaf on an endpoint cluster [0, s_k] of a GCQ direction uses, by default
+(`endpoint_rule = :gcq`), the panel's own GCQ rule scaled to [0, s_k]: nodes s_k x, weights s_k w
+(density weights, so the factor s^p is not applied again), and the parent basis interpolated at the
+scaled nodes. `endpoint_rule = :moment` instead uses an 18-point rule with the exact moments of the
+panel's basis, exact for every density of the span.
+- Each GCQ direction takes its own rule, so a leaf is GL × GL, scaled GCQ × GL, GL × scaled GCQ or
+  scaled GCQ × scaled GCQ, H_u (K J) H_vᵀ. This holds on GCQ × GL and GCQ × GCQ panels, for
+  off-surface rows and for the walk of a self row. GL × GL panels have no clusters.
+- The cutoff of each target is the first admissible cluster along the walk, the first one far
+  enough for the adaptive refinement. It depends on the target and the transverse box. The segments
+  beyond the cutoff and the target's other boxes are integrated as before.
+- A self row at an owned node is the disjoint sum ∫_{Ω∖C} + ∫_{C∖R} + ∫_R, where C is the node's
+  fine cell and R is its Duffy region. The first term comes from the walk with the selected
+  endpoint rule. C∖R is at most two strips; they lie inside C, so they have no clusters and are
+  the same under both rules. ∫_R uses the Duffy rule, unchanged. A cluster holding
+  C is peeled for that node only, so each target's leaves are its own whatever targets share the
+  walk. (The illustrations of this decomposition in the project notes are schematic.)
+- Self rows exist only at a panel's own nodes. No node of a GCQ rule lies in the weighted segment
+  at an edge, and arbitrary on-surface targets have no owned cell, so they are not supported.
+- The scaled rule integrates the GCQ family (s^p times smooth factors) to the rule's tolerance. It
+  does not integrate every density of the panel's span: a cardinal basis function times the kernel
+  is not in the family.
+
+Measured on flat GCQ × GL panels (study 56 in the companion repository, η_leaf = 1). A cardinal row
+is measured as max_j |Δ_j| / Σ_j |row_j|; a density σ as |Δ·σ| / (|row|·|σ|).
+
+| | `:moment` | `:gcq`, tol 1e-12 | tol 1e-8 | tol 1e-4 |
+|---|---|---|---|---|
+| s^p and smooth mixtures | ≤ 4e-14 | 9e-13 | 2e-9 | 1e-5 |
+| cardinal rows | ≤ 8e-15 | 1.3e-7 | 4.2e-6 | 1.2e-4 |
+| random densities of the span | ≤ 4e-14 | 4.6e-7 | 1.8e-5 | 9.8e-4 |
+| kernel evaluations | 1 | 1.04 | 0.98 | 0.93 |
+
+The scaled rules have 22, 16–17 and 9–10 GCQ nodes against the moment rule's 18 points.
+
+Warm time and the octahedron's total charge are the same within noise. At equal cost (η_leaf =
+0.5) the moment rule is more accurate on cardinal rows and random densities of the span. On resolved
+densities the two agree to the GCQ tolerance, and the conductor capacitance of study 73 does not
+depend on the choice; `:gcq` is the default as the simpler rule (the cells at an edge as one smaller
+GCQ panel).
+
+The same holds for self rows and GCQ × GCQ corners (study 57: 2064 owned nodes of GCQ × GL and
+unequal GCQ × GCQ panels, η_leaf = 1, against an independent graded-Duffy reference):
+
+| | `:moment` | `:gcq` |
+|---|---|---|
+| s^p, mixed-sign densities | ≤ 1.6e-15 | ≤ 1.7e-7 (tol 1e-4), ~1e-15 (tol 1e-12) |
+| cardinal rows | ≤ 6.6e-16 | ≤ 1.4e-5 |
+| random densities of the span | ≤ 1.6e-15 | ≤ 1e-4 |
+| kernel evaluations, time | 1 | 1.01, 0.96–1.05 |
+
+- The Duffy region takes 57–76 % of a self row's time under either rule.
+- On cardinal rows and random densities `:gcq` is no less accurate than the GCQ node rule itself is
+  in the far field, on the same panel at 1.5 diameters. The tests assert this: the worst measured
+  errors are 0.08 (off-surface) and 0.12 (self rows) of that error.
+- It does not reach the GCQ tolerance on general densities of the span: it misses by 10³–10⁷.
+  Restricting it to smaller endpoint prefixes would not fix this short of the weighted segment,
+  that is, short of using the moment rule.
+- On the octahedron, the corrections have the same build time, nnz and matvec cost under both
+  rules.
 
 `planar_slp_potential` evaluates the single-layer potential with the same product rows near the
 panels. Its node sum is exact (direct summation by default): FMM3D's ~1e-8 relative error on
@@ -508,13 +589,93 @@ the node sum without the coincident node plus the near correction `planar_slp_co
 u = planar_slp_nodes(itf, σ)
 E = dot(BI.all_weights(itf) .* σ, u)                            # ∫σ Sσ, e.g. C = Q² / (4π E) (Thomson)
 ```
-A node's own panel is integrated by Duffy's rule on the node's own leaf (`duffy = true`, the
-default) and by the leaf tree elsewhere.
+A node's own panel is integrated (`duffy = true`, the default) by one sinh-mapped Duffy rule over
+the 3 × 3 fine cells around the node (`self = :block`, the default; a GL direction is one cell, a
+GCQ direction's weighted cell at the edge is left out, and the longer side is cut to twice the
+shorter around the node), with the density at each point from its own cell's polynomial, and by
+the adaptive refinement elsewhere: the walk starts from the whole panel, a box disjoint from the
+Duffy region is a root, a box inside it is dropped, and an overlapping box is cut at the region's
+sides or has its endpoint cluster peeled, so the scaled-GCQ clusters at an edge reach past the
+region (study 75). The Duffy rays cross cell boundaries, where the cells'
+polynomials jump by their interpolation error: for densities the fine grid resolves, σ = 1 is
+within ~1.5e-14 of the closed form at tol 1e-12 (the own-cell rows: ~1e-14) and smooth densities
+agree with the own-cell rows to ~3e-15, but the rows of single cardinal functions err by up to
+~1e-4. `self = :cell` keeps the Duffy region inside the node's own cell (the rest of the cell and
+of the panel by the walk), exact for every density of the span.
 
 On the small stellated dodecahedron (ε = 2, all 90 edges at 116.57°/243.43°), GCQ × GCQ corners
 take ∫σ to a relative error of 2e-11 at N = 417k. GL × GL corners stall near 1e-5. As a perfect
 conductor, its capacitance from the energy Q²/(4πE) self-converges to about 5e-13. The potential
 at its centre gives about 5e-11.
+
+**Three tolerances (and `ninterp`).** A GCQ rule has three separate accuracies.
+- **Training tolerance (`tol`):** the rank of the weighted SVD and the depth of the dyadic grid. It sets the far-field
+  node rule's accuracy on the trained family in a weighted norm. It is not a pointwise bound: the octahedron's
+  40-power family (tol 1e-12) represents its own members to only ~1e-11 pointwise.
+- **Interpolation accuracy:** how well the near-field density (a polynomial on each fine cell through `P`) follows the
+  rule's continuous interpolant. With the default 14 points per dyadic cell, measured against a 128-bit evaluation
+  (regularized density, relative to its maximum):
+  - ~1e-12 for a one-power family at tol 1e-12;
+  - ~2e-11 for the octahedron's family;
+  - up to 1e-4 in the last cell [0.5, 1] for a solved corner density, with jumps of 2e-7 at u = 0.5.
+
+  `polyhedron_mesh(...; ninterp = 28)` (or `edge_gcq_rule(...; ninterp)`) samples `P` from the continuous
+  interpolant at 28 points per cell. That brings these to ≤ 5e-13 without changing the nodes or weights.
+  - Twenty points suffice only for densities in the trained family.
+  - The cardinal functions of a 40-power family need ~36 points.
+  - Cost: ~9 s per 840-exponent rule to build, and 30–70% more per self row.
+  - On the octahedron the solved potentials moved by 5e-11, with no gain in the total charge. The default is unchanged.
+- **Integration accuracy:** the quadrature of a row for the chosen representation. It stays at rounding
+  (≤ 1e-15 on physical densities) for either interpolation order.
+
+Study 62 has the audit (`dielectric_edge_singularity/results/polyhedra3d/62_gcq_interpolation_audit`).
+
+**Family accuracy (`grid_tol`, `density_tol`).** These options control accuracy on a rule's own
+training family f_j(s) = s^q_j (the regularized original components, maximum 1 on [0, 1]). Five separate layers set it:
+- **Training grid.** The bare 14-point dyadic cells (`edge_gcq_rule`'s default, `grid_tol = nothing`) resolve the
+  octahedron family's components only to 7.5e-5, and even a single-power family's high powers only to ~1e-8.
+  `grid_tol = tol` (`polyhedron_mesh`'s default) halves cells until every component resolves to tol (49 cells for the
+  conductor cube and octahedron at tol 1e-12). A grid that is not resolved also misjudges the norms of weak singular
+  directions (by 800–3400×).
+- **Compression rank.** The weighted SVD tolerance is not a pointwise bound. At the singular-value rank, a resolved
+  840-component rule reconstructs its family to only ~1e-10.
+  - `density_tol` (which sets `grid_tol = density_tol / 10` unless given) takes the smallest rank meeting
+    density_tol / 4 in the selected-node range. The gate is met by the rule's own evaluator (Lagrange per fine cell
+    through its P, measured on the built rule) and by the retained global model. That rank must also keep a Lebesgue
+    constant ≤ `lebesgue_max` (100), a negative share of the regularized weights ≤ `negative_weight_max` (1e-4), and
+    stay within the numerical rank.
+  - The 840-component family takes rank 34 instead of 28 (1.2e-13). The ranks in between often carry
+    sign-alternating weights (shares of 1e-3 to 3e-2) or Lebesgue constants near 200.
+  - `gcq_certificate(rule)` holds the record: certified or not, the evaluator and model errors, the limits and a
+    per-rank trace.
+  - Uncertified domains are reported, not certified: all positive cells, including below the first node (7e-12);
+    and the terminal element, where the evaluator's polynomial misses s^q pointwise by 1e-5 to 1e-2, as for the
+    default rules.
+- **Map precision.** At these ranks the Float64 FV/S map misses cardinal directions (nodal identity error 4e-2), so
+  `density_tol` rules sample P in 128-bit arithmetic: ~9 s for an 840-exponent rule. A stable nodal solve, cond(U_selected)
+  ~10, does not make the Float64 basis construction accurate.
+- **Local order:** `ninterp`, as above.
+- **Endpoint integrals:** checked by integrals, not pointwise.
+  - Near and self single-layer integrals of exact family products improve from ~1e-11 (self rows beside a fine
+    boundary: 6e-7) to ≤ 4e-14.
+  - Dᵀ just above an edge (d = 1e-6), relative to max|σ| ∫|K|, improves from 9e-11 to ≤ 1.3e-13 on family powers.
+  - σ = 1 (regularized s^-p) is the exception: the terminal element leaves 3.9e-12 with the `:moment` endpoint in
+    both variants, and 8.7e-13 with `:gcq` on the improved rules (5e-14 on the defaults).
+
+A solved corner density is a useful stability test, but not an exact-family test. Its model error (vertex behaviour
+is not a tensor of edge families) can exceed every layer above.
+
+End to end, the options did not pay on the tested meshes (study 67: the octahedron at ε = 2 and 10, a cube at ε = 10):
+- 33–38% more unknowns;
+- +1 to +3 GMRES iterations;
+- no consistent change in total charge (from 22% better to 2.5× worse);
+- a worse achievable residual of the assembled operator, by 10× to 320×.
+
+The residual floor does not depend on the FMM tolerance (1e-13 and 1e-15 give the same result). Within each
+configuration it is proportional to the near-correction norm ‖C‖_F, which grows as the higher-rank nodes approach the
+edge. With `floor = 2.5e-7`, ‖C‖_F and the residual fall, but the octahedron rules are then not certified and the
+charge does not improve. The defaults are unchanged.
+(`dielectric_edge_singularity/results/polyhedra3d/67_gcq_family_accuracy`.)
 
 ## Potentials off the surface
 

@@ -63,6 +63,107 @@ gcq_tensor_rule(r::EdgeGCQRule) = TensorRule1D(r.x, r.w, r.segs, r.z0, r.wz, r.P
 
 is_gcq(r::TensorRule1D) = length(r.segs) > 1
 
+# (the global interpolation data travel with P: gcq_tensor_rule passes the EdgeGCQRule's own P)
+gcq_global_interp(r::TensorRule1D) =
+    is_gcq(r) ? gcq_global_interp(r.P, r.x, r.pw) :
+                throw(ArgumentError("gcq_global_interp: a Gauss-Legendre rule has no GCQ data (its interpolant is global)"))
+
+"""
+    GlobalInterpWorkspace(r, nmax = 512)
+
+Buffers of `global_interp!` for the GCQ rule `r` (points in chunks of `nmax`): one per task or thread, the rule's
+data being shared read-only. A Gauss-Legendre rule needs none (`nothing`).
+"""
+struct GlobalInterpWorkspace
+    P::Matrix{Float64}               # the rule's P (the identity of the rule the buffers serve)
+    g::GCQGlobalInterp
+    FT::Matrix{Float64}              # m × nmax: the powers s^q at a chunk of points
+    HT::Matrix{Float64}              # n × nmax
+end
+function GlobalInterpWorkspace(r::TensorRule1D, nmax::Int = 512)
+    g = gcq_global_interp(r)
+    return GlobalInterpWorkspace(r.P, g, zeros(length(g.q), nmax), zeros(length(g.x), nmax))
+end
+
+# FT[:, a] = s^q at ts[a] (along the integer chains of q, see GCQGlobalInterp; the chain heads by ^)
+function _gcq_powers_t!(FT, g::GCQGlobalInterp, ts)
+    @inbounds for (a, t) in enumerate(ts)
+        L = t > 0 ? log(t) : 0.0
+        for k in g.order
+            j = g.pred[k]
+            if j == 0
+                FT[k, a] = t^g.q[k]
+            else
+                dL = g.δ[k] * L
+                FT[k, a] = FT[j, a] * t * (1 + dL * (1 + dL / 2))
+            end
+        end
+    end
+    return FT
+end
+
+_global_interp_check(g::GCQGlobalInterp, t) =
+    (0 < t <= 1 || t == 0 && g.pw >= 0) ||
+    throw(ArgumentError("global_interp!: the point $t is not in (0, 1] (the density is s^$(g.pw) times a smooth factor)"))
+
+"""
+    global_interp!(E, r, ts, ws) -> E
+
+(length(ts) × n) map from the full nodal density σ(x) of the rule `r` to its values at the points `ts`: σ(ts) = E σ(x).
+A GCQ rule (workspace `ws = GlobalInterpWorkspace(r)`): the global interpolant of `GCQGlobalInterp`, one formula on
+(0, 1] that does not look at the fine segments, E = diag(ts^pw) h(ts) Hn⁻¹ diag(x^-pw) (by an LU solve, never an
+inverse); s = 0 only for pw ≥ 0 (else an ArgumentError, the density being infinite there). A Gauss-Legendre rule
+(`ws = nothing`): polynomial interpolation through its nodes on [0, 1] (the identity at the nodes). No allocation.
+"""
+function global_interp!(E::AbstractMatrix, r::TensorRule1D, ts::AbstractVector, ws)
+    size(E) == (length(ts), length(r.x)) ||
+        throw(DimensionMismatch("global_interp!: E must be $(length(ts)) × $(length(r.x)), got $(size(E))"))
+    is_gcq(r) || return _gl_interp!(E, r, ts)
+    ws isa GlobalInterpWorkspace && ws.P === r.P ||
+        throw(ArgumentError("global_interp!: the workspace was not made for this rule"))
+    g = ws.g; nmax = size(ws.FT, 2)
+    for t in ts
+        _global_interp_check(g, t)
+    end
+    for c0 in 1:nmax:length(ts)
+        rows = c0:min(c0 + nmax - 1, length(ts)); nc = length(rows)
+        FT = view(ws.FT, :, 1:nc); HT = view(ws.HT, :, 1:nc)
+        _gcq_powers_t!(FT, g, view(ts, rows))
+        mul!(HT, transpose(g.V), FT)                          # h(t)ᵀ = Vᵀ f(t)ᵀ
+        ldiv!(transpose(g.lu), HT)                            # (h(t) Hn⁻¹)ᵀ
+        @inbounds for (i, a) in enumerate(rows)
+            st = g.pw == 0 ? 1.0 : ts[a]^g.pw
+            for j in axes(E, 2)
+                E[a, j] = HT[j, i] * st * g.xpw[j]
+            end
+        end
+    end
+    return E
+end
+
+# Gauss-Legendre (one segment [0, 1], nodes z0 on [-1, 1]): barycentric Lagrange, exact at the nodes
+function _gl_interp!(E, r::TensorRule1D, ts)
+    @inbounds for (a, t) in enumerate(ts)
+        τ = 2t - 1
+        j = findfirst(==(t), r.x)
+        j === nothing && (j = findfirst(==(τ), r.z0))
+        if j !== nothing
+            for i in axes(E, 2)
+                E[a, i] = i == j ? 1.0 : 0.0
+            end
+            continue
+        end
+        sm = 0.0
+        for i in axes(E, 2)
+            c = r.bw[i] / (τ - r.z0[i]); E[a, i] = c; sm += c
+        end
+        for i in axes(E, 2)
+            E[a, i] /= sm
+        end
+    end
+    return E
+end
+
 """
     tensor_rule_interp(r, ts)
 

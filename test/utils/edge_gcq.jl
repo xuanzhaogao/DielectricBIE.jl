@@ -85,3 +85,21 @@ end
     @test minimum(universal_gcq_rule(pmin; qmax = 12.0, tol = 1e-12, floor = 0.0).x) < 1e-15
     @test_throws ArgumentError universal_gcq_rule(-1.0)
 end
+
+@testset "grid_tol = tol: the fine grid resolves the family to tol" begin
+    # every regularised component s^q of the family is interpolated by its fine cell's 14-point polynomial to tol
+    # (polyhedron_mesh's default); edge_gcq_rule's own default keeps the bare dyadic grid
+    for (ε, tol) in ((Inf, 1e-12), (10.0, 1e-10))
+        r = edge_gcq_rule(ε, 1.0; tol, grid_tol = tol)
+        c = BI.gcq_certificate(r)
+        @test c["grid_tol"] == tol
+        @test c["component_resolution"] <= tol
+        r0 = edge_gcq_rule(ε, 1.0; tol)
+        @test !haskey(BI.gcq_certificate(r0), "grid_tol")
+        @test length(r.segs) > length(r0.segs)
+        @test edge_gcq_family_error(r) < 10tol
+    end
+    # density_tol sets grid_tol = density_tol / 10 unless given
+    rd = edge_gcq_rule(Inf, 1.0; tol = 1e-8, density_tol = 1e-8)
+    @test BI.gcq_certificate(rd)["grid_tol"] == 1e-9
+end
