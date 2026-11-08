@@ -191,13 +191,15 @@ end
     # GCQ: no allocation with a workspace
     E = zeros(50, n); DB.global_interp!(E, r, ts, ws)
     @test (@allocated DB.global_interp!(E, r, ts, ws)) == 0
-    # read-only sharing: threads with their own workspaces give the serial values
+    # read-only sharing: threads with their own workspaces give the serial values (to BLAS's rounding: a fresh
+    # workspace can change OpenBLAS's code path and so the last bits, as on GitHub's Julia 1.10 runner; the
+    # tolerance of the chunk-size check above)
     ref = DB.global_interp!(zeros(50, n), r, ts, ws)
     out = [zeros(50, n) for _ in 1:8]
     Threads.@threads for i in 1:8
         DB.global_interp!(out[i], r, ts, DB.GlobalInterpWorkspace(r))
     end
-    @test all(==(ref), out)
+    @test all(o -> isapprox(o, ref; rtol = 1e-13), out)
     # every GCQ rule of a mesh (edge panels GCQ × GL in either orientation, corner panels GCQ × GCQ) carries its data
     rule = edge_gcq_rule(DB.edge_density_powers(Inf, 1.0; gmax = 2.0); tol = 1e-6, qmax = 12.0)
     cube = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, Inf, 1.0; nlev = 1, n_quad = 6, rule)
