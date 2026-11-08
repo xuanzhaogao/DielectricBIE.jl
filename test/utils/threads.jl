@@ -16,10 +16,10 @@ using Test
     @test seen[ord] == ones(Int, 4) && sum(seen) == 4
     # the threads share the work: with two or more, the indices are not all done by one thread
     if Threads.nthreads() > 1
-        who = zeros(Int, 2000)
-        DB._tforeach(2000) do i
+        who = zeros(Int, 200)
+        DB._tforeach(200) do i
             who[i] = Threads.threadid()
-            s = 0.0; for j in 1:20_000; s += sqrt(j + i); end; s < 0 && error()
+            Libc.systemsleep(1e-3)             # holds its thread (no yield): the others take the next indices
         end
         @test length(unique(who)) > 1
     end
