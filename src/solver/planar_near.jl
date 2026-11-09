@@ -562,14 +562,19 @@ planar_slp_corrections(interface::DielectricInterface; q::PlanarProductNearQuad 
     _pn_corrections(q, interface, :slp)
 
 """
-    planar_slp_nodes(interface, σ; q = PlanarProductNearQuad()) -> Vector
+    planar_slp_nodes(interface, σ; q = PlanarProductNearQuad(), far = :direct) -> Vector
 
-The single-layer potential Sσ at the interface's own nodes: the node rule by direct summation without the coincident
-node, plus `planar_slp_corrections`. With the weights w, ∫σ Sσ dA = dot(w .* σ, u).
+The single-layer potential Sσ at the interface's own nodes: the node rule without the coincident node, plus
+`planar_slp_corrections`. With the weights w, ∫σ Sσ dA = dot(w .* σ, u). The node rule by direct summation
+(`far = :direct`) or by a far field such as [`SCTLFarField`](@ref) (`far = SCTLFarField(tol = 1e-12)`: PVFMM, which
+needs the close node pairs to rounding: `SCTL.has_feature(:EXACT_NEAR)`; it skips the coincident node too).
 """
-function planar_slp_nodes(interface::DielectricInterface, σ::AbstractVector; q::PlanarProductNearQuad = PlanarProductNearQuad())
+function planar_slp_nodes(interface::DielectricInterface, σ::AbstractVector; q::PlanarProductNearQuad = PlanarProductNearQuad(),
+                          far = :direct)
     X = reduce(hcat, [collect(y) for P in interface.panels for y in P.points])
-    return _pn_direct_slp(X, all_weights(interface) .* σ, X) .+ _pn_corrections(q, interface, :slp; blocks = true) * σ
+    u0 = far === :direct ? _pn_direct_slp(X, all_weights(interface) .* σ, X) :
+         far isa FarField ? _pottrg_far(far, interface, X) * σ : throw(ArgumentError("far must be :direct or a FarField"))
+    return u0 .+ _pn_corrections(q, interface, :slp; blocks = true) * σ
 end
 
 # B[r, j] -= the node rule from node j of a panel (its `points` and `weights`) at the node ts[r] (positions X, normals

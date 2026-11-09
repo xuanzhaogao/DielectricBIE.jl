@@ -25,8 +25,8 @@ abstract type FarField end
     FMM3DFarField(tol; close = 0.0)
 
 Far field by FMM3D's `lfmm3d` at tolerance `tol`; a block of `K` densities is one vectorized FMM (`nd = K`).
-FMM3D's direct sum between two points a distance r apart carries a relative error ~1e-17/r (its tree shifts and
-scales the coordinates), far above rounding for the node pairs a GCQ rule puts on both sides of an edge (r ~ 1e-13:
+FMM3D's direct sum between two points a distance r apart carries a relative error ~1e-17/r (its tree scales the
+coordinates by 1/(their largest extent), which rounds them unless that extent is a power of two), far above rounding for the node pairs a GCQ rule puts on both sides of an edge (r ~ 1e-13:
 1e-4), where the near correction must cancel that term to many digits. With `close` > 0 the nodes that have another
 node closer than `close` are no FMM sources: their contributions are summed directly, with the same arithmetic as the
 node-rule term the near corrections subtract (`dt_node_rule_block`), so the cancellation is exact up to rounding.
@@ -45,10 +45,14 @@ applications; with fewer than 40000 nodes it is an exact direct sum. PVFMM's gra
 runs with `-log10(tol) + 2` digits (at most 15; PVFMM reaches about 1e-11 at best). Needs `using SCTL` (the
 `DielectricBIESCTLExt` extension). A block of `K` densities is `K` evaluations on the same tree.
 
-Like FMM3D (see [`FMM3DFarField`](@ref)), PVFMM's sum between two points a distance r apart is off by ~1e-16/r
-relative (3e-5 at r = 1e-11), so the nodes with a neighbour closer than `close` are summed directly instead, with
-the arithmetic of the node-rule term the near corrections subtract. `close = nothing` (default): 1e-4 times the
-diameter of the node set; `close = 0`: everything through PVFMM.
+Close node pairs (the GCQ nodes on both sides of an edge, 1e-10 apart and less) must come out of the far field to
+rounding, as the near corrections cancel their node-rule terms. PVFMM works in its unit box, whose coordinates are
+rounded, so its own sum over a pair a distance r apart is off by ~1e-16/r relative (3e-5 at r = 1e-11); SCTL.jl
+built with our SCTL and pvfmm forks sums those interactions itself from the original coordinates instead
+(`SCTL.has_feature(:EXACT_NEAR)`, dmalhotra/pvfmm#39), and then everything goes through `ParticleFMM`. With an SCTL.jl
+without it, the nodes with a neighbour closer than `close` are summed directly instead, with the arithmetic of the
+node-rule term the near corrections subtract. `close = nothing` (default): none with `:EXACT_NEAR`, else 1e-4 times
+the diameter of the node set; `close = 0`: everything through PVFMM.
 """
 struct SCTLFarField <: FarField
     tol::Float64
@@ -563,8 +567,7 @@ default_near_quadrature(::DielectricInterface{<:CurvedPanel}) = GCQNearQuad()
 """
     default_far_field() -> FarField
 
-`SCTLFarField()` (PVFMM, tol 1e-10, close node pairs summed directly) when SCTL is loaded (`using SCTL`), else
-`FMM3DFarField(1e-9)`.
+`SCTLFarField()` (PVFMM, tol 1e-10) when SCTL is loaded (`using SCTL`), else `FMM3DFarField(1e-9)`.
 """
 default_far_field() =
     Base.get_extension(@__MODULE__, :DielectricBIESCTLExt) === nothing ? FMM3DFarField(1e-9) : SCTLFarField()

@@ -39,7 +39,9 @@ function far_field_operator(far::SCTLFarField, interface::DielectricInterface)
     fmm = ParticleFMM(Laplace3D_FxdU(); digits = _digits(far.tol))
     set_sources!(fmm, X)
     set_targets!(fmm, X)
-    return SCTLDTFar(fmm, X, Vector{Float64}(all_weights(interface)), Matrix{Float64}(Nrm), _close_nodes(X, far.close),
+    # close pairs: through ParticleFMM when it sums them at full precision (SCTL.has_feature(:EXACT_NEAR)), else directly
+    close = (far.close === nothing && SCTL.has_feature(:EXACT_NEAR)) ? 0.0 : far.close
+    return SCTLDTFar(fmm, X, Vector{Float64}(all_weights(interface)), Matrix{Float64}(Nrm), _close_nodes(X, close),
                      Matrix{Float64}(undef, 1, n), Matrix{Float64}(undef, 3, n))
 end
 
