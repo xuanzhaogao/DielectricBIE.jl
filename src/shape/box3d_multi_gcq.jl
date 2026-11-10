@@ -74,7 +74,9 @@ permittivities `epses` (`Inf` = perfect conductor) in a medium `eps_out`, meshed
 but not overlap. Every edge gets the weighted GCQ rule of its own junction
 (`edge_gcq_rule(junction_powers(...) .- 1; tol, qmax)`, powers up to `gmax`); equal junctions
 share one rule. `nlev`, `n_quad`, `rhs`, `rhs_atol` and `max_depth` are as in
-`single_dielectric_box3d_gcq`; quadrants are refined toward true vertices only. `rhs_batch(points, normals)`
+`single_dielectric_box3d_gcq`; quadrants are refined toward true vertices only. `nlev` may also be a function
+`(vertex, a1, a2) -> levels` of a true vertex (a 3-tuple) and the sides of one of its quadrants, called once per
+quadrant: a per-vertex grading, e.g. to a common corner-panel size `h`, `ceil(Int, log2(max(a1, a2) / h))`. `rhs_batch(points, normals)`
 (vectors of 3-tuples, returning the values) replaces the pointwise `rhs` by one evaluation per refinement level
 over all panels, e.g. an FMM for a volume source. The face
 coordinates of all boxes define the grid, so boxes that are offset against each other create
@@ -93,7 +95,7 @@ whose near radius is not `tensor_isfar`'s, of the size of `target_tol`.
 Last, Gauss-Legendre × Gauss-Legendre panels are cut along their longer side to aspect ratio ≤ `GL_MAX_ASPECT`.
 """
 function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector{<:Real},
-                                    eps_out::Real = 1.0; nlev::Int = 2, n_quad = 8,
+                                    eps_out::Real = 1.0; nlev::Union{Integer, Function} = 2, n_quad = 8,
                                     tol::Real = 1e-10, qmax = nothing, gmax::Real = 20.0,
                                     rhs = nothing, rhs_batch = nothing, rhs_atol::Real = 1e-10, max_depth::Int = 30,
                                     targets = nothing, target_tol::Real = 1e-10, target_eta::Real = 2.0,
@@ -214,7 +216,8 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                 d2 = (1 - 2s2) .* unit(t2)
                 g1 = edgerule(t1, ntuple(k -> k == t1 ? i : V[k], 3))      # edge along d1
                 g2 = edgerule(t2, ntuple(k -> k == t2 ? j : V[k], 3))      # edge along d2
-                nl = truevertex(V) ? nlev : 0
+                nl = truevertex(V) ? (nlev isa Integer ? Int(nlev) : Int(nlev(cpt, a1, a2))) : 0
+                nl >= 0 || throw(ArgumentError("nlev at the vertex $cpt is $nl"))
                 quad = TensorPanel{T}[]
                 b1, b2 = a1, a2
                 for k in 1:nl
