@@ -605,8 +605,8 @@ function _pn_slp_node_block(P, T::Matrix{Float64})
     return B
 end
 
-# the sparse near correction of D^T (kernel = :dt: targets in a panel's plane skipped, where D^T vanishes; rows keyed by
-# the target's position and normal) or of the single layer (kernel = :slp: every near target, keyed by position); with
+# the sparse near correction of D^T (kernel = :dt: rows keyed by the target's position and normal; in a panel's plane,
+# where D^T vanishes, the exact row is 0 and the correction cancels the node rule) or of the single layer (kernel = :slp: every near target, keyed by position); with
 # `blocks`, the same correction as a BlockCorrection, its per-panel blocks assembled directly (no sparse matrix, which
 # would take twice the memory and a copy into blocks)
 function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterface, kernel::Symbol; blocks::Bool = false)
@@ -635,26 +635,35 @@ function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterfac
             cells[offs[k] + i] = (_pn_cell(P.ru, P.ru.x[(i - 1) ÷ nv + 1], k, "u"), _pn_cell(P.rv, P.rv.x[(i - 1) % nv + 1], k, "v"))
         end
     end
-    # near targets of every panel: off its plane, within η × diameter of one of its nodes. In its plane (Dᵀ) to the
+    # near targets of every panel: within η × diameter of one of its nodes. For Dᵀ, those in its plane (`inpl`, to the
     # rounding of absolute positions as well as of the panel's size: a node of a panel 3e-4 across at an O(1) position
-    # with non-dyadic coordinates lies ~3e-17 off its own plane (1.1e-13 of the diameter), and kept, its own row hits
-    # r = 0 (NaN; the octahedron at nlev = 12, study 73)
+    # with non-dyadic coordinates lies ~3e-17 off its own plane, 1.1e-13 of the diameter) get the exact row 0, not a
+    # product integral (its own row would hit r = 0: NaN, the octahedron at nlev = 12, study 73). Their correction is
+    # then minus the node rule, which cancels the far field's term: Dᵀ vanishes in the plane, but the node rule does
+    # not, as the nodes lie off it by rounding (~1e-17 / r³ for a pair r apart; study 80)
     # (the threads take the panels one at a time, the largest first: their costs differ by orders of magnitude)
-    tsl = Vector{Vector{Int}}(undef, np)
+    tsl = Vector{Vector{Int}}(undef, np); inpl = Vector{BitVector}(undef, np)
     _tforeach(sortperm(diams; rev = true)) do k
         P = ps[k]; nP = frames[k][:, 3]; a0 = collect(P.anchor)
         ctr = reduce(.+, P.points) ./ num_points(P)
         rad = maximum(norm(collect(y .- ctr)) for y in P.points)
         lim2 = (q.η * diams[k])^2
-        tsl[k] = sort(filter(inrange(tree, collect(ctr), rad + q.η * diams[k])) do t
+        ts = sort(filter(inrange(tree, collect(ctr), rad + q.η * diams[k])) do t
+            @inbounds x1, x2, x3 = X[1, t], X[2, t], X[3, t]
+            any(y -> (x1 - y[1])^2 + (x2 - y[2])^2 + (x3 - y[3])^2 <= lim2, P.points)
+        end)
+        tsl[k] = ts
+        inpl[k] = BitVector(map(ts) do t
+            kernel == :dt || return false
             @inbounds x1, x2, x3 = X[1, t], X[2, t], X[3, t]
             @inbounds m1, m2, m3 = Nrm[1, t], Nrm[2, t], Nrm[3, t]
             off = nP[1] * (x1 - a0[1]) + nP[2] * (x2 - a0[2]) + nP[3] * (x3 - a0[3])
             c2 = (nP[2] * m3 - nP[3] * m2)^2 + (nP[3] * m1 - nP[1] * m3)^2 + (nP[1] * m2 - nP[2] * m1)^2
-            kernel == :dt && abs(off) <= 1e-13 * (diams[k] + norm(a0)) && c2 <= 1e-24 && return false
-            any(y -> (x1 - y[1])^2 + (x2 - y[2])^2 + (x3 - y[3])^2 <= lim2, P.points)
+            abs(off) <= 1e-13 * (diams[k] + norm(a0)) && c2 <= 1e-24
         end)
     end
+    # the targets with a product-integral row (all of them for the single layer)
+    tso = [kernel == :dt ? tsl[k][.!inpl[k]] : tsl[k] for k in 1:np]
     t_list = time() - tstart
     # panel classes (rules and shape in the panel's frame) and row keys
     cls = Dict{Any, Int}()
@@ -672,9 +681,9 @@ function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterfac
         lpts[offs[k] + i] = P.lpoints[i]
     end
     rkeys = Vector{Vector{Tuple{NTuple{3, Int}, NTuple{3, Int}}}}(undef, np)
-    _tforeach(sortperm(length.(tsl); rev = true)) do k
+    _tforeach(sortperm(length.(tso); rev = true)) do k
         F = frames[k]; h = 1e-13 * diams[k]; a = anchors[k]
-        rkeys[k] = map(tsl[k]) do t
+        rkeys[k] = map(tso[k]) do t
             b = anchors[owner[t]]; y = lpts[t]
             d1 = (b[1] - a[1]) + y[1]; d2 = (b[2] - a[2]) + y[2]; d3 = (b[3] - a[3]) + y[3]
             x1 = F[1, 1] * d1 + F[2, 1] * d2 + F[3, 1] * d3
@@ -697,10 +706,10 @@ function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterfac
     groups = sort!(collect(values(members)); by = first)
     lid = Vector{Vector{Int}}(undef, np)
     greps = Vector{Vector{Tuple{Int, Int}}}(undef, length(groups))
-    _tforeach(sortperm([sum(k -> length(tsl[k]), ks) for ks in groups]; rev = true)) do g
+    _tforeach(sortperm([sum(k -> length(tso[k]), ks) for ks in groups]; rev = true)) do g
         seen = Dict{Tuple{NTuple{3, Int}, NTuple{3, Int}}, Int}(); r = Tuple{Int, Int}[]
         for k in groups[g]
-            lid[k] = [get!(() -> (push!(r, (k, t)); length(r)), seen, key) for (t, key) in zip(tsl[k], rkeys[k])]
+            lid[k] = [get!(() -> (push!(r, (k, t)); length(r)), seen, key) for (t, key) in zip(tso[k], rkeys[k])]
         end
         greps[g] = r
     end
@@ -729,12 +738,19 @@ function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterfac
         end
     end
     t_rows = time() - tstart - t_list - t_keys
-    # corrections: exact rows minus the node rule of every actual pair, panel k's block (its near targets tsl[k] × its
-    # nodes) written in place: into the CSC arrays (the columns of panel k, its nodes, are consecutive and share the
-    # sorted rows tsl[k], so its block is one column-major range), or as a matrix of its own (`blocks`)
+    # corrections: exact rows (0 in the panel's plane) minus the node rule of every actual pair, panel k's block (its
+    # near targets tsl[k] × its nodes) written in place: into the CSC arrays (the columns of panel k, its nodes, are
+    # consecutive and share the sorted rows tsl[k], so its block is one column-major range), or as a matrix of its own
+    # (`blocks`)
     function fill_block!(B, k)
-        for (r, i) in enumerate(rowid[k])
-            B[r, :] .= rows[i]
+        o = 0
+        for r in axes(B, 1)
+            if inpl[k][r]
+                B[r, :] .= 0.0
+            else
+                o += 1
+                B[r, :] .= rows[rowid[k][o]]
+            end
         end
         return _pn_sub_node_rule!(B, ps[k].points, ps[k].weights, tsl[k], X, Nrm, kernel == :dt)
     end
@@ -765,7 +781,7 @@ function _pn_corrections(q::PlanarProductNearQuad, interface::DielectricInterfac
         end
         C = SparseMatrixCSC(n, n, colptr, rowval, nzval)
     end
-    q.verbose && @info "PlanarProductNearQuad" kernel near_rows = sum(length, tsl) distinct = length(reps) classes = (q.symmetry ? length(cls) : np) entries = nnz_ t_lists = t_list t_keys t_rows t_total = time() - tstart
+    q.verbose && @info "PlanarProductNearQuad" kernel near_rows = sum(length, tsl) in_plane = sum(sum, inpl) distinct = length(reps) classes = (q.symmetry ? length(cls) : np) entries = nnz_ t_lists = t_list t_keys t_rows t_total = time() - tstart
     return C
 end
 

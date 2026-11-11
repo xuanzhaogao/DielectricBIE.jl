@@ -1,6 +1,6 @@
 using DielectricBIE
 import DielectricBIE as DB
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 using Test
 
 # the regular octahedron conv(±e_i): 8 triangles, 12 edges with dihedral angle arccos(-1/3)
@@ -192,10 +192,12 @@ end
     end
 end
 
-@testset "Dᵀ near corrections drop the in-plane nodes of small panels" begin
+@testset "Dᵀ near corrections: the in-plane nodes of small panels get the exact row 0" begin
     # Panels 3e-4 across (nlev = 12) at O(1) positions with non-dyadic coordinates: their nodes lie off the panel's
     # plane by the rounding of absolute positions (~3e-17, 1.1e-13 of the diameter). Dᵀ vanishes in the plane, so a
-    # panel's own nodes and the other nodes in its plane are no targets of it; kept, an own node's row hits r = 0 (NaN).
+    # panel's own nodes and the other nodes in its plane get the exact row 0, not a product integral (an own node's
+    # would hit r = 0: NaN); their correction is minus the node rule, which cancels the far field's term for the pair
+    # (not 0, as the nodes lie off the plane).
     patches, quads = polyhedron_patches(OCT_V, OCT_F; eps_in = Inf)
     itf, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 12, n_quad = 4, tol = 1e-4, corner = :gcq)
     k = findlast(P -> P.kind == :gl, itf.panels)               # a GL panel of the last level, at a vertex
@@ -205,5 +207,8 @@ end
     @test maximum(abs.(X' * collect(P.normals[1]) .- dot(collect(P.anchor), collect(P.normals[1])))) > 1e-13 * DB._flat_geom(P).diam
     one = DB.DielectricInterface{CurvedPanel, Float64}([P], [Inf], [1.0])
     C = near_corrections(PlanarProductNearQuad(), one)
-    @test nnz(C) == 0                                          # every target is in the panel's plane
+    n = DB.num_points(P)
+    @test nnz(C) == n^2                                        # every node is a target, all in the panel's plane
+    @test all(isfinite, nonzeros(C))
+    @test Matrix(C) == -DB.dt_node_rule_block(one, 1, collect(1:n))   # minus the node rule, bit for bit
 end
