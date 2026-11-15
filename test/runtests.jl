@@ -48,7 +48,8 @@ using Test
     include("shape/polyhedron_mesh.jl")
     include("solver/planar_endpoint_gcq.jl")              # PlanarProductNearQuad(endpoint_rule = :gcq)
     include("solver/planar_self_endpoint_gcq.jl")         # self rows: Duffy + the walk, either endpoint rule
-    include("solver/planar_block_self.jl")                # default self rows: Duffy over the 3 x 3 fine cells
+    include("solver/planar_block_self.jl")                # self rows: Duffy over the scaled region (default) or 3 x 3 cells
+    include("solver/planar_near_half_split.jl")           # the walk's half-cluster split (default) against :peel
     include("solver/planar_global_self.jl")               # experimental: self rows from the global interpolant
     include("solver/planar_near_assembly.jl")             # the assembly: deterministic on the threads, shared rows
     include("shape/volume_field.jl")

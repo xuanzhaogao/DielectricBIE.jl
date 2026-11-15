@@ -15,9 +15,9 @@
 #   density by the global formula, contracted modally in a GCQ direction: Σ_q W_q φ_i(u_q) ψ_j(v_q) =
 #   diag(x^-pw) Hn⁻ᵀ Vᵀ [Σ_q f(u_q)ᵀ u_q^pw W_q ψ_j(v_q)], in blocks of points.
 # - The complement (_flat_complement_boxes, from the whole panel with R left out; study 75): walk boxes (a cluster
-#   [0, s_k] or a part of one fine segment per direction), walked by _flat_walk! with _GlobalLeaf maps in the GCQ
+#   [0, s_k], a part of one fine segment or, with split = :half, an interval across segments per direction), walked by _flat_walk! with _GlobalLeaf maps in the GCQ
 #   directions: a cluster [0, s_k] (or a part [0, b] of the weighted segment) by the rule's GCQ nodes scaled to it,
-#   a whole segment by its 14 Gauss-Legendre points, a part of one by 12-point Gauss-Legendre, all with the density
+#   a whole segment by its 14 Gauss-Legendre points, a part of one or an interval by 12-point Gauss-Legendre, all with the density
 #   from the global formula (full density values, plain weights: the weight s^pw is in the density). A GL direction's
 #   interpolant is global already (one segment), and its leaf maps are planar_near.jl's.
 # The moment rules of the endpoint clusters integrate the piecewise basis and are not used: endpoint_rule = :gcq.
@@ -80,7 +80,7 @@ _global_ws(r::TensorRule1D, nmax::Int, tag::Symbol) =
 function _flat_leaf_map!(buf, r::TensorRule1D, tb::_TensorNearTables, ex::_GlobalLeaf, k, a, b)
     ex.nmaps[] += 1
     k < 0 && return 0.0, ex.clu[-k]...
-    sa, sb = r.segs[k]
+    sa, sb = k == 0 ? (a, b) : r.segs[k]                      # k = 0: an interval across segments (split = :half)
     if a == 0                                                 # at the edge (the weighted segment): scaled GCQ on [0, b]
         b == sb && return 0.0, ex.clu[k]...
         n = length(r.x)
@@ -94,7 +94,7 @@ function _flat_leaf_map!(buf, r::TensorRule1D, tb::_TensorNearTables, ex::_Globa
         end
         return 0.0, pts, G
     end
-    a == sa && b == sb && length(r.z0) >= TENSOR_NEAR_M && return sa, ex.seg[k]...
+    k > 0 && a == sa && b == sb && length(r.z0) >= TENSOR_NEAR_M && return sa, ex.seg[k]...
     zm, wm = TENSOR_NEAR_GL; M = TENSOR_NEAR_M
     off = view(ex.off, 1:M); pts = view(ex.pts, 1:M)
     @inbounds for q in 1:M
@@ -323,7 +323,7 @@ function planar_global_self_row(P::CurvedPanel, u0::Real, v0::Real; λ::Real = 0
     mom = _flat_cluster_rules(P, tu, tv, q.endpoint_rule)
     ex = backend == :global ? (is_gcq(ru) ? _GlobalLeaf(ru) : mom[1], is_gcq(rv) ? _GlobalLeaf(rv) : mom[2]) : mom
     Racc = zeros(nu, 1, nv)
-    for box in _flat_complement_boxes(ru, rv, g, R)
+    for box in _flat_complement_boxes(ru, rv, g, R; half = q.split == :half)
         _flat_walk!(Racc, P, g, tu, tv, ex, ws, T, (box..., 0), [1], false, q)
     end
     t2 = time_ns()
