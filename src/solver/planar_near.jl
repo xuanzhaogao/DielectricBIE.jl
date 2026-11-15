@@ -23,14 +23,25 @@
 # floor) this way.
 #
 # Near targets: adaptive refinement. A box of P's parameter square is one part per direction: a cluster of the fine
-# segments 1..k (the interval [0, s_k] of a GCQ direction) or a part of one fine segment. From the whole square, a box
-# is a leaf for the targets farther than (1 + 2 η_leaf) × its radius from its centre and splits for the others: a
-# cluster into the cluster one segment shorter and its last segment, a part into halves, in both directions unless one
-# side is more than twice the other. Leaf rules are the tensor near tables' (laplace3d_tensor_near.jl): a cluster's
-# 18-point moment rule (the basis's moments exact), a segment's own nodes, 12-point Gauss-Legendre on a part of one
-# (Gauss-Jacobi for the weight s^pw on a part touching s = 0); the whole weighted segment at the edge takes its moment
-# rule (its own nodes integrate s^pw exactly but the rest only as an interpolant). The targets of a panel go down the
-# tree together, and a leaf adds its kernel to the rows of its far targets by BLAS.
+# segments 1..k (the interval [0, s_k] of a GCQ direction, k = -kseg), a part of one fine segment (kseg = k > 0), or,
+# with split = :half, an interval [a, b] (a > 0) across fine segments (kseg = 0). From the whole square, a box is a leaf
+# for the targets farther than (1 + 2 η_leaf) × its radius from its centre and splits for the others, in both
+# directions unless one side is more than twice the other: a part or an interval into halves (a half inside one segment
+# a part of it), and a cluster
+# - split = :half (default): at the segment end s_m nearest below s_k / 2, into the cluster [0, s_m] and the interval
+#   [s_m, s_k] (the split below when s_m = s_{k-1}). The rule's fine segments away from the edge are halved to resolve
+#   the family's high powers (s^q, q up to n_max, near s = 1), and peeling them one at a time cut the far end of a panel
+#   at the fine grid whatever the target's distance (study 99);
+# - split = :peel: into the cluster one segment shorter and its last segment.
+# Leaf rules are the tensor near tables' (laplace3d_tensor_near.jl): a cluster's 18-point moment rule (the basis's
+# moments exact), a segment's own nodes, 12-point Gauss-Legendre on a part of one (Gauss-Jacobi for the weight s^pw on
+# a part touching s = 0); the whole weighted segment at the edge takes its moment rule (its own nodes integrate s^pw
+# exactly but the rest only as an interpolant). An interval takes 12-point Gauss-Legendre with the density at each
+# point from its own segment's polynomial (as the :block / :scaled Duffy rule): exact for densities the fine grid
+# resolves (the GCQ family to its grid tolerance), not for a single cardinal function, like the scaled-GCQ clusters
+# below (study 99: the rows of family densities as accurate as :peel's; C_E of the cube moves by 1e-12 at nlev 4, a
+# third of its discretization error, by rounding at nlev 12). The targets of a panel go down the tree together, and a
+# leaf adds its kernel to the rows of its far targets by BLAS.
 # With endpoint_rule = :gcq a cluster leaf [0, s_k] of a GCQ direction (and the weighted segment, k = 1) takes that
 # direction's GCQ rule scaled to [0, s_k] instead (_flat_endpoint_gcq_map: s_k a power of 2, the scaled nodes exact;
 # H[j, l] = s_k w_l φ_j(s_k x_l), the density weights once), each direction on its own: a leaf is GL × GL, scaled GCQ ×
@@ -41,13 +52,21 @@
 # in the far field, and no better. It is the default (study 73: the PEC capacitance of the cube to ~3e-15 with it);
 # :moment the alternative.
 #
-# Self rows (self = :block, the default): the single layer at a node (u0, v0) of P in its fine cell (k, l). One Duffy
-# rule over the 3 × 3 fine cells around the node's (cells k - 1 .. k + 1 × l - 1 .. l + 1 in the panel, a GCQ
-# direction's weighted cell at the edge left out, a GL direction one cell [0, 1]), the longer side (physically, at the
-# node) cut to BLOCK_CLIP × the shorter around the node; the density at each Duffy point from the polynomial of the cell
-# it falls in (through P, times s^pw). The rest of the panel by the walk, from the whole panel with D left out
-# (_flat_complement_boxes, study 75: boxes disjoint from D are roots, overlapping ones are split at D's sides or their
-# endpoint clusters peeled, so the cells at an edge stay clustered beyond D). A ray of the Duffy rule crosses cell boundaries, where the cells' polynomials
+# Self rows (self = :scaled, the default, and :block): the single layer at a node (u0, v0) of P in its fine cell (k, l).
+# One Duffy rule over a rectangle D around the node, the longer side (physically, at the node) cut to BLOCK_CLIP × the
+# shorter around the node; the density at each Duffy point from the polynomial of the cell it falls in (through P,
+# times s^pw). D is
+# - self = :scaled: [u0 / 4, 3 u0] ∩ [0, 1] in a GCQ direction (the edge at u = 0 a fixed fraction of a ray's length
+#   beyond its end, so the density's s^pw is analytic along every ray: Bernstein parameter ≥ 3 for the ≥ 16-point
+#   radial rule), [0, 1] in a GL direction (study 99: as accurate as :block, C_E unchanged; a node a third of the panel
+#   from the edge or farther has D up to the panel's far side, where the 3 × 3 block stopped at the halved far cells);
+# - self = :block: the 3 × 3 fine cells around the node's (cells k - 1 .. k + 1 × l - 1 .. l + 1 in the panel, a GCQ
+#   direction's weighted cell at the edge left out, a GL direction one cell [0, 1]).
+# The rest of the panel by the walk, from the whole panel with D left out (_flat_complement_boxes, study 75: boxes
+# disjoint from D are roots, the cells at an edge stay clustered beyond D; with split = :half a box overlapping D is
+# split in its physically longer direction that extends past D, halved (a cluster split as the walk's) while longer
+# than 2 × D there and cut at D's sides only then, a quadtree ring around D; with :peel it is cut at D's sides first,
+# which on a small D left a strip of D's height across the panel, cut into long thin leaves). A ray of the Duffy rule crosses cell boundaries, where the cells' polynomials
 # jump by their interpolation error: for densities the fine grid resolves (the GCQ family to its grid_tol) the rows
 # are as accurate as the own-cell rows below (study 73: σ = 1 to ~1e-14 of the closed form, smooth densities and the
 # capacitance identical), but the rows of single cardinal functions err by up to ~1e-4 of the row (random node values).
@@ -66,7 +85,7 @@
 
 """
     PlanarProductNearQuad(; η = 1.5, η_leaf = 1.0, max_depth = 80, symmetry = true, duffy = true,
-                          endpoint_rule = :gcq, self = :block, verbose = false)
+                          endpoint_rule = :gcq, self = :scaled, split = :half, verbose = false)
 
 Near corrections of Dᵀ (and of the single layer, `planar_slp_corrections`) for interfaces of flat `CurvedPanel`s with
 bilinear maps (planar polyhedra, `polyhedron_mesh`) and GCQ rules in u, v or both (GCQ × GCQ vertex corners), by
@@ -82,11 +101,18 @@ off-surface rows and the walk of self rows alike), accurate to the rule's tolera
 times smooth factors), and for other densities of the span at most the GCQ node rule's own error in the far field;
 `:moment` by the cluster's 18-point rule with the basis's moments, exact for every density of the span.
 
-`self` sets the single-layer row at a panel's own node (with `duffy`): `:block` (default) one Duffy rule over the
-3 × 3 fine cells around the node, the density from each point's own cell polynomial, the rest of the panel by the walk;
-accurate for densities the fine grid resolves (the solved densities), not for every single cardinal function (up to
-~1e-4 of the row). `:cell` the Duffy rule in the node's own cell only, the rest of the cell and of the panel by the
-walk, exact for every density of the span. See the header of `planar_near.jl`.
+`self` sets the single-layer row at a panel's own node (with `duffy`): one Duffy rule over a rectangle D around the
+node, the density from each point's own cell polynomial, the rest of the panel by the walk; accurate for densities the
+fine grid resolves (the solved densities), not for every single cardinal function (up to ~1e-4 of the row). D is
+`[u0/4, 3u0]` in a GCQ direction and `[0, 1]` in a GL direction for `:scaled` (default), the 3 × 3 fine cells around
+the node's for `:block`, cut to 2:1 either way. `:cell` the Duffy rule in the node's own cell only, the rest of the
+cell and of the panel by the walk (with the `:peel` split), exact for every density of the span.
+
+`split` sets how the walk splits a GCQ direction's endpoint cluster [0, s_k]: `:half` (default) at half its length,
+into a cluster and an interval across fine segments (a Gauss-Legendre leaf, the density from each point's own segment),
+and the complement of a self row's Duffy region as a quadtree around it; `:peel` into the cluster one segment shorter
+and its last segment, the complement cut at the region's sides. `split = :peel, self = :block` are the rows of
+DielectricBIE before study 99. See the header of `planar_near.jl`.
 """
 Base.@kwdef struct PlanarProductNearQuad <: NearQuadrature
     η::Float64 = 1.5
@@ -95,13 +121,16 @@ Base.@kwdef struct PlanarProductNearQuad <: NearQuadrature
     symmetry::Bool = true
     duffy::Bool = true
     endpoint_rule::Symbol = :gcq
-    self::Symbol = :block
+    self::Symbol = :scaled
+    split::Symbol = :half
     verbose::Bool = false
-    function PlanarProductNearQuad(η, η_leaf, max_depth, symmetry, duffy, endpoint_rule, self, verbose)
+    function PlanarProductNearQuad(η, η_leaf, max_depth, symmetry, duffy, endpoint_rule, self, split, verbose)
         endpoint_rule in (:moment, :gcq) ||
             throw(ArgumentError("PlanarProductNearQuad: endpoint_rule must be :moment or :gcq, got :$endpoint_rule"))
-        self in (:block, :cell) || throw(ArgumentError("PlanarProductNearQuad: self must be :block or :cell, got :$self"))
-        return new(η, η_leaf, max_depth, symmetry, duffy, endpoint_rule, self, verbose)
+        self in (:scaled, :block, :cell) ||
+            throw(ArgumentError("PlanarProductNearQuad: self must be :scaled, :block or :cell, got :$self"))
+        split in (:half, :peel) || throw(ArgumentError("PlanarProductNearQuad: split must be :half or :peel, got :$split"))
+        return new(η, η_leaf, max_depth, symmetry, duffy, endpoint_rule, self, split, verbose)
     end
 end
 
@@ -240,7 +269,34 @@ _flat_endpoint_gcq_rules(r::TensorRule1D) = lock(_FLAT_ENDPOINT_GCQ_LOCK) do
     end
 end
 
-# R += the box (ku, ua, ub) × (kv, va, vb) of P (a part per direction: a cluster -k, or a part of segment k; `depth`
+# the piece [a, b] (0 < a < b ≤ 1) of rule r: a part of one fine segment (k, a, b), else an interval (0, a, b)
+function _flat_piece(r::TensorRule1D, a, b)
+    ka = clamp(searchsortedlast(r.segs, (a, Inf)), 1, length(r.segs))
+    kb = clamp(searchsortedlast(r.segs, (b, -Inf)), 1, length(r.segs))
+    return ka == kb ? (ka, a, b) : (0, a, b)
+end
+
+# the children of one direction (k, a, b) of a box: with `half` (split = :half) a cluster [0, s_k] at the segment end
+# s_m nearest below s_k / 2, into the cluster [0, s_m] (segment 1 itself for m = 1) and the piece [s_m, s_k], and an
+# interval into halves; otherwise (and for m = k - 1) a cluster into the cluster one segment shorter and its last
+# segment. A part of a segment into halves.
+function _flat_dir_split(r::TensorRule1D, k, a, b, half::Bool)
+    if k < 0
+        kk = -k; sk = r.segs[kk][2]; m = kk - 1
+        if half
+            while m > 1 && r.segs[m][2] > sk / 2 * (1 + 1e-12)
+                m -= 1
+            end
+        end
+        return ((m == 1 ? 1 : -m, 0.0, r.segs[m][2]), m == kk - 1 ? (kk, r.segs[kk]...) : _flat_piece(r, r.segs[m][2], sk))
+    end
+    mid = (a + b) / 2
+    k > 0 && return ((k, a, mid), (k, mid, b))
+    return (_flat_piece(r, a, mid), _flat_piece(r, mid, b))
+end
+
+# R += the box (ku, ua, ub) × (kv, va, vb) of P (a part per direction: a cluster -k, a part of segment k, or an interval
+# 0 across segments (split = :half); `depth`
 # halvings deep) at the targets `tix`, a cluster's leaves by its rule in `ex`. With `drop`, a node of P leaves the boxes
 # inside its own cell to its self row, and a box overlapping the cell, however far, peels the cluster that holds the
 # cell (and only that: halving the box would leave its halves overlapping the cell, so that the boxes around a cell
@@ -269,10 +325,11 @@ function _flat_walk!(R, P, g, tu, tv, ex, ws, T, box, tix, drop, q)
         end
     end
     isempty(near) && return
+    half = q.split == :half && !drop                          # self = :cell's walk (drop) keeps the :peel split
     lu = _norm3(_flat_step(g, ua, vm, ub - ua, 0.0)); lv = _norm3(_flat_step(g, um, va, 0.0, vb - va))
-    uch = lv > 2lu ? ((ku, ua, ub),) : _tensor_dir_split(P.ru, ku, 0.0, ua, ub)
-    vch = lu > 2lv ? ((kv, va, vb),) : _tensor_dir_split(P.rv, kv, 0.0, va, vb)
-    halved = length(uch) == 2 && ku > 0 || length(vch) == 2 && kv > 0
+    uch = lv > 2lu ? ((ku, ua, ub),) : _flat_dir_split(P.ru, ku, ua, ub, half)
+    vch = lu > 2lv ? ((kv, va, vb),) : _flat_dir_split(P.rv, kv, va, vb, half)
+    halved = length(uch) == 2 && ku >= 0 || length(vch) == 2 && kv >= 0
     for (k1, a1, b1) in uch, (k2, a2, b2) in vch
         _flat_walk!(R, P, g, tu, tv, ex, ws, T, (k1, a1, b1, k2, a2, b2, depth + halved), near, drop, q)
     end
@@ -282,11 +339,48 @@ end
 # included); a cluster [0, s_k], and the whole weighted segment at the edge (the cluster k = 1), by its rule in
 # ex = (points, maps)
 function _flat_leaf_map!(buf, r::TensorRule1D, tb::_TensorNearTables, ex, k, a, b)
+    k == 0 && return _flat_interval_map!(buf, r, tb, a, b)
     cx, clu = ex
     (k < 0 || r.pw != 0 && !isempty(clu) && r.segs[k][1] == 0 && a == 0 && b == r.segs[k][2]) &&
         return 0.0, cx[abs(k)], view(clu[abs(k)], 1:size(clu[abs(k)], 1), :)
     pts, sh, G, _ = _tensor_leaf_map!(buf, r, tb, 1.0, k, a, 0.0, b - a)
     return a, pts .- sh, G
+end
+
+# an interval [a, b] across fine segments (split = :half; a > 0, off the weighted segment at an edge): TENSOR_NEAR_M-point
+# Gauss-Legendre, each point's basis from its own segment (Lagrange through P, times s^pw), a run of points in one
+# segment mapped by one product; in _tensor_leaf_map!'s buffers `buf`
+function _flat_interval_map!(buf, r::TensorRule1D, tb::_TensorNearTables, a, b)
+    off, wts, Bf, Gf = buf
+    nz = length(r.z0); nb = size(r.P, 2); M = TENSOR_NEAR_M
+    B = view(Bf, 1:nz, 1:M); G = view(Gf, 1:nb, 1:M)
+    zm, wm = TENSOR_NEAR_GL
+    q = 1
+    @inbounds while q <= M
+        kk = clamp(searchsortedlast(r.segs, (a + (b - a) * (1 + zm[q]) / 2, Inf)), 1, length(r.segs)); sa, sb = r.segs[kk]
+        q0 = q
+        while q <= M
+            off[q] = (b - a) * (1 + zm[q]) / 2; s = a + off[q]
+            sa <= s <= sb || break
+            wts[q] = (b - a) / 2 * wm[q] * (r.pw == 0 ? 1.0 : s^r.pw)
+            t = 2 * (s - sa) / (sb - sa) - 1
+            j = findfirst(==(t), r.z0)
+            if j !== nothing
+                B[:, q] .= 0; B[j, q] = wts[q]
+            else
+                sm = 0.0
+                for i in 1:nz
+                    B[i, q] = r.bw[i] / (t - r.z0[i]); sm += B[i, q]
+                end
+                for i in 1:nz
+                    B[i, q] *= wts[q] / sm
+                end
+            end
+            q += 1
+        end
+        mul!(view(G, :, q0:q-1), tb.pk[kk], view(B, :, q0:q-1))
+    end
+    return a, view(off, 1:M), G
 end
 
 # R += the leaf (ku, ua, ub) × (kv, va, vb) at its far targets
@@ -379,36 +473,40 @@ function _flat_self_duffy!(R, P, g, tu, tv, t, u0, v0, k, l, D, G)
 end
 
 """
-    _flat_complement_boxes(ru, rv, g, R) -> [(ku, ua, ub, kv, va, vb)]
+    _flat_complement_boxes(ru, rv, g, R; half = true) -> [(ku, ua, ub, kv, va, vb)]
 
 The root boxes of the walk on Ω \\ R, R = (ua, ub, va, vb) a rectangle of P's parameter square (geometry g), walked
 from the whole panel (study 75): from the root box (the cluster [0, s_K] in a GCQ direction, [0, 1] in a GL one), a
-box disjoint from R is a root, a box inside R is dropped, and a box overlapping R is split in a direction in which it
-extends past R: a part of a fine segment cut at R's sides, else an endpoint cluster peeled (cluster k into cluster
-k - 1 and segment k; the physically longer one when both directions are clusters). The cells at an edge so stay
-clustered beyond R: on a corner node beside the vertex the leaves fall 2.4× against cutting Ω \\ R into four rectangles
-at the fine grid, with the same rows on resolved densities (to 3e-15).
+box disjoint from R is a root, a box inside R is dropped, and a box overlapping R is split. The cells at an edge so
+stay clustered beyond R: on a corner node beside the vertex the leaves fall 2.4× against cutting Ω \\ R into four
+rectangles at the fine grid, with the same rows on resolved densities (to 3e-15).
+- `half` (split = :half): the box is split in its physically longer direction that extends past R; there a cluster
+  splits as the walk's (_flat_dir_split), a part or an interval longer than 2 × R's extent halves, and a shorter one is
+  cut at R's sides. A quadtree ring around R (study 99).
+- otherwise (split = :peel): in a direction in which it extends past R, a part of a fine segment cut at R's sides
+  first, else an endpoint cluster peeled (cluster k into cluster k - 1 and segment k; the physically longer one when
+  both directions are clusters). On a small R this leaves a strip of R's height across the panel, cut by the peels into
+  long thin roots.
 """
-function _flat_complement_boxes(ru::TensorRule1D, rv::TensorRule1D, g::_FlatGeom, R)
+function _flat_complement_boxes(ru::TensorRule1D, rv::TensorRule1D, g::_FlatGeom, R; half::Bool = true)
     out = Tuple{Int, Float64, Float64, Int, Float64, Float64}[]
     root(r) = length(r.segs) == 1 ? (1, 0.0, 1.0) : (-length(r.segs), 0.0, 1.0)
-    _flat_exclude!(out, ru, rv, g, root(ru), root(rv), R)
+    _flat_exclude!(out, ru, rv, g, root(ru), root(rv), R, half)
     return out
 end
 
-# the part p = (k, a, b) of rule r (a cluster [0, s_{-k}] for k < 0) split against [lo, hi]: a cluster peeled (k into
-# k - 1, as segment 1 itself when k - 1 = 1, and segment k), a part of a segment cut at lo and hi inside it
-function _flat_exclude_split(r::TensorRule1D, p, lo, hi)
+# the part p = (k, a, b) of rule r (a cluster [0, s_{-k}] for k < 0, an interval for k = 0) split against [lo, hi]: a
+# cluster by _flat_dir_split (peeled without `half`: k into k - 1, as segment 1 itself when k - 1 = 1, and segment k), a
+# part of a segment or an interval cut at lo and hi inside it
+function _flat_exclude_split(r::TensorRule1D, p, lo, hi, half::Bool = false)
     k, a, b = p
-    if k < 0
-        kk = -k
-        return ((kk - 1 == 1 ? 1 : -(kk - 1), 0.0, r.segs[kk - 1][2]), (kk, r.segs[kk][1], r.segs[kk][2]))
-    end
+    k < 0 && return _flat_dir_split(r, k, a, b, half)
     cuts = (a, (a < lo < b ? (lo,) : ())..., (a < hi < b ? (hi,) : ())..., b)
-    return Tuple((k, cuts[i], cuts[i + 1]) for i in 1:length(cuts) - 1)
+    k > 0 && return Tuple((k, cuts[i], cuts[i + 1]) for i in 1:length(cuts) - 1)
+    return Tuple(_flat_piece(r, cuts[i], cuts[i + 1]) for i in 1:length(cuts) - 1)
 end
 
-function _flat_exclude!(out, ru, rv, g, pu, pv, R)
+function _flat_exclude!(out, ru, rv, g, pu, pv, R, half::Bool = false)
     (_, ua, ub), (_, va, vb) = pu, pv
     if ub <= R[1] || ua >= R[2] || vb <= R[3] || va >= R[4]
         push!(out, (pu[1], ua, ub, pv[1], va, vb))
@@ -416,6 +514,15 @@ function _flat_exclude!(out, ru, rv, g, pu, pv, R)
     end
     ua >= R[1] && ub <= R[2] && va >= R[3] && vb <= R[4] && return out
     ext_u = ua < R[1] || ub > R[2]; ext_v = va < R[3] || vb > R[4]
+    if half
+        split_u = ext_u && (!ext_v || (ub - ua) * _norm3(g.a) >= (vb - va) * _norm3(g.b))
+        r, (k, a, b), lo, hi = split_u ? (ru, pu, R[1], R[2]) : (rv, pv, R[3], R[4])
+        kids = k < 0 || b - a > 2 * (hi - lo) ? _flat_dir_split(r, k, a, b, true) : _flat_exclude_split(r, (k, a, b), lo, hi)
+        for c in kids
+            split_u ? _flat_exclude!(out, ru, rv, g, c, pv, R, half) : _flat_exclude!(out, ru, rv, g, pu, c, R, half)
+        end
+        return out
+    end
     cu = pu[1] < 0; cv = pv[1] < 0
     split_u = ext_u && !cu ? true : ext_v && !cv ? false :
               ext_u && ext_v ? (ub - ua) * _norm3(g.a) >= (vb - va) * _norm3(g.b) : ext_u
@@ -439,12 +546,19 @@ function _flat_block_span(r::TensorRule1D, k)
     return r.segs[lo][1], r.segs[hi][2]
 end
 
-# The Duffy rectangle D = (ua, ub, va, vb) of a :block self row at the node (u0, v0) in the cell (k, l): the 3 × 3
-# cells around it, the longer side (in the metric G at the node) cut to BLOCK_CLIP × the shorter around the node; and G
-function _flat_block_region(g::_FlatGeom, ru::TensorRule1D, rv::TensorRule1D, k, l, u0, v0)
+# a :scaled self row's span of D in one direction at the node x: [x/4, 3x] ∩ [0, 1] in a GCQ direction (off the
+# weighted segment at the edge), [0, 1] in a GL one
+_flat_scaled_span(r::TensorRule1D, x) =
+    is_gcq(r) ? (max(x / 4, r.pw != 0 && r.segs[1][1] == 0 ? r.segs[1][2] : 0.0), min(1.0, 3x)) : (0.0, 1.0)
+
+# The Duffy rectangle D = (ua, ub, va, vb) of a :scaled (`scaled`) or :block self row at the node (u0, v0) in the cell
+# (k, l): _flat_scaled_span in each direction, or the 3 × 3 cells around it; the longer side (in the metric G at the
+# node) cut to BLOCK_CLIP × the shorter around the node; and G
+function _flat_block_region(g::_FlatGeom, ru::TensorRule1D, rv::TensorRule1D, k, l, u0, v0; scaled::Bool = false)
     yu = g.a .+ v0 .* g.c; yv = g.b .+ u0 .* g.c
     G = (_dot3(yu, yu), _dot3(yu, yv), _dot3(yv, yv))
-    (ua, ub), (va, vb) = _flat_block_span(ru, k), _flat_block_span(rv, l)
+    (ua, ub), (va, vb) = scaled ? (_flat_scaled_span(ru, u0), _flat_scaled_span(rv, v0)) :
+                                  (_flat_block_span(ru, k), _flat_block_span(rv, l))
     su, sv = sqrt(G[1]), sqrt(G[3])
     Lu, Lv = (ub - ua) * su, (vb - va) * sv
     if Lv > BLOCK_CLIP * Lu
@@ -490,8 +604,8 @@ end
 function _flat_block_self!(R, P, g, tu, tv, ex, ws, T, t, q)
     ru, rv = P.ru, P.rv
     k, l = T.cell[t]; u0, v0 = T.ur[t], T.vr[t]
-    D, G = _flat_block_region(g, ru, rv, k, l, u0, v0)
-    for (k1, a1, b1, k2, a2, b2) in _flat_complement_boxes(ru, rv, g, D)
+    D, G = _flat_block_region(g, ru, rv, k, l, u0, v0; scaled = q.self == :scaled)
+    for (k1, a1, b1, k2, a2, b2) in _flat_complement_boxes(ru, rv, g, D; half = q.split == :half)
         _flat_walk!(R, P, g, tu, tv, ex, ws, T, (k1, a1, b1, k2, a2, b2, 0), [t], false, q)
     end
     nρ = cld(length(ru.z0) + length(rv.z0) + 9, 2)            # as _flat_self_duffy!
