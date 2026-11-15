@@ -75,6 +75,24 @@ nodeset(itf) = sort([(round.(p, digits = 13), round(w, digits = 15), pn.normal, 
     @test_throws ArgumentError multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0)), cube((0.5, 0.0, 0.0))], [2.0, 3.0])
 end
 
+@testset "multi_dielectric_box3d_gcq: nlev per vertex" begin
+    # nlev may be a function (vertex, a1, a2) -> levels of a true vertex and its quadrant's sides
+    b = [cube((0.0, 0.0, 0.0))]
+    m2 = multi_dielectric_box3d_gcq(b, [10.0]; nlev = 2, n_quad = 3, tol = 1e-6)
+    f2 = multi_dielectric_box3d_gcq(b, [10.0]; nlev = (v, a1, a2) -> 2, n_quad = 3, tol = 1e-6)
+    @test nodeset(f2.interface) == nodeset(m2.interface)          # a constant function is the Int
+    # grade the vertex (0.5, 0.5, 0.5) by 3 levels, the others not at all
+    seen = Set{NTuple{3, Float64}}(); sides = Set{Tuple{Float64, Float64}}()
+    lv(v, a1, a2) = (push!(seen, v); push!(sides, (a1, a2)); v == (0.5, 0.5, 0.5) ? 3 : 0)
+    g = multi_dielectric_box3d_gcq(b, [10.0]; nlev = lv, n_quad = 3, tol = 1e-6)
+    @test length(seen) == 8 && sides == Set([(0.5, 0.5)])          # every vertex, with its quadrant's sides
+    m0 = multi_dielectric_box3d_gcq(b, [10.0]; nlev = 0, n_quad = 3, tol = 1e-6)
+    # the 3 quadrants at the vertex gain 3 panels per level each
+    @test length(g.interface.panels) == length(m0.interface.panels) + 3 * 3 * 3
+    @test minimum(max(p.Lu, p.Lv) for p in g.interface.panels if p.kind == :corner) ≈ 0.5 / 2^3
+    @test sum(DB.all_weights(g.interface)) ≈ 6 rtol = 1e-6
+end
+
 @testset "multi_dielectric_box3d_gcq: solve" begin
     # one box: the same system as single_dielectric_box3d_gcq (same iterations and flux)
     src1 = PointSource((0.1, 0.15, 0.2), 1.0)
