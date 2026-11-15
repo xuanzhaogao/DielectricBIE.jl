@@ -20,7 +20,7 @@ const DUFFY_NEAR = 0.1     # a side closer than this (× its length) to the targ
 
 # Gauss-Legendre on [0, 1]; the sizes in use are tabulated (a read-only Dict, safe from threads)
 _gl01(n) = ((t, w) = gausslegendre(n); ((1 .+ t) ./ 2, w ./ 2))
-const _DUFFY_GL = Dict(n => _gl01(n) for n in (DUFFY_NRHO:2:24..., DUFFY_NSIDE, 2DUFFY_NSIDE))
+const _DUFFY_GL = Dict(n => _gl01(n) for n in (DUFFY_NRHO:2:64..., 2DUFFY_NSIDE))   # 64: the planar self rows' nρ
 _duffy_gl(n) = get(() -> _gl01(n), _DUFFY_GL, n)
 
 # the nodes of the side p0 + t e, t ∈ [0, 1] (p0 relative to the target, e the side vector, det = |p0 × e| > 0), in the

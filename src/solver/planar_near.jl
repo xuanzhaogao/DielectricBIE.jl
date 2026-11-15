@@ -599,8 +599,26 @@ function _flat_cell_basis!(E, r::TensorRule1D, ts)
     return E
 end
 
+# the radial points of a :scaled / :block self row's Duffy rule on D at the node (u0, v0). The base count is
+# _flat_self_duffy!'s, for one cell's polynomial. Across D in a GCQ direction the density (at worst a single cardinal
+# function) varies on the scale of the node gap, about once per node a ray passes, so nρ ≥ m + 4, m the most nodes of the
+# two rules (u and v summed) between the node and a corner of D (study 99: with 20 points the node at the far corner of a
+# vertex panel, D = [0.25, 1]² and m = 30, erred by 6e-2 of max|row| on a single cardinal function, though by 1e-12 on
+# densities of the GCQ family; with m + 4 every node of the cube's and the octahedron's vertex and edge panels at
+# n_quad 8, 10, 12 is within 2× of 3 × the points, ≤ 2.7e-4, at 12–18 % more radial points on average). A GL × GL
+# panel's density is one polynomial over D, which the base count resolves: unchanged there.
+function _flat_block_nrho(ru::TensorRule1D, rv::TensorRule1D, D, u0, v0)
+    nρ = max(DUFFY_NRHO, cld(length(ru.z0) + length(rv.z0) + 9, 2))
+    if is_gcq(ru) || is_gcq(rv)
+        pass = (r, a, b) -> count(x -> min(a, b) < x < max(a, b), r.x)
+        m = maximum(pass(ru, u0, cu) + pass(rv, v0, cv) for cu in (D[1], D[2]), cv in (D[3], D[4]))
+        nρ = max(nρ, m + 4)
+    end
+    return nρ + isodd(nρ)
+end
+
 # the :block self row of the target t, a node of P in the cell T.cell[t]: the walk on the complement of the Duffy
-# rectangle D, and duffy_rule on D with the density of the cells its points fall in
+# rectangle D, and duffy_rule on D with the density of the cells its points fall in (_flat_block_nrho radial points)
 function _flat_block_self!(R, P, g, tu, tv, ex, ws, T, t, q)
     ru, rv = P.ru, P.rv
     k, l = T.cell[t]; u0, v0 = T.ur[t], T.vr[t]
@@ -608,8 +626,7 @@ function _flat_block_self!(R, P, g, tu, tv, ex, ws, T, t, q)
     for (k1, a1, b1, k2, a2, b2) in _flat_complement_boxes(ru, rv, g, D; half = q.split == :half)
         _flat_walk!(R, P, g, tu, tv, ex, ws, T, (k1, a1, b1, k2, a2, b2, 0), [t], false, q)
     end
-    nρ = cld(length(ru.z0) + length(rv.z0) + 9, 2)            # as _flat_self_duffy!
-    du, dv, w = duffy_rule((u0, v0), D, G; nρ = max(DUFFY_NRHO, nρ + isodd(nρ)))
+    du, dv, w = duffy_rule((u0, v0), D, G; nρ = _flat_block_nrho(ru, rv, D, u0, v0))
     us = u0 .+ du; vs = v0 .+ dv
     wt = similar(w)
     @inbounds for i in eachindex(w)

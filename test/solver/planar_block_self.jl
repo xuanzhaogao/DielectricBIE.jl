@@ -127,3 +127,34 @@ end
         end
     end
 end
+
+@testset "scaled Duffy region: radial points from the nodes a ray passes" begin
+    # study 99: a node at the far corner of a vertex panel has D = [1/4, 1]², its rays 0.75 to 1.06 long, and the GCQ
+    # cardinal functions there bumps of the node gap's width; 20 radial points erred by 6e-2 of max|row| on a single
+    # cardinal function. _flat_block_nrho takes m + 4 points, m the most nodes a ray to a corner of D passes.
+    V = [1.0 -1.0 0.0 0.0 0.0 0.0; 0.0 0.0 1.0 -1.0 0.0 0.0; 0.0 0.0 0.0 0.0 1.0 -1.0]
+    F = reduce(hcat, [(i == 1 ? 1 : -1) * (j == 3 ? 1 : -1) * (k == 5 ? 1 : -1) > 0 ? [i, j, k] : [i, k, j]
+                      for i in (1, 2), j in (3, 4), k in (5, 6)])
+    patches, quads = polyhedron_patches(V, F; eps_in = Inf)
+    itf, _, _ = polyhedron_mesh(CurvedGeometry(patches), quads; nlev = 2, n_quad = 8, tol = 1e-12, corner = :gcq)
+    region(P, g, u0, v0) = DB._flat_block_region(g, P.ru, P.rv, DB._pn_cell(P.ru, u0, 1, "u"), DB._pn_cell(P.rv, v0, 1, "v"),
+                                                 u0, v0; scaled = true)[1]
+    base(P) = (n = max(DB.DUFFY_NRHO, cld(length(P.ru.z0) + length(P.rv.z0) + 9, 2)); n + isodd(n))
+    # a GL × GL panel keeps the base count; a GCQ panel's far-corner node gets more, a node near its edge the base
+    P = itf.panels[findfirst(P -> P.kind == :gl, itf.panels)]; g = DB._flat_geom(P)
+    u0, v0 = P.ru.x[end], P.rv.x[end]
+    @test DB._flat_block_nrho(P.ru, P.rv, region(P, g, u0, v0), u0, v0) == base(P)
+    P = itf.panels[findfirst(P -> P.kind == :corner, itf.panels)]; g = DB._flat_geom(P); ru, rv = P.ru, P.rv
+    u0, v0 = ru.x[end], rv.x[end]; D = region(P, g, u0, v0)
+    m = maximum(count(x -> min(u0, cu) < x < max(u0, cu), ru.x) + count(x -> min(v0, cv) < x < max(v0, cv), rv.x)
+                for cu in D[1:2], cv in D[3:4])
+    @test m + 4 > base(P)
+    @test DB._flat_block_nrho(ru, rv, D, u0, v0) == m + 4 + isodd(m)
+    @test DB._flat_block_nrho(ru, rv, region(P, g, ru.x[2], rv.x[2]), ru.x[2], rv.x[2]) == base(P)
+    # the far-corner row on single cardinal functions, against the exact rows (the node's own cell by Duffy, every
+    # other leaf exact on each cardinal function)
+    T = DB._FlatTargets([u0], [v0], zeros(3, 1), nothing, [(DB._pn_cell(ru, u0, 1, "u"), DB._pn_cell(rv, v0, 1, "v"))])
+    ref = DB._flat_rows(P, g, T, PlanarProductNearQuad(η_leaf = 3.0, self = :cell, split = :peel))
+    R = DB._flat_rows(P, g, T, PlanarProductNearQuad())
+    @test maximum(abs.(R .- ref)) / maximum(abs.(ref)) < 1e-3
+end
