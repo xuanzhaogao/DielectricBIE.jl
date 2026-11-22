@@ -25,20 +25,38 @@ function junction_powers(angles::AbstractVector, eps::AbstractVector;
                          gmax::Real = 20.0, ngrid::Int = 200_000)
     length(angles) == length(eps) || throw(ArgumentError("angles and eps must have equal length"))
     abs(sum(angles) - 2pi) < 1e-12 || throw(ArgumentError("angles must sum to 2π"))
-    # cached (one junction is ~0.5 s of determinant evaluations, and every mesh call asks for its junctions again)
+    # cached (one junction is ~10 ms of determinant evaluations, and every mesh call asks for its junctions again).
+    # The lock guards the dictionary only: the roots are found outside it, so threads asking for different junctions
+    # run in parallel. Two threads asking for the same new junction both compute it (the roots are deterministic) and
+    # the first one stored is kept.
     key = (Float64.(angles), Float64.(eps), Float64(gmax), ngrid)
-    return copy(lock(() -> get!(() -> _junction_powers(angles, eps, gmax, ngrid), JUNCTION_POWERS_CACHE, key),
-                     JUNCTION_POWERS_LOCK))
+    hit = lock(() -> get(JUNCTION_POWERS_CACHE, key, nothing), JUNCTION_POWERS_LOCK)
+    hit === nothing || return copy(hit)
+    roots = _junction_powers(angles, eps, gmax, ngrid)
+    return copy(lock(() -> get!(JUNCTION_POWERS_CACHE, key, roots), JUNCTION_POWERS_LOCK))
 end
 
 const JUNCTION_POWERS_CACHE = Dict{Tuple{Vector{Float64}, Vector{Float64}, Float64, Int}, Vector{Float64}}()
 const JUNCTION_POWERS_LOCK = ReentrantLock()
 
 function _junction_powers(angles, eps, gmax, ngrid)
-    f = g -> theta_ODE_det(angles[1:end-1], eps, g)
-    gs = collect(range(1e-3, gmax, length = ngrid))
-    fs = f.(gs)
-    fscale = maximum(abs, fs)
+    f = ThetaODEDet(angles[1:end-1], eps)      # theta_ODE_det(angles[1:end-1], eps, ·) without allocations
+    gs = range(1e-3, gmax, length = ngrid)
+    # One pass over the grid with three det values at a time, keeping the cells with a sign change, the candidate
+    # double roots (below) and fscale. (Storing the ngrid values, 1.6 MB per junction, made threaded calls wait on
+    # each other in garbage collection.)
+    fscale = 0.0
+    changes = Int[]                        # i: det changes sign on [gs[i], gs[i+1]]
+    minima = Tuple{Int, Float64}[]         # (i, det(gs[i])): local minimum of |det|, same sign at gs[i±1]
+    fm2 = fm1 = NaN                        # det at gs[i-2], gs[i-1]
+    for i in eachindex(gs)
+        fi = f(gs[i])
+        fscale = max(fscale, abs(fi))
+        i >= 2 && fm1 * fi < 0 && push!(changes, i - 1)
+        i >= 3 && abs(fm1) < abs(fm2) && abs(fm1) < abs(fi) && fm2 * fm1 > 0 && fm1 * fi > 0 &&
+            push!(minima, (i - 1, fm1))
+        fm2, fm1 = fm1, fi
+    end
     roots = Float64[]
     bisect(F, a, b) = begin
         fa = F(a)
@@ -49,8 +67,8 @@ function _junction_powers(angles, eps, gmax, ngrid)
         end
         return (a + b) / 2
     end
-    for i in 1:length(gs)-1
-        fs[i] * fs[i+1] < 0 && push!(roots, bisect(f, gs[i], gs[i+1]))
+    for i in changes
+        push!(roots, bisect(f, gs[i], gs[i+1]))
     end
     # A local minimum of |det| without a sign change on the grid is either a double
     # root or two simple roots inside one grid cell (e.g. γ1 ≈ 1 at low contrast,
@@ -59,12 +77,11 @@ function _junction_powers(angles, eps, gmax, ngrid)
     # double roots is ~1e-30 fscale, far below the 1e-20 threshold.
     h = 1e-6
     df = g -> (f(g + h) - f(g - h)) / 2h
-    for i in 2:length(gs)-1
-        if abs(fs[i]) < abs(fs[i-1]) && abs(fs[i]) < abs(fs[i+1]) &&
-           fs[i-1] * fs[i] > 0 && fs[i] * fs[i+1] > 0 && df(gs[i-1]) * df(gs[i+1]) < 0
+    for (i, fi) in minima
+        if df(gs[i-1]) * df(gs[i+1]) < 0
             g0 = bisect(df, gs[i-1], gs[i+1])
             f0 = f(g0)
-            if f0 * fs[i] < 0 && abs(f0) > 1e-20 * fscale
+            if f0 * fi < 0 && abs(f0) > 1e-20 * fscale
                 append!(roots, (bisect(f, gs[i-1], g0), bisect(f, g0, gs[i+1])))
             elseif abs(f0) < 1e-10 * fscale && all(abs.(roots .- g0) .> 1e-8)
                 push!(roots, g0)

@@ -52,12 +52,22 @@ using Test
         @test γ[1] ≈ 1 - q rtol = 1e-6
         @test length(γ) == length(classes(1 - q, 5.9)) && maximum(abs.(γ .- classes(1 - q, 5.9))) < 1e-9
     end
-    # a repeated junction comes from the cache (one solve is ~0.5 s), as the caller's own copy
+    # a repeated junction comes from the cache, as the caller's own copy
     jp() = junction_powers([π, π / 2, π / 2], [1.0, 2.0, 7.0]; gmax = 6.0)
-    ja = jp(); t = @elapsed jb = jp()
-    @test jb == ja && jb !== ja && t < 0.05
+    ja = jp(); jb = jp()
+    @test jb == ja && jb !== ja && BI.JUNCTION_POWERS_CACHE[([π, π / 2, π / 2], [1.0, 2.0, 7.0], 6.0, 200_000)] == ja
     jb[1] = 0.0
     @test jp()[1] == ja[1]
+    # concurrent first calls for one junction: equal results, each the caller's own copy, one cache entry
+    n0 = length(BI.JUNCTION_POWERS_CACHE)
+    js = fetch.([Threads.@spawn junction_powers([π, 0.7, π - 0.7], [1.0, 3.0, 5.0]; gmax = 4.0) for _ in 1:32])
+    @test all(==(js[1]), js) && allunique(objectid.(js)) && length(BI.JUNCTION_POWERS_CACHE) == n0 + 1
+    # the allocation-free determinant of the root finder is bitwise theta_ODE_det (dielectric, four sectors, PEC)
+    for (a, e) in (([2π - 1.0, 1.0], [1.0, 10.0]), (fill(π / 2, 4), [1.0, 50.0, 2.0, 10.0]),
+                   ([π / 2, π, π / 2], [10.0, 1.0, Inf]))
+        d = BI.ThetaODEDet(a[1:end-1], e)
+        @test all(d(g) === BI.theta_ODE_det(a[1:end-1], e, g) for g in range(0.0, 13.0, length = 5001))
+    end
     γn = filter(<=(5.9), junction_powers([π, π / 2, π / 2], [1.0, 10.0, 10.001]; gmax = 6.0))
     @test 1 - 1e-4 < γn[1] < 1
     @test length(γn) == length(classes(γn[1], 5.9)) && maximum(abs.(γn .- classes(γn[1], 5.9))) < 1e-9
