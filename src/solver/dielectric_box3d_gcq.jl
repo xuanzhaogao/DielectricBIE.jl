@@ -45,6 +45,29 @@ end
 const _CHARGE_SHIFT = -0.5
 
 """
+    ChargeConstraint(nodes, g, u, Q)
+
+One charge constraint `gᵀ σ[nodes] = Q` for `solve_dielectric_box3d_gcq(...; constraints)`, imposed through the
+rank-one term `(A - ½ u gᵀ) σ = b - ½ u Q` on the rows `nodes`. `g` holds the functional's coefficients (the quadrature
+weights times any per-node factor, e.g. the permittivity across a conductor's face for its free charge), `u` the
+vector the term is added along. The term fixes the near-null mode of the left null vector ℓ with `ℓᵀu = 1`.
+The tuple `(range, Q)` stands for the plain total charge of a body: `g = w[range]`, `u = 1/|∂c|`.
+"""
+struct ChargeConstraint
+    nodes::Vector{Int}
+    g::Vector{Float64}
+    u::Vector{Float64}
+    Q::Float64
+end
+
+_charge_constraint(c::ChargeConstraint, w) = c
+function _charge_constraint(c, w)
+    rg, Q = c
+    nodes = collect(rg)
+    return ChargeConstraint(nodes, w[nodes], fill(1 / sum(w[nodes]), length(nodes)), Float64(Q))
+end
+
+"""
     solve_dielectric_box3d_gcq(A, b, interface; rtol=1e-12, itmax=500, constraints=nothing, precondition=true)
 
 GMRES on the W^{1/2}-scaled system (unknowns W^{1/2} σ, W the quadrature
@@ -64,7 +87,9 @@ body of permittivity ε containing the charge q), pass `[(range_c, Q_c), ...]` w
 `range_c` the indices of body c's nodes; then
     (A - ½ Σ_c u_c w_cᵀ) σ = b - ½ Σ_c u_c Q_c,   u_c = 1_c / |∂c|,  w_cᵀσ = ∫_∂c σ,
 is solved instead. The rank-one terms move each body's near-zero eigenvalue τ + ½ to τ
-(|τ| ≥ ½) and leave the rest of the spectrum unchanged.
+(|τ| ≥ ½) and leave the rest of the spectrum unchanged. An element may also be a
+[`ChargeConstraint`](@ref), a weighted functional with its own `u` (the free charge of a conductor,
+see `box_charge_constraints(mesh::MultiBoxGCQ, sources)`).
 `box_charge_constraints` builds the constraints for box bodies, and
 `solve_dielectric_boxes_gcq` applies them by default.
 """
@@ -76,15 +101,15 @@ function solve_dielectric_box3d_gcq(A, b::AbstractVector, interface::DielectricI
     n = length(b)
     Ad, bd = A, b
     if constraints !== nothing
-        cs = [(collect(rg), Float64(Q), sum(w[rg])) for (rg, Q) in constraints]
+        cs = [_charge_constraint(c, w) for c in constraints]
         bd = copy(b)
-        for (rg, Q, area) in cs
-            bd[rg] .+= _CHARGE_SHIFT * Q / area
+        for c in cs
+            view(bd, c.nodes) .+= (_CHARGE_SHIFT * c.Q) .* c.u
         end
         Ad = LinearMap{Float64}(n, n) do x
             y = A * x
-            for (rg, _, area) in cs
-                y[rg] .+= _CHARGE_SHIFT * dot(view(w, rg), view(x, rg)) / area
+            for c in cs
+                view(y, c.nodes) .+= (_CHARGE_SHIFT * dot(c.g, view(x, c.nodes))) .* c.u
             end
             y
         end

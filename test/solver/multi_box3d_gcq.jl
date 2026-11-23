@@ -69,8 +69,8 @@ nodeset(itf) = sort([(round.(p, digits = 13), round(w, digits = 15), pn.normal, 
     @test_throws ArgumentError source_permittivity(m, (0.0, 0.1, 0.1))     # on the shared face
     @test_throws ArgumentError source_permittivity(m, (1.0, 0.1, 0.1))     # on an outer face
     cons = box_charge_constraints(m, [PointSource((-0.4, 0.1, 0.1), 1.0), PointSource((0.4, 0.1, 0.1), 2.0)])
-    @test length(cons) == 1 && cons[1][1] == 1:DB.num_points(m)
-    @test cons[1][2] ≈ (1 - 1 / 2) + 2 * (1 - 1 / 10)
+    @test length(cons) == 1 && cons[1].nodes == 1:DB.num_points(m)
+    @test cons[1].Q ≈ (1 - 1 / 2) + 2 * (1 - 1 / 10)
     @test_throws ArgumentError box_charge_constraints(mc, PointSource((-0.4, 0.1, 0.1), 1.0))
     @test_throws ArgumentError multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0)), cube((0.5, 0.0, 0.0))], [2.0, 3.0])
 end
@@ -117,4 +117,85 @@ end
         abs(dot(DB.all_weights(sol.interface), sol.σ) - (1 - 1 / 2))
     end
     @test errs[2] < errs[1] && errs[2] < 1e-5
+end
+
+@testset "multi_dielectric_box3d_gcq: conductors" begin
+    # conductors: perfectly conducting boxes joined by a shared face or a shared edge; a vertex contact keeps them apart
+    gm(cs, es) = multi_dielectric_box3d_gcq(cube.(cs), es; nlev = 1, n_quad = 3, tol = 1e-4)
+    row = gm([(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], [Inf, 2.0, Inf])
+    @test row.clusters == [[1, 2, 3]] && row.conductors == [[1], [3]]
+    ml = gm([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], [Inf, 2.0, Inf])     # edge contact x = y = 1/2
+    @test ml.conductors == [[1, 3]]
+    mv = gm([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 1.0)], [Inf, 2.0, Inf])     # vertex contact (1/2, 1/2, 1/2)
+    @test sort(mv.conductors) == [[1], [3]] && sort(mv.clusters) == [[1, 2], [3]]
+    mf = gm([(-0.5, 0.0, 0.0), (0.5, 0.0, 0.0)], [Inf, Inf])                          # face contact: one body
+    @test mf.conductors == [[1, 2]]
+    @test sum(DB.all_weights(mf.interface)) ≈ 10 rtol = 1e-4                    # no interface between them
+    @test gm([(0.0, 0.0, 0.0)], [2.0]).conductors == Vector{Int}[]
+
+    # the box on the eps_in side and on the eps_out side of every panel (0: the exterior)
+    epsof(m, b) = b == 0 ? m.eps_out : m.epses[b]
+    @test length(row.panel_boxes) == length(row.interface.panels)
+    @test all(row.interface.eps_in[k] == epsof(row, bi) && row.interface.eps_out[k] == epsof(row, bo)
+              for (k, (bi, bo)) in enumerate(row.panel_boxes))
+
+    # one constraint per conductor on its own surface: the free charge Σ ε_d ∫ σ (ε_d across the face), normalized
+    # by the conductor's mean ε_d; u carries the sign of the node's row (+ where the normal leaves the conductor), so
+    # ℓᵀu = 1 for the conductor's left null vector ℓ = s w. A cluster holding a conductor has no row of its own.
+    cons = box_charge_constraints(row, PointSource((-0.3, 1.5, 0.1), 1.0))
+    @test length(cons) == 2 && all(c -> c isa ChargeConstraint && c.Q == 0, cons)
+    w = DB.all_weights(row.interface)
+    offs = cumsum([0; DB.num_points.(row.interface.panels)])
+    for (c, K) in zip(cons, row.conductors)
+        on = [k for (k, (bi, bo)) in enumerate(row.panel_boxes) if bi in K || bo in K]
+        @test sort(c.nodes) == sort(reduce(vcat, [collect(offs[k]+1:offs[k+1]) for k in on]))
+        @test sum(w[c.nodes]) ≈ 6 rtol = 1e-4                                       # the cube's surface
+        εd = [let k = searchsortedlast(offs, i - 1); row.panel_boxes[k][1] in K ? row.interface.eps_out[k] :
+                                                                               row.interface.eps_in[k] end for i in c.nodes]
+        @test c.g ≈ εd .* w[c.nodes] ./ (sum(εd .* w[c.nodes]) / sum(w[c.nodes]))   # 5 vacuum faces, 1 face on ε 2
+        @test sort(unique(εd)) == [1.0, 2.0]
+        s = [let k = searchsortedlast(offs, i - 1); row.panel_boxes[k][1] in K ? 1.0 : -1.0 end for i in c.nodes]
+        @test c.u ≈ s ./ sum(w[c.nodes]) && dot(s .* w[c.nodes], c.u) ≈ 1
+    end
+    @test count(<(0), cons[1].u) > 0                     # box 1's shared face: normal out of the ε box, into the conductor
+    @test length(box_charge_constraints(ml, PointSource((-0.3, 1.0, 0.15), 1.0))) == 1
+    @test length(box_charge_constraints(mv, PointSource((-0.3, 1.0, 0.15), 1.0))) == 2
+    # a conductor alone in vacuum: the plain total charge, as before
+    c1_m = gm([(0.0, 0.0, 0.0)], [Inf])
+    c1 = only(box_charge_constraints(c1_m, PointSource((0.0, 1.5, 0.0), 1.0)))
+    @test c1.g ≈ DB.all_weights(c1_m.interface)[c1.nodes] && c1.u ≈ fill(1 / sum(c1.g), length(c1.g))
+    # dielectric clusters keep their Gauss total charge (constraints as tuples still work in the solver)
+    pair = gm([(-0.5, 0.0, 0.0), (0.5, 0.0, 0.0)], [2.0, 10.0])
+    cp = only(box_charge_constraints(pair, PointSource((-0.4, 0.1, 0.1), 1.0)))
+    @test cp.nodes == collect(1:DB.num_points(pair)) && cp.Q ≈ 1 - 1 / 2 && cp.g == DB.all_weights(pair.interface)
+end
+
+@testset "multi_dielectric_box3d_gcq: conductor solves" begin
+    # inside a conductor the total potential u_inc + Sσ is constant; the charge q = 1 is outside, so every conductor is
+    # neutral. Coarse mesh (rules to 1e-4): the free charges and the potential spreads are ~1e-5 of their scales.
+    cin(c) = [c .+ s .* ntuple(i -> Float64(i == ax), 3) for ax in 1:3 for s in (-0.25, 0.25)]
+    free(c, σ) = abs(dot(c.g, σ[c.nodes])) / dot(abs.(c.g), abs.(σ[c.nodes]))
+    function check(boxes, epses, src)
+        m = multi_dielectric_box3d_gcq(cube.(boxes), epses; nlev = 0, n_quad = 3, tol = 1e-4)
+        A = dielectric_operator(m.interface; far = FMM3DFarField(1e-12), near = GCQNearQuad(quad_tol = 1e-12))
+        b = rhs_dielectric_box3d(m.interface, PointSource(src, 1.0), 1.0)
+        cons = box_charge_constraints(m, PointSource(src, 1.0))
+        σ, st = solve_dielectric_box3d_gcq(A, b, m.interface; rtol = 1e-10, constraints = cons)
+        V = map(m.conductors) do K
+            T = cin(boxes[K[1]])
+            u = potential_tensor(m.interface, σ, T) .+ [1 / (4π * norm(x .- src)) for x in T]
+            (sum(u) / length(u), maximum(u) - minimum(u))
+        end
+        return m, A, b, cons, σ, st, V
+    end
+    # two conductors joined through a dielectric (one cluster): each neutral, each at its own potential
+    m, A, b, cons, σ, st, V = check([(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], [Inf, 2.0, Inf], (-0.3, 1.5, 0.1))
+    @test st.solved && length(cons) == 2 && all(free(c, σ) < 1e-4 for c in cons)
+    @test all(v[2] < 1e-5 * abs(v[1]) for v in V) && abs(V[1][1] - V[2][1]) > 0.1 * abs(V[1][1])
+    # the cluster's total alone (the earlier default) leaves the split between the two conductors free: ~10% off
+    σc, _ = solve_dielectric_box3d_gcq(A, b, m.interface; rtol = 1e-10, constraints = [(1:DB.num_points(m), 0.0)])
+    @test maximum(free(c, σc) for c in cons) > 1e-2
+    # conductors touching along an edge are one conductor: one row, one potential, charge flows between the boxes
+    m, A, b, cons, σ, st, V = check([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], [Inf, 2.0, Inf], (-0.3, 1.0, 0.15))
+    @test st.solved && free(only(cons), σ) < 1e-4 && only(V)[2] < 1e-4 * abs(only(V)[1])
 end
