@@ -97,6 +97,17 @@ operator is assembled by hand.
 angle p = −1/3, 1/3, 1, 5/3, …, the limit of the dielectric roots). A source inside a conductor
 is rejected.
 
+**Several conductors.** Every closed conductor surface is a left null vector of the operator (Gauss's
+law inside the conductor), so each conductor needs a row of its own: a cluster total cannot fix two
+conductors joined through a dielectric box. For a `MultiBoxGCQ` mesh, `box_charge_constraints` gives
+each conductor (`mesh.conductors`) the row of its free charge, Σ_d ε_d ∫ σ over its faces (ε_d the
+permittivity across the face), as a [`ChargeConstraint`](@ref); clusters without a conductor keep
+their total charge. Perfectly conducting boxes joined by a face or along an edge form one conductor
+(at different potentials an edge contact would cost infinite energy, and the conductor junction rule
+assumes one potential), with one row for their total. Boxes touching only at a vertex stay separate
+conductors, each neutral: a point contact does not fix their potentials, and a row on their sum alone
+would leave the system singular.
+
 **Touching boxes.** Where two boxes share an edge, that edge is a junction of four sectors and
 needs its own rule, e.g. for two boxes of permittivity R meeting along the z-axis edge with
 vacuum in the other two quadrants (p₁ = (4/π) atan(1/√R) − 1 → −1 as R grows):

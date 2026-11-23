@@ -18,6 +18,17 @@
 # Gauss's law fixes the charge inside a closed surface lying in the exterior, and a surface around
 # one box of a face-sharing pair would cut through its neighbour. Boxes that touch only along
 # edges or at vertices stay separate bodies.
+#
+# Perfect conductors are constrained on their own surfaces instead. Every closed conductor surface is
+# a left null vector of the operator (Gauss's law inside the conductor), so a cluster holding two
+# conductors, e.g. two conductors joined through a dielectric box, has two null modes, which one
+# cluster row cannot fix. Each conductor gets the row of its free charge, Σ_d ε_d ∫ σ over its faces
+# (ε_d the permittivity across the face). Conductors joined by a face or along an edge are one
+# conductor: at different potentials an edge contact would carry a field ~ ΔV/r of infinite energy,
+# so the edge rule (Dirichlet on both conductor sectors) holds one potential, and one row fixes their
+# total charge. A vertex contact keeps them apart: there two potentials cost finite energy, each
+# conductor's charge is its own degree of freedom, and a row on their sum would leave the system
+# singular (Study 107 of dielectric_edge_singularity).
 
 """
     MultiBoxGCQ
@@ -28,6 +39,8 @@ GCQ mesh of several boxes from `multi_dielectric_box3d_gcq`:
 - `clusters`  : box indices of each cluster
 - `epses, eps_out` : box permittivities and the exterior one
 - `grid, cellbox`  : grid coordinates per axis and the box index of each cell (0 = exterior)
+- `panel_boxes` : per panel, the box on its `eps_in` side and on its `eps_out` side (0 = exterior)
+- `conductors`  : box indices of each conductor (perfectly conducting boxes joined by faces or edges)
 """
 struct MultiBoxGCQ{I <: DielectricInterface}
     interface::I
@@ -37,6 +50,8 @@ struct MultiBoxGCQ{I <: DielectricInterface}
     eps_out::Float64
     grid::NTuple{3, Vector{Float64}}
     cellbox::Array{Int, 3}
+    panel_boxes::Vector{NTuple{2, Int}}
+    conductors::Vector{Vector{Int}}
 end
 
 Base.show(io::IO, m::MultiBoxGCQ) =
@@ -148,6 +163,23 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
     roots = unique(root.(eachindex(boxes)))
     clusters = [[b for b in eachindex(boxes) if root(b) == r] for r in roots]
     clusterof = Dict(b => c for (c, cl) in enumerate(clusters) for b in cl)
+    # conductors: perfectly conducting boxes joined by a face or an edge (cells within one step along at most two
+    # axes); a vertex contact does not join them (see the file header)
+    pec = [b for b in eachindex(boxes) if isinf(epses[b])]
+    cparent = Dict(b => b for b in pec)
+    croot(b) = (while cparent[b] != b; cparent[b] = cparent[cparent[b]]; b = cparent[b]; end; b)
+    for I in CartesianIndices(ncell)
+        b1 = cellbox[I]
+        (b1 != 0 && isinf(epses[b1])) || continue
+        for d in Iterators.product(-1:1, -1:1, -1:1)
+            1 <= sum(abs, d) <= 2 || continue
+            b2 = boxof(Tuple(I) .+ d)
+            (b2 != 0 && b2 != b1 && isinf(epses[b2])) || continue
+            r1, r2 = croot(b1), croot(b2)
+            r1 != r2 && (cparent[r1] = r2)
+        end
+    end
+    conductors = [[b for b in pec if croot(b) == r] for r in unique(croot.(pec))]
 
     # GCQ rules: one per distinct junction (sectors up to rotation and reflection)
     glcache = Dict{Int, TensorRule1D}()
@@ -190,7 +222,9 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
     planeid(ax, x) = Int(hash((ax, round(x, digits = 12))) >> 2)
     cpanels = [TensorPanel{T}[] for _ in clusters]
     ceps_in = [T[] for _ in clusters]; ceps_out = [T[] for _ in clusters]
-    pending = Tuple{Int, T, T, Vector{TensorPanel{T}}, TensorRule1D}[]   # quadrants for the batched RHS refinement
+    cboxes = [NTuple{2, Int}[] for _ in clusters]
+    # quadrants for the batched RHS refinement, with their cluster, permittivities and boxes (eps_in side, eps_out side)
+    pending = Tuple{Int, T, T, Vector{TensorPanel{T}}, TensorRule1D, NTuple{2, Int}}[]
     for ax in 1:3
         t1, t2 = [k for k in 1:3 if k != ax]
         for p in eachindex(grid[ax]), i in 1:ncell[t1], j in 1:ncell[t2]
@@ -205,6 +239,7 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
             sg = bm > bp ? 1 : -1
             nrm = sg .* unit(ax)
             em, ep = sg > 0 ? (mat(Im), mat(Ip)) : (mat(Ip), mat(Im))    # eps_in, eps_out
+            bio = sg > 0 ? (bm, bp) : (bp, bm)                            # their boxes
             c = clusterof[max(bm, bp)]
             fid = planeid(ax, grid[ax][p])
             a1 = (grid[t1][i+1] - grid[t1][i]) / 2
@@ -238,31 +273,32 @@ function multi_dielectric_box3d_gcq(boxes::AbstractVector, epses::AbstractVector
                 if rhs !== nothing && rhs_batch === nothing
                     quad = _gcq_rhs_refine(quad, rhs, T(rhs_atol), max_depth, glc, glc, glc)
                 end
-                push!(pending, (c, em, ep, quad, glc))
+                push!(pending, (c, em, ep, quad, glc, bio))
             end
         end
     end
-    quads = [q for (_, _, _, q, _) in pending]
+    quads = [q for (_, _, _, q, _, _) in pending]
     if rhs_batch !== nothing
-        quads = _gcq_rhs_refine_batched([(q, glc, glc) for (q, (_, _, _, _, glc)) in zip(quads, pending)],
+        quads = _gcq_rhs_refine_batched([(q, glc, glc) for (q, (_, _, _, _, glc, _)) in zip(quads, pending)],
                                         rhs_batch, T(rhs_atol), max_depth)
     end
     if targets !== nothing
-        quads = _gcq_target_refine([(q, glc, glc) for (q, (_, _, _, _, glc)) in zip(quads, pending)], targets;
+        quads = _gcq_target_refine([(q, glc, glc) for (q, (_, _, _, _, glc, _)) in zip(quads, pending)], targets;
                                    quad_tol = target_tol, η_gcq = target_eta, gcq_far = target_far,
                                    max_depth = target_depth, min_size = target_min_size, skin = target_skin)
     end
     # GL×GL panels cut to the aspect limit after all refinement, before the per-panel permittivities and the bodies
     quads = map(_split_gl_aspect, quads)
-    for ((c, em, ep, _, _), quad) in zip(pending, quads)
+    for ((c, em, ep, _, _, bio), quad) in zip(pending, quads)
         append!(cpanels[c], quad)
         append!(ceps_in[c], fill(em, length(quad)))
         append!(ceps_out[c], fill(ep, length(quad)))
+        append!(cboxes[c], fill(bio, length(quad)))
     end
     interface = DielectricInterface(reduce(vcat, cpanels), reduce(vcat, ceps_in), reduce(vcat, ceps_out))
     offs = cumsum([0; [sum(num_points, ps; init = 0) for ps in cpanels]])
     bodies = [offs[c]+1:offs[c+1] for c in eachindex(clusters)]
-    return MultiBoxGCQ(interface, bodies, clusters, epses, eps_out, grid, cellbox)
+    return MultiBoxGCQ(interface, bodies, clusters, epses, eps_out, grid, cellbox, reduce(vcat, cboxes), conductors)
 end
 
 # box index of the cell containing x (0 = exterior); error if x lies on an interface
@@ -293,11 +329,20 @@ function source_permittivity(m::MultiBoxGCQ, x)
 end
 
 """
-    box_charge_constraints(mesh::MultiBoxGCQ, sources)
+    box_charge_constraints(mesh::MultiBoxGCQ, sources) -> Vector{ChargeConstraint}
 
-Total-charge constraints `[(range_c, Q_c), ...]`, one per cluster of face-sharing boxes:
-Q_c = Σ_{sources q inside the cluster} q (1/ε_out − 1/ε(q)), the charge inside a closed surface
-around the cluster. A source inside a perfect conductor is not allowed.
+Charge constraints for `solve_dielectric_box3d_gcq(...; constraints)`:
+- one per cluster of face-sharing boxes without a perfect conductor: the total charge
+  Q_c = Σ_{sources q inside the cluster} q (1/ε_out − 1/ε(q)), the charge inside a closed surface around the cluster
+  (`g` the quadrature weights on its nodes, `u = 1/|∂c|`);
+- one per conductor (`mesh.conductors`: perfectly conducting boxes joined by faces or edges), on its own surface:
+  its free charge Σ_d ε_d ∫_{faces on d} σ = 0 (a floating neutral conductor; ε_d the permittivity across the face),
+  `g = ε_d w / ε̄` with ε̄ the conductor's area-weighted mean ε_d, and `u = s / |∂K|` with `s = ±1` where the node's
+  normal leaves (enters) the conductor, so that `ℓᵀu = 1` for its left null vector ℓ = s w. A cluster holding a
+  conductor has no total-charge row of its own: its conductors' rows fix it.
+
+Conductors touching only at a vertex are separate conductors, each neutral. A source inside a perfect conductor is not
+allowed.
 """
 function box_charge_constraints(m::MultiBoxGCQ, sources)
     srcs = sources isa PointSource ? [sources] : collect(sources)
@@ -309,5 +354,28 @@ function box_charge_constraints(m::MultiBoxGCQ, sources)
         c = findfirst(cl -> b in cl, m.clusters)
         Q[c] += s.charge * (1 / m.eps_out - 1 / m.epses[b])
     end
-    return [(m.bodies[c], Q[c]) for c in eachindex(m.clusters)]
+    itf = m.interface
+    w = all_weights(itf)
+    cons = ChargeConstraint[]
+    for (c, cl) in enumerate(m.clusters)
+        any(b -> isinf(m.epses[b]), cl) && continue
+        nodes = collect(m.bodies[c])
+        push!(cons, ChargeConstraint(nodes, w[nodes], fill(1 / sum(w[nodes]), length(nodes)), Q[c]))
+    end
+    offs = cumsum([0; [num_points(p) for p in itf.panels]])
+    for K in m.conductors
+        nodes = Int[]; sg = Float64[]; εd = Float64[]
+        for (k, (bi, bo)) in enumerate(m.panel_boxes)
+            s = bi in K ? 1.0 : bo in K ? -1.0 : 0.0
+            s == 0 && continue
+            r = offs[k]+1:offs[k+1]
+            append!(nodes, r)
+            append!(sg, fill(s, length(r)))
+            append!(εd, fill(s > 0 ? itf.eps_out[k] : itf.eps_in[k], length(r)))
+        end
+        wk = w[nodes]; area = sum(wk)
+        ε̄ = dot(εd, wk) / area
+        push!(cons, ChargeConstraint(nodes, (εd ./ ε̄) .* wk, sg ./ area, 0.0))
+    end
+    return cons
 end

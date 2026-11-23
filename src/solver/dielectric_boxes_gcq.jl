@@ -110,9 +110,10 @@ end
     solve_dielectric_boxes_gcq(mesh::MultiBoxGCQ, sources; deflate = true, fmm_tol = 1e-13,
                                quad_tol = 1e-12, η_gcq = 2.0, gcq_far = :max, rtol = 1e-13, itmax = 1000)
 
-The same for a mesh from `multi_dielectric_box3d_gcq` (boxes that may share faces), with one
-total-charge constraint per cluster of face-sharing boxes. `bodies` in the result are the
-clusters' node ranges.
+The same for a mesh from `multi_dielectric_box3d_gcq` (boxes that may share faces), with the
+constraints of `box_charge_constraints(mesh, sources)`: the total charge of each cluster of face-sharing
+boxes without a perfect conductor, and the free charge of each conductor (perfectly conducting boxes joined by
+faces or edges), on its own surface. `bodies` in the result are the clusters' node ranges.
 """
 function solve_dielectric_boxes_gcq(m::MultiBoxGCQ, sources; deflate::Bool = true, kw...)
     srcs = sources isa PointSource ? [sources] : collect(sources)

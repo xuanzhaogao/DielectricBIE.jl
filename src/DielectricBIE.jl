@@ -66,7 +66,7 @@ export Rhs_dielectric_box3d, Rhs_dielectric_box3d_fmm3d, Rhs_dielectric_box3d_hy
 export solve_lu, solve_gmres
 export lhs_dielectric_box3d_gcq_fmm3d, lhs_dielectric_box3d_gcq_dense, solve_dielectric_box3d_gcq,
        solve_dielectric_box3d_gcq_block
-export join_bodies, source_permittivity, box_charge_constraints, solve_dielectric_boxes_gcq
+export join_bodies, source_permittivity, box_charge_constraints, ChargeConstraint, solve_dielectric_boxes_gcq
 export box_node_orbits, symmetric_dense_operator, box_capacitance_gcq
 
 export density_centroid
