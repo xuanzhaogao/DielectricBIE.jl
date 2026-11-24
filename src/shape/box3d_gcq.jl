@@ -11,8 +11,10 @@
 #
 # With `rhs` given, panels are then split until their tensor rule interpolates
 # rhs(point, normal) to `rhs_atol` (absolute, on a 10 × 10 grid of interior test
-# points, as in `single_dielectric_box3d_rhs_adaptive`): GL panels split 2×2; an
-# edge panel splits along the edge (two edge panels) and/or across it (an edge
+# points, as in `single_dielectric_box3d_rhs_adaptive`; across an edge whose rule
+# has a positive density power, e.g. between two perfect conductors, by
+# Gauss-Legendre interpolation instead, see `_rhs_test_rule`): GL panels split
+# 2×2; an edge panel splits along the edge (two edge panels) and/or across it (an edge
 # panel next to the edge and a GL panel beyond it), in the direction that is
 # unresolved; a corner panel splits like one more vertex level.
 #
@@ -103,14 +105,24 @@ end
 
 const _GCQ_TEST_PTS = collect(((1:10) .- 0.5) ./ 10)
 
+# The rule that tests the RHS in one direction of a panel: the panel's own rule, except a GCQ rule with a positive
+# density power pw. Its span s^pw × smooth vanishes at the edge, as the density does at the bottom of a wedge
+# narrower than π between perfect conductors (pw = 1 in a π/2 groove: two conductors touching along an edge, or a
+# re-entrant conductor edge), but the RHS does not: it would leave an error of a fixed fraction of |rhs| at the
+# edge on panels of any size, and the panel would split across the edge down to max_depth. In such a direction
+# the smooth variation of the RHS is tested instead, by Gauss-Legendre interpolation on the same interval with as
+# many points as the rule has nodes (the rule holds s^pw times a polynomial of about that degree). A rule with
+# pw ≤ 0 holds the polynomials themselves and tests the RHS in its own span, as before.
+_rhs_test_rule(r::TensorRule1D) = is_gcq(r) && r.pw > 0 ? gl_tensor_rule(length(r.x)) : r
+
 # max interpolation error of rhs on panel p: total, in u only, in v only
 function _gcq_rhs_errors(p::TensorPanel, rhs)
-    nu, nv = length(p.ru.x), length(p.rv.x)
+    ru, rv = _rhs_test_rule(p.ru), _rhs_test_rule(p.rv)
     lp(u, v) = p.anchor .+ tensor_lpoint(p, u, v)
-    F = [rhs(lp(u, v), p.normal) for u in p.ru.x, v in p.rv.x]
-    Eu = tensor_rule_interp(p.ru, _GCQ_TEST_PTS); Ev = tensor_rule_interp(p.rv, _GCQ_TEST_PTS)
-    Ftu = [rhs(lp(u, v), p.normal) for u in _GCQ_TEST_PTS, v in p.rv.x]      # exact in v (nodes)
-    Ftv = [rhs(lp(u, v), p.normal) for u in p.ru.x, v in _GCQ_TEST_PTS]      # exact in u (nodes)
+    F = [rhs(lp(u, v), p.normal) for u in ru.x, v in rv.x]
+    Eu = tensor_rule_interp(ru, _GCQ_TEST_PTS); Ev = tensor_rule_interp(rv, _GCQ_TEST_PTS)
+    Ftu = [rhs(lp(u, v), p.normal) for u in _GCQ_TEST_PTS, v in rv.x]      # exact in v (nodes)
+    Ftv = [rhs(lp(u, v), p.normal) for u in ru.x, v in _GCQ_TEST_PTS]      # exact in u (nodes)
     Ft = [rhs(lp(u, v), p.normal) for u in _GCQ_TEST_PTS, v in _GCQ_TEST_PTS]
     eu = maximum(abs, Eu * F .- Ftu)
     ev = maximum(abs, F * Ev' .- Ftv)
@@ -133,22 +145,25 @@ function _gcq_rhs_refine(panels::Vector{TensorPanel{T}}, rhs, atol::T, max_depth
     return out
 end
 
-# the points at which _gcq_rhs_errors samples rhs: the nodes, then (test, node v), (node u, test), (test, test)
+# the points at which _gcq_rhs_errors samples rhs: the nodes (of the test rules), then (test, node v), (node u, test),
+# (test, test)
 function _gcq_rhs_points(p::TensorPanel)
+    ru, rv = _rhs_test_rule(p.ru), _rhs_test_rule(p.rv)
     lp(u, v) = p.anchor .+ tensor_lpoint(p, u, v)
-    return vcat(vec([lp(u, v) for u in p.ru.x, v in p.rv.x]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in p.rv.x]),
-                vec([lp(u, v) for u in p.ru.x, v in _GCQ_TEST_PTS]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in _GCQ_TEST_PTS]))
+    return vcat(vec([lp(u, v) for u in ru.x, v in rv.x]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in rv.x]),
+                vec([lp(u, v) for u in ru.x, v in _GCQ_TEST_PTS]), vec([lp(u, v) for u in _GCQ_TEST_PTS, v in _GCQ_TEST_PTS]))
 end
 
 # _gcq_rhs_errors from the values of rhs at _gcq_rhs_points(p)
 function _gcq_rhs_errors_from(p::TensorPanel, vals::AbstractVector)
-    nu, nv, nt = length(p.ru.x), length(p.rv.x), length(_GCQ_TEST_PTS)
+    ru, rv = _rhs_test_rule(p.ru), _rhs_test_rule(p.rv)
+    nu, nv, nt = length(ru.x), length(rv.x), length(_GCQ_TEST_PTS)
     o = 0
     F = reshape(vals[o+1:o+nu*nv], nu, nv); o += nu * nv
     Ftu = reshape(vals[o+1:o+nt*nv], nt, nv); o += nt * nv
     Ftv = reshape(vals[o+1:o+nu*nt], nu, nt); o += nu * nt
     Ft = reshape(vals[o+1:o+nt*nt], nt, nt)
-    Eu = tensor_rule_interp(p.ru, _GCQ_TEST_PTS); Ev = tensor_rule_interp(p.rv, _GCQ_TEST_PTS)
+    Eu = tensor_rule_interp(ru, _GCQ_TEST_PTS); Ev = tensor_rule_interp(rv, _GCQ_TEST_PTS)
     return maximum(abs, Eu * F * Ev' .- Ft), maximum(abs, Eu * F .- Ftu), maximum(abs, F * Ev' .- Ftv)
 end
 
