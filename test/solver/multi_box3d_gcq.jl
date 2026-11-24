@@ -199,3 +199,77 @@ end
     m, A, b, cons, σ, st, V = check([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], [Inf, 2.0, Inf], (-0.3, 1.0, 0.15))
     @test st.solved && free(only(cons), σ) < 1e-4 && only(V)[2] < 1e-4 * abs(only(V)[1])
 end
+
+# Conductor grooves: across an edge where every dielectric arc is a π/2 wedge between perfect conductors, the density
+# vanishes like s (edge rule power pw = 1), but the RHS does not. The RHS is tested across such an edge by
+# Gauss-Legendre interpolation (DB._rhs_test_rule); in the rule's span s × smooth the refinement split the panels at
+# the edge across it down to max_depth (Study 107 of dielectric_edge_singularity: N 45k → 1.1M at nlev 0).
+# L: conductors A and C touch along x = y = 1/2 (B, ε = 2, in one groove, vacuum in the other);
+# U: three conductors joined by faces, a re-entrant edge at x = y = 1/2. Sources in the vacuum groove.
+groove_L() = (cube.([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)]), [Inf, 2.0, Inf], (0.3, 0.8, 0.1))
+groove_U() = (cube.([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]), [Inf, Inf, Inf], (0.8, 0.7, 0.1))
+
+@testset "multi_dielectric_box3d_gcq: RHS refinement at conductor grooves" begin
+    groove(m) = [p for p in m.interface.panels if DB.is_gcq(p.ru) && p.ru.pw ≈ 1]
+    for (boxes, epses, src) in (groove_L(), groove_U())
+        fg(x, n) = -DB.laplace3d_grad(src, x, n)
+        fgb(P, N) = [fg(p, n) for (p, n) in zip(P, N)]
+        kwg = (; nlev = 0, n_quad = 4, tol = 1e-6)
+        m0 = multi_dielectric_box3d_gcq(boxes, epses; kwg...)
+        g0 = groove(m0)
+        @test !isempty(g0)
+        # the test rule across the groove: Gauss-Legendre with as many points as the edge rule has nodes
+        rt = DB._rhs_test_rule(g0[1].ru)
+        @test !DB.is_gcq(rt) && length(rt.x) == length(g0[1].ru.x) && rt.pw == 0
+        @test DB._rhs_test_rule(g0[1].rv) === g0[1].rv
+        # L 201 panels (19044 nodes), U 254 (14660); before, at max_depth 8, 1633 and 1020 and growing (4753 and 2580
+        # at 10): the groove edge panels split across down to 0.5 / 2^max_depth
+        m = multi_dielectric_box3d_gcq(boxes, epses; kwg..., rhs = fg, rhs_atol = 2e-5, max_depth = 8)
+        @test length(m.interface.panels) > length(m0.interface.panels)              # it refined
+        @test DB.num_points(m) < 2 * DB.num_points(m0)
+        @test 0.5 / 2^3 < minimum(p.Lu for p in groove(m)) < 0.5                     # across the groove too, a little
+        # it stopped by itself: the same panels with the default max_depth (30), and from the batched RHS
+        @test nodeset(multi_dielectric_box3d_gcq(boxes, epses; kwg..., rhs = fg, rhs_atol = 2e-5).interface) ==
+              nodeset(m.interface)
+        @test nodeset(multi_dielectric_box3d_gcq(boxes, epses; kwg..., rhs_batch = fgb, rhs_atol = 2e-5).interface) ==
+              nodeset(m.interface)
+    end
+
+    # without such an edge (every rule power ≤ 0) the panels are those of dev before the change (234e4c7): a
+    # perfect conductor (pw = -1/3) and a dielectric box (pw = -0.107)
+    f0(x, n) = -DB.laplace3d_grad((-0.3, 1.0, 0.15), x, n)
+    f0b(P, N) = [f0(p, n) for (p, n) in zip(P, N)]
+    kw0 = (; nlev = 1, n_quad = 4, tol = 1e-6, rhs_atol = 1e-5)
+    mp = multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0))], [Inf]; kw0..., rhs = f0)
+    @test all(r -> !DB.is_gcq(r) || r.pw < 0, (r for p in mp.interface.panels for r in (p.ru, p.rv)))
+    @test (length(mp.interface.panels), DB.num_points(mp)) == (134, 10736)
+    mpb = multi_dielectric_box3d_gcq([cube((0.0, 0.0, 0.0))], [Inf]; kw0..., rhs_batch = f0b)
+    @test nodeset(mpb.interface) == nodeset(mp.interface)
+    sd = single_dielectric_box3d_gcq(1.0, 1.0, 1.0, 2.0, 1.0; kw0..., center = (0.0, 1.8, 0.0), rhs = f0)
+    @test (length(sd.panels), DB.num_points(sd)) == (198, 12384)
+end
+
+@testset "multi_dielectric_box3d_gcq: RHS refinement at conductor grooves, solve" begin
+    # the L refined for the RHS solves like the plain mesh, more accurately: the far potentials agree to the level of
+    # the rule tolerance (3e-3 here), and the total potential inside the conductor is 3x flatter (relative spread
+    # 3.0e-3 against 9.3e-3)
+    boxes, epses, src = groove_L()
+    f(x, n) = -DB.laplace3d_grad(src, x, n)
+    T = [(-1.5, 2.0, 0.3), (2.5, 2.5, -1.0), (-1.0, -1.5, 1.2), (3.0, -0.5, 0.8), (0.4, 0.3, 2.0), (-0.5, 1.5, -0.4)]
+    Ti = [c .+ s .* ntuple(i -> Float64(i == ax), 3) for c in ((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)) for ax in 1:3
+          for s in (-0.25, 0.25)]                                                    # inside A and C
+    res = map((nothing, f)) do rhs
+        m = multi_dielectric_box3d_gcq(boxes, epses; nlev = 0, n_quad = 3, tol = 1e-4, rhs, rhs_atol = 2e-3)
+        A = dielectric_operator(m.interface; far = FMM3DFarField(1e-10), near = GCQNearQuad(quad_tol = 1e-10))
+        b = rhs_dielectric_box3d(m.interface, PointSource(src, 1.0), 1.0)
+        σ, st = solve_dielectric_box3d_gcq(A, b, m.interface; rtol = 1e-10,
+                                           constraints = box_charge_constraints(m, PointSource(src, 1.0)))
+        ui = potential_tensor(m.interface, σ, Ti) .+ [1 / (4π * norm(x .- src)) for x in Ti]
+        (n = length(m.interface.panels), solved = st.solved, u = potential_tensor(m.interface, σ, T),
+         spread = (maximum(ui) - minimum(ui)) / abs(sum(ui) / length(ui)))
+    end
+    plain, refined = res
+    @test plain.solved && refined.solved && refined.n > plain.n
+    @test maximum(abs, refined.u - plain.u) / maximum(abs, refined.u) < 1e-2
+    @test refined.spread < plain.spread / 2 && refined.spread < 5e-3
+end
