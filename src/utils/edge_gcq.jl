@@ -13,39 +13,137 @@
 # serves every panel [0, L] touching an edge.
 
 """
-    junction_powers(angles, eps; gmax=20.0, ngrid=200_000)
+    junction_powers(angles, eps; gmax=20.0, method=:chebyshev, ngrid=200_000)
 
 Potential powers γ ∈ (0, gmax] at a 2D junction of sectors with openings
-`angles` (summing to 2π, in angular order) and permittivities `eps`. Simple
-roots of `theta_ODE_det` are bracketed by sign changes; double roots (the
-determinant touching zero, e.g. γ = 2m at a right-angle corner) are found from
-local minima of |det|. The density powers are `γ .- 1`.
+`angles` (summing to 2π, in angular order) and permittivities `eps`: the roots of
+`theta_ODE_det`, a double root (the determinant touching zero, e.g. γ = 2m at a
+right-angle corner) returned once. The density powers are `γ .- 1`.
+
+Both methods polish the roots on the cells of the grid of `ngrid` equispaced powers
+in [1e-3, gmax]: a sign change of det on a cell is bisected, and a local minimum of
+|det| without one is a double root or two simple roots inside one cell, told apart by
+the sign of det at the extremum. `method = :grid` scans every cell. `method =
+:chebyshev` (default) evaluates det only on the cells around the candidate roots of
+Chebyshev proxy rootfinding (Boyd, SIAM Rev. 55 (2013) 375–396): on subintervals of
+[1e-3, gmax] of width at most 1, det is interpolated at Chebyshev points, and the real
+eigenvalues of the colleague matrix of the interpolant are the candidates. The two
+methods polish a root on the same cell, so they return the same roots, bitwise; the
+proxy only saves evaluating det on the cells without a root.
 """
 function junction_powers(angles::AbstractVector, eps::AbstractVector;
-                         gmax::Real = 20.0, ngrid::Int = 200_000)
+                         gmax::Real = 20.0, method::Symbol = :chebyshev, ngrid::Int = 200_000)
     length(angles) == length(eps) || throw(ArgumentError("angles and eps must have equal length"))
     abs(sum(angles) - 2pi) < 1e-12 || throw(ArgumentError("angles must sum to 2π"))
-    # cached (one junction is ~10 ms of determinant evaluations, and every mesh call asks for its junctions again).
-    # The lock guards the dictionary only: the roots are found outside it, so threads asking for different junctions
-    # run in parallel. Two threads asking for the same new junction both compute it (the roots are deterministic) and
-    # the first one stored is kept.
-    key = (Float64.(angles), Float64.(eps), Float64(gmax), ngrid)
+    method in (:chebyshev, :grid) || throw(ArgumentError("method must be :chebyshev or :grid, got :$method"))
+    # cached (one junction is ~1 ms of determinant evaluations, ~10 ms with :grid, and every mesh call asks for its
+    # junctions again). The lock guards the dictionary only: the roots are found outside it, so threads asking for
+    # different junctions run in parallel. Two threads asking for the same new junction both compute it (the roots are
+    # deterministic) and the first one stored is kept.
+    key = (Float64.(angles), Float64.(eps), Float64(gmax), method, ngrid)
     hit = lock(() -> get(JUNCTION_POWERS_CACHE, key, nothing), JUNCTION_POWERS_LOCK)
     hit === nothing || return copy(hit)
-    roots = _junction_powers(angles, eps, gmax, ngrid)
+    roots = _junction_powers(angles, eps, gmax, method, ngrid)
     return copy(lock(() -> get!(JUNCTION_POWERS_CACHE, key, roots), JUNCTION_POWERS_LOCK))
 end
 
-const JUNCTION_POWERS_CACHE = Dict{Tuple{Vector{Float64}, Vector{Float64}, Float64, Int}, Vector{Float64}}()
+const JUNCTION_POWERS_CACHE = Dict{Tuple{Vector{Float64}, Vector{Float64}, Float64, Symbol, Int}, Vector{Float64}}()
 const JUNCTION_POWERS_LOCK = ReentrantLock()
 
-function _junction_powers(angles, eps, gmax, ngrid)
+function _junction_powers(angles, eps, gmax, method, ngrid)
     f = ThetaODEDet(angles[1:end-1], eps)      # theta_ODE_det(angles[1:end-1], eps, ·) without allocations
     gs = range(1e-3, gmax, length = ngrid)
+    method === :grid && return _grid_roots(f, gs)
+    return _chebyshev_roots(f, gs)
+end
+
+# Chebyshev proxy rootfinding (Boyd 2013) for f on the grid gs. f = theta_ODE_det is entire in γ, with frequencies at
+# most the total opening 2π, so on a subinterval of width ≤ 1 its Chebyshev coefficients fall to rounding by degree
+# ~30 (those of e^{2πiγ} are Bessel values J_k(π)), and the coefficients beyond are the noise floor of det, at which the
+# expansion is truncated. The angular problem is self-adjoint in γ² with positive weights ε_j, so every root of f is
+# real: an eigenvalue of the colleague matrix near the real axis is a real root (a double root gives a pair ~1e-8
+# apart, or a complex pair, ~1e-6 apart at the noise floor of high contrast), and the others lie far from the interval.
+# Each candidate is then polished by `_grid_roots` on the cells of gs within two cells of it (overlapping windows
+# merged): the same cells, hence the same brackets and bitwise the same roots, as `_grid_roots` on all of gs. (Windows
+# centred on the candidates instead gave roots that moved in the last bits with the order of the sectors, as the
+# candidates do: 18 or 18 + 7e-15 for the double root of a cube edge, which changed its GCQ rule.)
+function _chebyshev_roots(f, gs::AbstractRange; n::Int = 48)
+    lo, hi = Float64(first(gs)), Float64(last(gs))
+    xk = [cos(pi * j / n) for j in 0:n]                         # Chebyshev points of the second kind on [-1, 1]
+    Tkj = [cos(pi * k * j / n) for k in 0:n, j in 0:n]          # T_k(x_j)
+    wj = [j == 0 || j == n ? 0.5 : 1.0 for j in 0:n]
+    cands = Float64[]
+    fscale = 0.0
+    nsub = max(1, ceil(Int, hi - lo))
+    stack = [(lo + (hi - lo) * (i - 1) / nsub, lo + (hi - lo) * i / nsub) for i in 1:nsub]
+    while !isempty(stack)
+        a, b = pop!(stack)
+        v = [f((a + b) / 2 + (b - a) / 2 * x) for x in xk]
+        fscale = max(fscale, maximum(abs, v))
+        c = (2 / n) .* (Tkj * (wj .* v))                        # p(x) = Σ_k c_k T_k(x) interpolates v at xk
+        c[1] /= 2; c[end] /= 2
+        cmax = maximum(abs, c)
+        cmax == 0 && continue
+        # The trailing coefficients are the noise floor of det, not a resolution limit: at high contrast det cancels
+        # (a ratio of 3e-7 gives a floor of ~1e-12 cmax), and halving the subinterval cannot lower it. Only a tail
+        # far above any such floor (never seen; f is resolved by degree ~30) halves the subinterval, down to 1/16.
+        tail = maximum(abs, @view c[end-7:end])
+        if tail > 1e-8 * cmax && b - a > 1 / 16
+            push!(stack, (a, (a + b) / 2), ((a + b) / 2, b))
+            continue
+        end
+        d = findlast(ck -> abs(ck) > 10 * tail + 1e-15 * cmax, c)  # drop the coefficients at the noise floor
+        for z in _colleague_eigvals(@view c[1:d])
+            abs(imag(z)) < 1e-4 && abs(real(z)) <= 1 + 1e-8 &&
+                push!(cands, clamp((a + b) / 2 + (b - a) / 2 * real(z), lo, hi))
+        end
+    end
+    sort!(cands)
+    h = Float64(step(gs))
+    wins = UnitRange{Int}[]                                     # index windows of gs, two cells around each candidate
+    for c in cands
+        k = clamp(round(Int, (c - lo) / h) + 1, 1, length(gs))
+        r = max(1, k - 2):min(length(gs), k + 2)
+        if !isempty(wins) && first(r) <= last(wins[end]) + 1
+            wins[end] = first(wins[end]):max(last(wins[end]), last(r))
+        else
+            push!(wins, r)
+        end
+    end
+    roots = Float64[]
+    for w in wins
+        append!(roots, _grid_roots(f, [gs[i] for i in w]; fscale0 = fscale))
+    end
+    return sort!(roots)
+end
+
+# Roots of Σ_{k=0}^{d} c_k T_k(x), c = (c_0, …, c_d) with c_d ≠ 0, as the eigenvalues of the colleague matrix: from
+# x T_0 = T_1 and x T_k = (T_{k-1} + T_{k+1}) / 2, with T_d eliminated by the polynomial (Boyd 2013, Sec. 4).
+function _colleague_eigvals(c::AbstractVector)
+    d = length(c) - 1
+    d <= 0 && return ComplexF64[]
+    d == 1 && return ComplexF64[-c[1] / c[2]]
+    A = zeros(d, d)
+    A[1, 2] = 1.0
+    for k in 2:d-1
+        A[k, k-1] = 0.5
+        A[k, k+1] = 0.5
+    end
+    A[d, d-1] = 0.5
+    for k in 1:d
+        A[d, k] -= c[k] / (2 * c[d+1])
+    end
+    return complex.(eigvals(A))
+end
+
+# Roots of f on the grid gs: sign changes are bisected, and local minima of |f| without a sign change are told apart
+# (below). `fscale0` is a lower bound for the scale of f (the window grids of `_chebyshev_roots` pass the scale of f on
+# the whole interval); with fscale0 = 0 this is the earlier `:grid` root finder unchanged.
+function _grid_roots(f, gs; fscale0::Float64 = 0.0)
     # One pass over the grid with three det values at a time, keeping the cells with a sign change, the candidate
     # double roots (below) and fscale. (Storing the ngrid values, 1.6 MB per junction, made threaded calls wait on
     # each other in garbage collection.)
-    fscale = 0.0
+    fscale = fscale0
     changes = Int[]                        # i: det changes sign on [gs[i], gs[i+1]]
     minima = Tuple{Int, Float64}[]         # (i, det(gs[i])): local minimum of |det|, same sign at gs[i±1]
     fm2 = fm1 = NaN                        # det at gs[i-2], gs[i-1]
