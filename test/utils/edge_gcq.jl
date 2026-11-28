@@ -55,13 +55,24 @@ using Test
     # a repeated junction comes from the cache, as the caller's own copy
     jp() = junction_powers([π, π / 2, π / 2], [1.0, 2.0, 7.0]; gmax = 6.0)
     ja = jp(); jb = jp()
-    @test jb == ja && jb !== ja && BI.JUNCTION_POWERS_CACHE[([π, π / 2, π / 2], [1.0, 2.0, 7.0], 6.0, 200_000)] == ja
+    @test jb == ja && jb !== ja &&
+          BI.JUNCTION_POWERS_CACHE[([π, π / 2, π / 2], [1.0, 2.0, 7.0], 6.0, :chebyshev, 200_000)] == ja
     jb[1] = 0.0
     @test jp()[1] == ja[1]
     # concurrent first calls for one junction: equal results, each the caller's own copy, one cache entry
     n0 = length(BI.JUNCTION_POWERS_CACHE)
     js = fetch.([Threads.@spawn junction_powers([π, 0.7, π - 0.7], [1.0, 3.0, 5.0]; gmax = 4.0) for _ in 1:32])
     @test all(==(js[1]), js) && allunique(objectid.(js)) && length(BI.JUNCTION_POWERS_CACHE) == n0 + 1
+    # Chebyshev proxy rootfinding (the default) and the grid search polish on the same cells, so they find the same
+    # roots, bitwise: double roots (right-angle junctions), nearly coincident simple roots (low contrast, a seam of
+    # nearly equal permittivities), high contrast, a conducting sector, and four materials at general openings
+    for (a, e, gm) in (([2π - 1.0, 1.0], [1.0, 10.0], 20.0), (fill(π / 2, 4), [1.0, 50.0, 2.0, 10.0], 13.0),
+                       (fill(π / 2, 4), [1.0, 1e3, 1.0, 1e3], 12.0), ([3π / 2, π / 2], [1.0, 1.00001], 6.0),
+                       ([π, π / 2, π / 2], [1.0, 10.0, 10.001], 6.0), ([π / 2, π, π / 2], [10.0, 1.0, Inf], 12.0),
+                       ([0.4, 1.3, 2.1, 2π - 3.8], [3.0, 0.2, 40.0, 1.0], 10.0))
+        @test junction_powers(a, e; gmax = gm) == junction_powers(a, e; gmax = gm, method = :grid)
+    end
+    @test_throws ArgumentError junction_powers([π, π], [1.0, 2.0]; method = :nope)
     # the allocation-free determinant of the root finder is bitwise theta_ODE_det (dielectric, four sectors, PEC)
     for (a, e) in (([2π - 1.0, 1.0], [1.0, 10.0]), (fill(π / 2, 4), [1.0, 50.0, 2.0, 10.0]),
                    ([π / 2, π, π / 2], [10.0, 1.0, Inf]))
